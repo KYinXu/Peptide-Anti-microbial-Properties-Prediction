@@ -1,0 +1,93 @@
+{
+  "config": {
+    "csv_path": "data/gnn_training_dataset/alpha-helix_only/geometric_features_clustered.csv",
+    "pdb_dir": "data/gnn_training_dataset/alpha-helix_only",
+    "qsar_csv": "/mnt/c/Users/bioin/Documents/Peptide-Anti-microbial-Properties-Prediction/sequence_to_svm_minimal/data/training_dataset/qsar12_descriptors.csv",
+    "seed": 42,
+    "n_folds": 5,
+    "epochs": 500,
+    "batch_size": 32,
+    "lr": 0.001,
+    "patience": 30,
+    "hidden_channels": 64,
+    "num_layers": 3,
+    "dropout": 0.2,
+    "distance_threshold": 8.0
+  },
+  "results": {
+    "GCN (Graph-only)": {
+      "auc_roc_mean": 0.9887032849027294,
+      "auc_roc_std": 0.0018304102999876957,
+      "f1_mean": 0.946865538316225,
+      "f1_std": 0.021489309129059237,
+      "mcc_mean": 0.8947279495649745,
+      "mcc_std": 0.032129789911255556
+    },
+    "GAT (Graph-only)": {
+      "auc_roc_mean": 0.990824633103769,
+      "auc_roc_std": 0.0019864539757156125,
+      "f1_mean": 0.9511090418668751,
+      "f1_std": 0.008814866787902213,
+      "mcc_mean": 0.9006348171343674,
+      "mcc_std": 0.013477665843492657
+    },
+    "EGNN (Graph-only)": {
+      "auc_roc_mean": 0.9896806926422274,
+      "auc_roc_std": 0.0022946460686050166,
+      "f1_mean": 0.9098391060015123,
+      "f1_std": 0.06693445617430795,
+      "mcc_mean": 0.8246187608083891,
+      "mcc_std": 0.11494703339423779
+    },
+    "GCN (Graph+Geo24)": {
+      "auc_roc_mean": 0.9864493622689983,
+      "auc_roc_std": 0.003002241467639798,
+      "f1_mean": 0.937469263005619,
+      "f1_std": 0.008546953851604023,
+      "mcc_mean": 0.8783475316445161,
+      "mcc_std": 0.02285378560193037
+    },
+    "GAT (Graph+Geo24)": {
+      "auc_roc_mean": 0.9857092655158561,
+      "auc_roc_std": 0.004558869569113479,
+      "f1_mean": 0.910251871195596,
+      "f1_std": 0.0824676965049771,
+      "mcc_mean": 0.8537149457928145,
+      "mcc_std": 0.09215211433040632
+    },
+    "EGNN (Graph+Geo24)": {
+      "auc_roc_mean": 0.9866394780500105,
+      "auc_roc_std": 0.0024322595582899616,
+      "f1_mean": 0.9459916161561776,
+      "f1_std": 0.007408498364400396,
+      "mcc_mean": 0.8939065169613372,
+      "mcc_std": 0.01034016218728429
+    },
+    "GCN (Graph+Combined36)": {
+      "auc_roc_mean": 0.9873827017970058,
+      "auc_roc_std": 0.0022112536987916177,
+      "f1_mean": 0.9451461789114228,
+      "f1_std": 0.011209483735959837,
+      "mcc_mean": 0.8937726117576098,
+      "mcc_std": 0.025728336179079426
+    },
+    "GAT (Graph+Combined36)": {
+      "auc_roc_mean": 0.9874648466789854,
+      "auc_roc_std": 0.002047748077723726,
+      "f1_mean": 0.9525428875795185,
+      "f1_std": 0.0035946623154599,
+      "mcc_mean": 0.9065165636432742,
+      "mcc_std": 0.010359419294386428
+    },
+    "EGNN (Graph+Combined36)": {
+      "auc_roc_mean": 0.9859059168886766,
+      "auc_roc_std": 0.0027737380253501096,
+      "f1_mean": 0.9483568075738844,
+      "f1_std": 0.006380974551616878,
+      "mcc_mean": 0.8961802383011428,
+      "mcc_std": 0.008103739194239826
+    }
+  },
+  "timestamp": "20260218_173900",
+  "curves_dir": "results/gnn/alpha-helix_only/curves/run_20260218_173900"
+}
