@@ -133,6 +133,26 @@ def evaluate(
     return metrics
 
 
+@torch.no_grad()
+def evaluate_probs(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return (y_true, y_prob) for validation set (for ROC/PR/calibration)."""
+    model.eval()
+    all_probs = []
+    all_labels = []
+    for batch in loader:
+        batch = batch.to(device)
+        out = model(batch)
+        probs = F.softmax(out, dim=1)[:, 1].cpu().numpy()
+        labels = batch.y.squeeze().cpu().numpy()
+        all_probs.extend(probs)
+        all_labels.extend(labels)
+    return np.array(all_labels), np.array(all_probs)
+
+
 def run_training(
     model: nn.Module,
     train_loader: DataLoader,

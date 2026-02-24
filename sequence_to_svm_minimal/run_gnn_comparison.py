@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from gnn.data_utils import PeptideGraphDataset
 from gnn.models import PeptideGNN
-from gnn.train import run_training, cross_validate, evaluate
+from gnn.train import run_training, cross_validate, evaluate, evaluate_probs
 from torch_geometric.loader import DataLoader
 
 
@@ -277,6 +277,14 @@ def run_single_experiment(arch, feature_name, feature_config, all_data, labels, 
         fold_json_path = curves_dir / f"fold_{fold+1}.json"
         with open(fold_json_path, 'w') as f:
             json.dump(fold_json, f, indent=2)
+        
+        y_true, y_prob = evaluate_probs(model, val_loader, device)
+        val_probs_path = curves_dir / f"fold_{fold+1}_val_probs.json"
+        with open(val_probs_path, 'w') as f:
+            json.dump({
+                'y_true': y_true.tolist(),
+                'y_prob': y_prob.tolist(),
+            }, f)
         
         all_histories.append(history)
         

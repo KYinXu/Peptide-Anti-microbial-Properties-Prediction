@@ -19,7 +19,7 @@ import json
 import random
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -177,12 +177,29 @@ def evaluate(model: nn.Module, loader: DataLoader,
     }
 
 
+def evaluate_probs(model: nn.Module, loader: DataLoader,
+                   device: torch.device) -> Tuple[np.ndarray, np.ndarray]:
+    """Return (y_true, y_prob) for ROC/PR/calibration plots."""
+    model.eval()
+    all_probs = []
+    all_labels = []
+    with torch.no_grad():
+        for X_batch, y_batch in loader:
+            X_batch = X_batch.to(device)
+            outputs = model(X_batch)
+            all_probs.extend(outputs.cpu().numpy())
+            all_labels.extend(y_batch.numpy())
+    return np.array(all_labels), np.array(all_probs)
+
+
 def train_model(X_train: np.ndarray, y_train: np.ndarray,
                 X_val: np.ndarray, y_val: np.ndarray,
                 input_dim: int, device: torch.device,
                 epochs: int = 300, batch_size: int = 32,
                 lr: float = 0.0005, patience: int = 30,
-                verbose: bool = False) -> Tuple[nn.Module, Dict, int]:
+                verbose: bool = False,
+                return_history: bool = False
+                ) -> Tuple[nn.Module, Dict, int, Optional[Dict[str, List[float]]]]:
     """
     Train a model with early stopping.
     
@@ -190,6 +207,7 @@ def train_model(X_train: np.ndarray, y_train: np.ndarray,
         model: Trained model (restored to best state)
         best_metrics: Metrics at best epoch
         best_epoch: Best epoch number
+        history: If return_history, dict with train_loss, val_auc_roc, val_f1 per epoch; else None
     """
     # Create model
     model = AMPClassifier(input_dim=input_dim).to(device)
@@ -204,10 +222,16 @@ def train_model(X_train: np.ndarray, y_train: np.ndarray,
     # Training loop
     early_stopping = EarlyStopping(patience=patience)
     best_metrics = None
+    history = {'train_loss': [], 'val_auc_roc': [], 'val_f1': []} if return_history else None
     
     for epoch in range(epochs):
         train_loss = train_epoch(model, train_loader, optimizer, criterion, device)
         val_metrics = evaluate(model, val_loader, device)
+        
+        if history is not None:
+            history['train_loss'].append(float(train_loss))
+            history['val_auc_roc'].append(float(val_metrics['auc_roc']))
+            history['val_f1'].append(float(val_metrics['f1']))
         
         scheduler.step(val_metrics['auc_roc'])
         
@@ -225,7 +249,7 @@ def train_model(X_train: np.ndarray, y_train: np.ndarray,
     if early_stopping.best_state is not None:
         model.load_state_dict(early_stopping.best_state)
     
-    return model, best_metrics, early_stopping.best_epoch + 1
+    return model, best_metrics, early_stopping.best_epoch + 1, history
 
 
 # ============================================================================
@@ -253,7 +277,11 @@ def run_pnas_protocol(data_path: Path,
     
     set_seed(seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+    if output_dir is None:
+        output_dir = Path(__file__).parent / "results"
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     print("\n" + "="*70)
     print("  PNAS-Style Evaluation Protocol")
     print("  (Lee et al. PNAS 2016 - SI Appendix)")
@@ -361,9 +389,8 @@ def run_pnas_protocol(data_path: Path,
         X_train_scaled = scaler.fit_transform(X_train)
         X_val_scaled = scaler.transform(X_val)
         
-        # Train model
-        set_seed(seed + round_idx)  # Different seed per round for variability
-        model, metrics, best_epoch = train_model(
+        set_seed(seed + round_idx)
+        model, metrics, best_epoch, history = train_model(
             X_train_scaled, y_train,
             X_val_scaled, y_val,
             input_dim=input_dim,
@@ -372,11 +399,16 @@ def run_pnas_protocol(data_path: Path,
             batch_size=batch_size,
             lr=lr,
             patience=patience,
-            verbose=False
+            verbose=False,
+            return_history=True
         )
-        
         round_results.append(metrics)
         best_epochs.append(best_epoch)
+        if history is not None:
+            eval_dir = output_dir / "evaluation"
+            eval_dir.mkdir(parents=True, exist_ok=True)
+            with open(eval_dir / f"round_{round_idx+1}_history.json", 'w') as f:
+                json.dump(history, f, indent=2)
         
         print(f"{round_idx+1:<8} {metrics['auc_roc']:<10.4f} {metrics['f1']:<10.4f} "
               f"{metrics['mcc']:<10.4f} {best_epoch:<8}")
@@ -434,7 +466,7 @@ def run_pnas_protocol(data_path: Path,
     print(f"   Validation (for early stopping): {len(X_final_val)} samples")
     
     set_seed(seed)
-    final_model, final_val_metrics, final_best_epoch = train_model(
+    final_model, final_val_metrics, final_best_epoch, final_history = train_model(
         X_final_train_scaled, y_final_train,
         X_final_val_scaled, y_final_val,
         input_dim=input_dim,
@@ -443,11 +475,25 @@ def run_pnas_protocol(data_path: Path,
         batch_size=batch_size,
         lr=lr,
         patience=patience,
-        verbose=True
+        verbose=True,
+        return_history=True
     )
+    if final_history is not None:
+        eval_dir = output_dir / "evaluation"
+        eval_dir.mkdir(parents=True, exist_ok=True)
+        with open(eval_dir / "final_train_history.json", 'w') as f:
+            json.dump(final_history, f, indent=2)
     
     print(f"\n   Best epoch: {final_best_epoch}")
     print(f"   Val AUC-ROC: {final_val_metrics['auc_roc']:.4f}")
+    
+    val_loader_final = create_dataloader(X_final_val_scaled, y_final_val,
+                                         batch_size=batch_size, shuffle=False)
+    y_val_true, y_val_prob = evaluate_probs(final_model, val_loader_final, device)
+    eval_dir = output_dir / "evaluation"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    with open(eval_dir / "final_val_probs.json", 'w') as f:
+        json.dump({'y_true': y_val_true.tolist(), 'y_prob': y_val_prob.tolist()}, f)
     
     # ========================================================================
     # Step 5: Evaluate on blind test set (SINGLE EVALUATION)
@@ -456,15 +502,16 @@ def run_pnas_protocol(data_path: Path,
     print("  Step 5: Blind Test Evaluation (SINGLE EVALUATION)")
     print("-"*70)
     
-    # Fit scaler on FULL training pool, apply to blind test
     full_scaler = StandardScaler()
     full_scaler.fit(X_train_pool)
     X_blind_test_scaled = full_scaler.transform(X_blind_test)
     
-    # Evaluate
     blind_loader = create_dataloader(X_blind_test_scaled, y_blind_test, 
                                       batch_size=batch_size, shuffle=False)
     blind_metrics = evaluate(final_model, blind_loader, device)
+    y_blind_true, y_blind_prob = evaluate_probs(final_model, blind_loader, device)
+    with open(eval_dir / "blind_test_probs.json", 'w') as f:
+        json.dump({'y_true': y_blind_true.tolist(), 'y_prob': y_blind_prob.tolist()}, f)
     
     print(f"\n🎯 BLIND TEST RESULTS ({n_blind} samples)")
     print("="*40)

@@ -281,14 +281,15 @@ def train_mlp(X_train: np.ndarray, y_train: np.ndarray,
               X_val: np.ndarray, y_val: np.ndarray,
               model: nn.Module, device: torch.device,
               epochs: int = 200, batch_size: int = 32,
-              lr: float = 0.001, patience: int = 20) -> Tuple[nn.Module, Dict[str, float], int]:
-    """Train MLP classifier with early stopping."""
+              lr: float = 0.001, patience: int = 20,
+              evaluation_save_path: Optional[Path] = None
+              ) -> Tuple[nn.Module, Dict[str, float], int]:
+    """Train MLP classifier with early stopping. Optionally save history and val probs."""
     model = model.to(device)
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
     criterion = nn.BCELoss()
     
-    # Create dataloaders
     train_tensor = TensorDataset(
         torch.tensor(X_train, dtype=torch.float32),
         torch.tensor(y_train, dtype=torch.float32)
@@ -305,10 +306,12 @@ def train_mlp(X_train: np.ndarray, y_train: np.ndarray,
     best_state = None
     best_metrics = None
     patience_counter = 0
+    history = {'train_loss': [], 'val_auc_roc': [], 'val_f1': []}
     
     for epoch in range(epochs):
-        # Train
         model.train()
+        train_loss = 0.0
+        n = 0
         for X_batch, y_batch in train_loader:
             X_batch, y_batch = X_batch.to(device), y_batch.to(device)
             optimizer.zero_grad()
@@ -317,8 +320,10 @@ def train_mlp(X_train: np.ndarray, y_train: np.ndarray,
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
+            train_loss += loss.item() * len(y_batch)
+            n += len(y_batch)
+        train_loss = train_loss / n if n else 0.0
         
-        # Evaluate
         model.eval()
         all_probs = []
         all_labels = []
@@ -328,8 +333,12 @@ def train_mlp(X_train: np.ndarray, y_train: np.ndarray,
                 outputs = model(X_batch)
                 all_probs.extend(outputs.cpu().numpy())
                 all_labels.extend(y_batch.numpy())
-        
-        metrics = compute_metrics(np.array(all_labels), np.array(all_probs))
+        all_probs = np.array(all_probs)
+        all_labels = np.array(all_labels)
+        metrics = compute_metrics(all_labels, all_probs)
+        history['train_loss'].append(float(train_loss))
+        history['val_auc_roc'].append(float(metrics['auc_roc']))
+        history['val_f1'].append(float(metrics['f1']))
         scheduler.step(metrics['auc_roc'])
         
         if metrics['auc_roc'] > best_score:
@@ -345,6 +354,25 @@ def train_mlp(X_train: np.ndarray, y_train: np.ndarray,
     
     if best_state is not None:
         model.load_state_dict(best_state)
+    
+    if evaluation_save_path is not None:
+        model.eval()
+        all_probs = []
+        all_labels = []
+        with torch.no_grad():
+            for X_batch, y_batch in val_loader:
+                X_batch = X_batch.to(device)
+                outputs = model(X_batch)
+                all_probs.extend(outputs.cpu().numpy())
+                all_labels.extend(y_batch.numpy())
+        evaluation_save_path = Path(evaluation_save_path)
+        evaluation_save_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(evaluation_save_path, 'w') as f:
+            json.dump({
+                'history': history,
+                'y_true': np.array(all_labels).tolist(),
+                'y_prob': np.array(all_probs).tolist(),
+            }, f)
     
     return model, best_metrics, best_epoch
 
@@ -385,19 +413,23 @@ def run_experiment(X: np.ndarray, y: np.ndarray,
                    model_name: str, feature_set: str,
                    train_idx: np.ndarray, val_idx: np.ndarray,
                    qsar_dim: int, device: torch.device,
-                   seed: int = 42) -> Dict[str, float]:
-    """Run a single experiment configuration."""
+                   seed: int = 42,
+                   evaluation_dir: Optional[Path] = None,
+                   experiment_id: Optional[str] = None) -> Dict[str, float]:
+    """Run a single experiment configuration. Optionally save history/val_probs for MLPs."""
     set_seed(seed)
     
     X_train, X_val = X[train_idx], X[val_idx]
     y_train, y_val = y[train_idx], y[val_idx]
     
-    # Scale features
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_val_scaled = scaler.transform(X_val)
     
     input_dim = X.shape[1]
+    eval_path = None
+    if evaluation_dir is not None and experiment_id is not None:
+        eval_path = Path(evaluation_dir) / f"{experiment_id}.json"
     
     if model_name == 'svm_linear':
         _, metrics = train_svm(X_train_scaled, y_train, X_val_scaled, y_val, kernel='linear')
@@ -406,12 +438,12 @@ def run_experiment(X: np.ndarray, y: np.ndarray,
     elif model_name == 'mlp':
         model = AMPClassifier(input_dim=input_dim)
         _, metrics, _ = train_mlp(X_train_scaled, y_train, X_val_scaled, y_val, 
-                                   model, device)
+                                   model, device, evaluation_save_path=eval_path)
     elif model_name == 'two_tower':
         geo_dim = input_dim - qsar_dim
         model = TwoTowerFusionMLP(qsar_dim=qsar_dim, geo_dim=geo_dim)
         _, metrics, _ = train_mlp(X_train_scaled, y_train, X_val_scaled, y_val,
-                                   model, device)
+                                  model, device, evaluation_save_path=eval_path)
     else:
         raise ValueError(f"Unknown model: {model_name}")
     
@@ -421,17 +453,18 @@ def run_experiment(X: np.ndarray, y: np.ndarray,
 def run_cluster_cv(X: np.ndarray, y: np.ndarray, cluster_ids: np.ndarray,
                    model_name: str, feature_set: str, qsar_dim: int,
                    device: torch.device, n_folds: int = 5,
-                   seed: int = 42) -> Dict:
+                   seed: int = 42,
+                   evaluation_dir: Optional[Path] = None) -> Dict:
     """Run cluster-based GroupKFold cross-validation."""
     gkf = GroupKFold(n_splits=n_folds)
     
     fold_results = []
     for fold, (train_idx, val_idx) in enumerate(gkf.split(X, y, groups=cluster_ids)):
-        # Check leakage
         assert check_cluster_leakage(train_idx, val_idx, cluster_ids), "Cluster leakage detected!"
-        
+        exp_id = f"{model_name}_{feature_set}_fold_{fold+1}" if evaluation_dir else None
         metrics = run_experiment(X, y, model_name, feature_set, 
-                                 train_idx, val_idx, qsar_dim, device, seed + fold)
+                                 train_idx, val_idx, qsar_dim, device, seed + fold,
+                                 evaluation_dir=evaluation_dir, experiment_id=exp_id)
         fold_results.append(metrics)
     
     # Aggregate
@@ -446,18 +479,17 @@ def run_cluster_cv(X: np.ndarray, y: np.ndarray, cluster_ids: np.ndarray,
 def run_pnas_cv(X: np.ndarray, y: np.ndarray,
                 model_name: str, feature_set: str, qsar_dim: int,
                 device: torch.device, n_rounds: int = 15,
-                test_size: float = 0.15, seed: int = 42) -> Tuple[Dict, Dict]:
+                test_size: float = 0.15, seed: int = 42,
+                evaluation_dir: Optional[Path] = None) -> Tuple[Dict, Dict]:
     """Run PNAS-style evaluation with blind test."""
     set_seed(seed)
     
-    # Create blind test set
     blind_splitter = StratifiedShuffleSplit(n_splits=1, test_size=test_size, random_state=seed)
     pool_idx, blind_idx = next(blind_splitter.split(X, y))
     
     X_pool, y_pool = X[pool_idx], y[pool_idx]
     X_blind, y_blind = X[blind_idx], y[blind_idx]
     
-    # Run CV on pool
     cv_splitter = StratifiedShuffleSplit(n_splits=n_rounds, test_size=0.2, random_state=seed)
     cv_indices = list(cv_splitter.split(X_pool, y_pool))
     
@@ -467,8 +499,10 @@ def run_pnas_cv(X: np.ndarray, y: np.ndarray,
     
     round_results = []
     for round_idx, (train_idx, val_idx) in enumerate(cv_indices):
+        exp_id = f"{model_name}_{feature_set}_round_{round_idx+1}" if evaluation_dir else None
         metrics = run_experiment(X_pool, y_pool, model_name, feature_set,
-                                 train_idx, val_idx, qsar_dim, device, seed + round_idx)
+                                 train_idx, val_idx, qsar_dim, device, seed + round_idx,
+                                 evaluation_dir=evaluation_dir, experiment_id=exp_id)
         round_results.append(metrics)
     
     # CV summary
@@ -518,6 +552,11 @@ def run_pnas_cv(X: np.ndarray, y: np.ndarray,
             y_prob_blind = model(X_t).cpu().numpy()
     
     blind_metrics = compute_metrics(y_blind, y_prob_blind)
+    if evaluation_dir is not None and model_name in ('mlp', 'two_tower'):
+        path = Path(evaluation_dir) / f"{model_name}_{feature_set}_blind_test_probs.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump({'y_true': y_blind.tolist(), 'y_prob': y_prob_blind.tolist()}, f)
     
     return cv_summary, blind_metrics
 
@@ -633,6 +672,9 @@ def main():
         'pnas_cv': {},
         'pnas_blind': {}
     }
+    results_dir = Path(__file__).parent / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    evaluation_dir = results_dir / "evaluation"
     
     # ========================================================================
     # Protocol A: Cluster-based GroupKFold
@@ -644,7 +686,8 @@ def main():
     for exp_name, model_name, feat_set, X in experiments:
         print(f"\n🔬 {exp_name}...")
         summary = run_cluster_cv(X, y, cluster_ids, model_name, feat_set, 
-                                 qsar_dim, device, n_folds=args.n_folds, seed=args.seed)
+                                 qsar_dim, device, n_folds=args.n_folds, seed=args.seed,
+                                 evaluation_dir=evaluation_dir)
         results['cluster_cv'][exp_name] = summary
         print(f"   AUC-ROC: {summary['auc_roc']['mean']:.4f} ± {summary['auc_roc']['std']:.4f}")
         print(f"   F1:      {summary['f1']['mean']:.4f} ± {summary['f1']['std']:.4f}")
@@ -661,7 +704,8 @@ def main():
         cv_summary, blind_metrics = run_pnas_cv(X, y, model_name, feat_set,
                                                  qsar_dim, device, 
                                                  n_rounds=args.pnas_rounds,
-                                                 seed=args.seed)
+                                                 seed=args.seed,
+                                                 evaluation_dir=evaluation_dir)
         results['pnas_cv'][exp_name] = cv_summary
         results['pnas_blind'][exp_name] = blind_metrics
         print(f"   CV AUC-ROC:    {cv_summary['auc_roc']['mean']:.4f} ± {cv_summary['auc_roc']['std']:.4f}")
