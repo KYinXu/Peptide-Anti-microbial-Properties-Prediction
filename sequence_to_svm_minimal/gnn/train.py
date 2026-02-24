@@ -53,7 +53,13 @@ def train_epoch(
         
         optimizer.zero_grad()
         out = model(batch)
-        loss = criterion(out, batch.y.squeeze())
+        
+        # Ensure target shape matches predictions
+        target = batch.y.view(-1)
+        if target.numel() == 0:
+            continue
+        
+        loss = criterion(out, target)
         
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -96,13 +102,18 @@ def evaluate(
         batch = batch.to(device)
         out = model(batch)
         
-        loss = criterion(out, batch.y.squeeze())
+        # Ensure target shape matches predictions
+        target = batch.y.view(-1)
+        if target.numel() == 0:
+            continue
+        
+        loss = criterion(out, target)
         total_loss += loss.item()
         n_batches += 1
         
         probs = F.softmax(out, dim=1)[:, 1].cpu().numpy()
         preds = out.argmax(dim=1).cpu().numpy()
-        labels = batch.y.squeeze().cpu().numpy()
+        labels = target.cpu().numpy()
         
         all_probs.extend(probs)
         all_preds.extend(preds)
@@ -147,7 +158,7 @@ def evaluate_probs(
         batch = batch.to(device)
         out = model(batch)
         probs = F.softmax(out, dim=1)[:, 1].cpu().numpy()
-        labels = batch.y.squeeze().cpu().numpy()
+        labels = batch.y.view(-1).cpu().numpy()
         all_probs.extend(probs)
         all_labels.extend(labels)
     return np.array(all_labels), np.array(all_probs)

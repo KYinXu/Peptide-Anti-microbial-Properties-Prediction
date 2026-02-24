@@ -330,10 +330,9 @@ class PeptideGraphDataset(Dataset):
         # Load metadata
         self.df = pd.read_csv(csv_path)
         
-        # Default geometric feature columns
+        # Default geometric feature columns (pLDDT excluded to avoid leakage)
         if geometric_feature_cols is None:
             self.geo_cols = [
-                'plddt_mean', 'plddt_std', 'plddt_min', 'plddt_max',
                 'radius_gyration', 'end_to_end_distance', 'max_pairwise_distance',
                 'centroid_distance_mean', 'centroid_distance_std',
                 'fraction_helix', 'fraction_sheet', 'fraction_coil',

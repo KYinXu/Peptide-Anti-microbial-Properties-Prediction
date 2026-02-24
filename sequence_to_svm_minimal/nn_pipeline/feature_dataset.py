@@ -22,6 +22,8 @@ import json
 
 
 # Feature column groups
+# Note: PLDDT_COLS are kept for reference but are intentionally
+# excluded from GEOMETRIC_FEATURE_COLS to avoid data leakage.
 PLDDT_COLS = ['plddt_mean', 'plddt_std', 'plddt_min', 'plddt_max']
 COMPACTNESS_COLS = ['radius_gyration', 'end_to_end_distance', 'max_pairwise_distance',
                     'centroid_distance_mean', 'centroid_distance_std']
@@ -31,8 +33,8 @@ SEQUENCE_COLS = ['length', 'net_charge', 'mean_hydrophobicity', 'hydrophobic_mom
 CURVATURE_COLS = ['curvature_mean', 'curvature_std', 'curvature_max', 
                   'torsion_mean', 'torsion_std']
 
-# All geometric features
-GEOMETRIC_FEATURE_COLS = (PLDDT_COLS + COMPACTNESS_COLS + SECONDARY_STRUCTURE_COLS + 
+# Geometric features used for training (pLDDT excluded)
+GEOMETRIC_FEATURE_COLS = (COMPACTNESS_COLS + SECONDARY_STRUCTURE_COLS +
                           SASA_COLS + SEQUENCE_COLS + CURVATURE_COLS)
 
 # SVM output features

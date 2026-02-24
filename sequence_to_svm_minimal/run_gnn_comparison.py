@@ -56,10 +56,11 @@ CONFIG = {
 }
 
 # Feature configurations
+# Note: geometric feature dims exclude pLDDT-derived confidence scores
 FEATURE_CONFIGS = {
     'Graph-only': {'use_geo': False, 'use_qsar': False, 'geo_dim': 0},
-    'Graph+Geo24': {'use_geo': True, 'use_qsar': False, 'geo_dim': 24},
-    'Graph+Combined36': {'use_geo': True, 'use_qsar': True, 'geo_dim': 36},
+    'Graph+Geo20': {'use_geo': True, 'use_qsar': False, 'geo_dim': 20},
+    'Graph+Combined32': {'use_geo': True, 'use_qsar': True, 'geo_dim': 32},
 }
 
 # GNN architectures
@@ -96,9 +97,8 @@ def load_data_with_features(config):
 def create_dataset_with_features(df, config, use_geo=True, use_qsar=False, qsar_cols=None):
     """Create a dataset with specified feature combination."""
     
-    # Geometric feature columns
+    # Geometric feature columns (pLDDT excluded to avoid leakage)
     geo_cols = [
-        'plddt_mean', 'plddt_std', 'plddt_min', 'plddt_max',
         'radius_gyration', 'end_to_end_distance', 'max_pairwise_distance',
         'centroid_distance_mean', 'centroid_distance_std',
         'fraction_helix', 'fraction_sheet', 'fraction_coil',

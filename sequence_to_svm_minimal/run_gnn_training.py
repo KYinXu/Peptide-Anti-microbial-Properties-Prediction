@@ -164,10 +164,14 @@ def run_cluster_cv(args, dataset, labels, clusters, device):
         cv = GroupKFold(n_splits=args.n_folds)
         splits = list(cv.split(np.arange(len(labels)), labels, groups=clusters))
     
-    # Determine geometric feature dimension
+    # Determine geometric feature dimension dynamically from dataset
     geo_dim = 0
     if args.use_geo_features:
-        geo_dim = 24  # Standard geometric features
+        for data in dataset:
+            if hasattr(data, 'geo_features'):
+                geo_dim = int(data.geo_features.shape[1])
+                break
+        print(f"Using geometric feature dimension: {geo_dim}")
     
     # Model factory
     def model_fn():
@@ -211,10 +215,14 @@ def run_pnas_evaluation(args, dataset, df, labels, device):
     print(f"Protocol: PNAS-Style (15-round CV + {args.test_size*100:.0f}% Blind Test)")
     print("="*60)
     
-    # Determine geometric feature dimension
+    # Determine geometric feature dimension dynamically from dataset
     geo_dim = 0
     if args.use_geo_features:
-        geo_dim = 24
+        for data in dataset:
+            if hasattr(data, 'geo_features'):
+                geo_dim = int(data.geo_features.shape[1])
+                break
+        print(f"Using geometric feature dimension: {geo_dim}")
     
     # Load all data
     print("Loading graphs...")
