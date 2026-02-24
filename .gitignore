@@ -5,3 +5,12 @@ sequence_to_svm_minimal/models/esmfold_v1_local/
 *.bin
 __pycache__/
 .ipynb_checkpoints/
+
+# Output files (curves, metrics, plots, checkpoints from train/comparison runs)
+results/
+sequence_to_svm_minimal/results/
+sequence_to_svm_minimal/evaluation/
+sequence_to_svm_minimal/**/evaluation_plots/
+
+# Generated data files
+data/**/structures/
