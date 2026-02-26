@@ -1,3 +1,6 @@
+**/*.egg-info/
+*.egg
+.cursor/
 
 # Model files (huge)
 sequence_to_svm_minimal/models/esmfold_v1_local/

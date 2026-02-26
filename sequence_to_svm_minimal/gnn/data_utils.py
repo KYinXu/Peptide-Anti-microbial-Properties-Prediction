@@ -63,6 +63,22 @@ VOLUME = {
 }
 VOL_MIN, VOL_MAX = 60.1, 227.8
 
+# Node feature indices (0-19 one-hot AA; 20-25 continuous)
+NODE_FEATURE_INDEX = {
+    'plddt': 20, 'hydrophobicity': 21, 'charge': 22,
+    'mw': 23, 'volume': 24, 'rel_position': 25
+}
+
+
+def node_feature_keep_indices_from_exclude(exclude_names: List[str]) -> List[int]:
+    """Return list of node feature indices to keep. One-hot 0-19 always kept; continuous by name."""
+    exclude = set(s.strip().lower() for s in exclude_names if s)
+    keep = list(range(20))
+    for name, idx in NODE_FEATURE_INDEX.items():
+        if name not in exclude:
+            keep.append(idx)
+    return keep
+
 
 # =============================================================================
 # PDB PARSING
@@ -240,30 +256,20 @@ def pdb_to_graph(
     label: int,
     peptide_id: str = None,
     distance_threshold: float = 8.0,
-    geometric_features: Optional[np.ndarray] = None
+    geometric_features: Optional[np.ndarray] = None,
+    node_feature_keep_indices: Optional[List[int]] = None
 ) -> Data:
     """
     Convert a PDB file to a PyTorch Geometric Data object.
-    
-    Args:
-        pdb_path: Path to PDB file
-        label: Class label (0 or 1)
-        peptide_id: Optional identifier
-        distance_threshold: Max distance for spatial edges (Å)
-        geometric_features: Optional pre-computed geometric features (24-dim)
-        
-    Returns:
-        PyG Data object with node features, edges, and label
+    node_feature_keep_indices: if set, keep only these node feature dimensions (0-25).
     """
-    # Parse PDB
     aa_sequence, ca_coords, plddt_values = parse_pdb(pdb_path)
     n_residues = len(aa_sequence)
-    
     if n_residues < 2:
         raise ValueError(f"Peptide too short: {n_residues} residues")
-    
-    # Compute node features
     x = compute_node_features(aa_sequence, plddt_values, n_residues)
+    if node_feature_keep_indices is not None:
+        x = x[:, node_feature_keep_indices]
     
     # Compute edges
     edge_index, edge_attr = compute_edges(ca_coords, distance_threshold)
@@ -311,21 +317,15 @@ class PeptideGraphDataset(Dataset):
         distance_threshold: float = 8.0,
         use_geometric_features: bool = False,
         geometric_feature_cols: Optional[List[str]] = None,
+        node_feature_keep_indices: Optional[List[int]] = None,
         transform=None,
         pre_transform=None
     ):
-        """
-        Args:
-            csv_path: Path to CSV with peptide_id, sequence, label, pdb_file columns
-            pdb_dir: Directory containing PDB files
-            distance_threshold: Max Cα-Cα distance for spatial edges
-            use_geometric_features: Whether to include pre-computed geometric features
-            geometric_feature_cols: Column names for geometric features
-        """
         self.csv_path = csv_path
         self.pdb_dir = Path(pdb_dir)
         self.distance_threshold = distance_threshold
         self.use_geometric_features = use_geometric_features
+        self.node_feature_keep_indices = node_feature_keep_indices
         
         # Load metadata
         self.df = pd.read_csv(csv_path)
@@ -382,15 +382,14 @@ class PeptideGraphDataset(Dataset):
         if self.use_geometric_features and self.geo_cols:
             geo_feats = row[self.geo_cols].values.astype(np.float32)
         
-        # Convert to graph
         data = pdb_to_graph(
             str(pdb_path),
             label,
             peptide_id=row['peptide_id'],
             distance_threshold=self.distance_threshold,
-            geometric_features=geo_feats
+            geometric_features=geo_feats,
+            node_feature_keep_indices=self.node_feature_keep_indices
         )
-        
         return data
 
 

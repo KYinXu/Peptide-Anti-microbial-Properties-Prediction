@@ -17,6 +17,10 @@ Models available:
 - EGNN: E(n) Equivariant Graph Neural Network
 """
 
+import warnings
+warnings.filterwarnings('ignore', message='.*Disabling its usage.*', category=UserWarning)
+warnings.filterwarnings('ignore', message=".*torch-scatter.*was not found", category=UserWarning)
+
 from .data_utils import PeptideGraphDataset, pdb_to_graph, create_dataloaders
 from .models import GCN, GAT, EGNN, PeptideGNN
 from .train import train_epoch, evaluate, run_training

@@ -339,6 +339,8 @@ def cross_validate(
             print(f"Fold {fold + 1} Results: "
                   f"AUC-ROC={best_metrics['auc_roc']:.4f}, "
                   f"F1={best_metrics['f1']:.4f}, "
+                  f"Prec={best_metrics['precision']:.4f}, "
+                  f"Rec={best_metrics['recall']:.4f}, "
                   f"MCC={best_metrics['mcc']:.4f}")
     
     return cv_results
