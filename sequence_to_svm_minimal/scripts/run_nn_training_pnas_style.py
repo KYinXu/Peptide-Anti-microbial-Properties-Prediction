@@ -502,10 +502,12 @@ def run_pnas_protocol(data_path: Path,
     print("  Step 5: Blind Test Evaluation (SINGLE EVALUATION)")
     print("-"*70)
     
+    # Fit scaler on FULL training pool, apply to blind test
     full_scaler = StandardScaler()
     full_scaler.fit(X_train_pool)
     X_blind_test_scaled = full_scaler.transform(X_blind_test)
     
+    # Evaluate
     blind_loader = create_dataloader(X_blind_test_scaled, y_blind_test, 
                                       batch_size=batch_size, shuffle=False)
     blind_metrics = evaluate(final_model, blind_loader, device)

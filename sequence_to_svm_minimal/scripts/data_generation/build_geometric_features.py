@@ -236,25 +236,29 @@ Examples:
         print("❌ No PDB files found")
         sys.exit(1)
     
-    # Load optional data sources
+    # Load optional data sources (results_log supplies sequence + label)
     results_lookup = None
+    def _try_load_results(path: Path):
+        if path.exists():
+            return load_results_log(path)
+        return None
     if args.results_log:
         results_path = Path(args.results_log)
-        if results_path.exists():
-            results_lookup = load_results_log(results_path)
+        results_lookup = _try_load_results(results_path)
+        if results_lookup is not None:
             print(f"📋 Loaded results log: {len(results_lookup)} entries")
-        else:
-            # Try to find results_log.csv in pdb_dir
-            auto_path = pdb_dir / "results_log.csv"
-            if auto_path.exists():
-                results_lookup = load_results_log(auto_path)
-                print(f"📋 Auto-loaded results log: {len(results_lookup)} entries")
+        elif not results_path.exists():
+            for candidate in [pdb_dir / "results_log.csv", pdb_dir.parent / "results_log.csv"]:
+                results_lookup = _try_load_results(candidate)
+                if results_lookup is not None:
+                    print(f"📋 Loaded results log from {candidate}: {len(results_lookup)} entries")
+                    break
     else:
-        # Try auto-detect
-        auto_path = pdb_dir / "results_log.csv"
-        if auto_path.exists():
-            results_lookup = load_results_log(auto_path)
-            print(f"📋 Auto-loaded results log: {len(results_lookup)} entries")
+        for candidate in [pdb_dir / "results_log.csv", pdb_dir.parent / "results_log.csv"]:
+            results_lookup = _try_load_results(candidate)
+            if results_lookup is not None:
+                print(f"📋 Auto-loaded results log from {candidate}: {len(results_lookup)} entries")
+                break
     
     svm_lookup = None
     if args.svm_predictions:
@@ -319,6 +323,13 @@ Examples:
     
     print(f"\n📁 Saved features to: {output_path}")
     print(f"   Shape: {df.shape[0]} samples × {df.shape[1]} columns")
+    if "label" not in df.columns:
+        print("   ⚠️  No 'label' column. Pass --results-log or use --pdb-dir so results_log.csv is found")
+        print("      (script checks pdb_dir and pdb_dir.parent for results_log.csv).")
+    elif df["label"].isna().all():
+        print("   ⚠️  All labels are NaN. PDB peptide_id (filename stem) may not match results_log IDs.")
+    if "sequence" not in df.columns and results_lookup is None:
+        print("   ⚠️  No 'sequence' column. results_log.csv is required for sequence and label.")
     
     # Save feature names
     if args.save_feature_names:

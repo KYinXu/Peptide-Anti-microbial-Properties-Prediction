@@ -8,22 +8,19 @@ This module:
 3. Assigns cluster IDs for GroupKFold splitting
 
 Usage:
-    # Step 1: Generate FASTA
-    python prepare_clusters.py --generate-fasta \
-        --input data/training_dataset/geometric_features.csv \
-        --output data/training_dataset/sequences.fasta
-    
-    # Step 2: Run CD-HIT externally
+    # One-shot: run CD-HIT and produce geometric_features_clustered.csv (requires cd-hit on PATH)
+    python prepare_clusters.py --run-cdhit -i geometric_features.csv -o geometric_features_clustered.csv
+
+    # Or manual steps:
+    python prepare_clusters.py --generate-fasta -i geometric_features.csv -o sequences.fasta
     # cd-hit -i sequences.fasta -o clusters -c 0.40 -n 2 -M 16000
-    
-    # Step 3: Parse clusters
-    python prepare_clusters.py --parse-clusters \
-        --clstr-file data/training_dataset/clusters.clstr \
-        --features-csv data/training_dataset/geometric_features.csv \
-        --output data/training_dataset/geometric_features_clustered.csv
+    python prepare_clusters.py --parse-clusters --clstr-file clusters.clstr -i geometric_features.csv -o geometric_features_clustered.csv
 """
 
 import argparse
+import shutil
+import subprocess
+import sys
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -36,17 +33,22 @@ def generate_fasta(features_csv: Path, output_fasta: Path) -> int:
     Convert features CSV to FASTA format for CD-HIT.
     
     Args:
-        features_csv: Path to geometric_features.csv
+        features_csv: Path to geometric_features.csv (must have peptide_id and sequence columns)
         output_fasta: Output FASTA file path
         
     Returns:
         Number of sequences written
     """
     df = pd.read_csv(features_csv)
+    if 'sequence' not in df.columns:
+        raise ValueError(
+            "CSV has no 'sequence' column. Use build_geometric_features with --results-log to include sequences."
+        )
+    id_col = 'peptide_id' if 'peptide_id' in df.columns else df.columns[0]
     
     with open(output_fasta, 'w') as f:
         for _, row in df.iterrows():
-            peptide_id = row['peptide_id']
+            peptide_id = row[id_col]
             sequence = row['sequence']
             f.write(f">{peptide_id}\n{sequence}\n")
     
@@ -108,13 +110,10 @@ def add_clusters_to_features(features_csv: Path, clstr_file: Path,
     unmapped = df['cluster_id'].isna().sum()
     if unmapped > 0:
         print(f"⚠️  {unmapped} sequences not found in cluster file")
-        # Assign to new clusters
-        max_cluster = df['cluster_id'].max()
         unmapped_mask = df['cluster_id'].isna()
-        df.loc[unmapped_mask, 'cluster_id'] = range(
-            int(max_cluster) + 1, 
-            int(max_cluster) + 1 + unmapped
-        )
+        max_cluster = df['cluster_id'].max()
+        start = int(max_cluster) + 1 if pd.notna(max_cluster) else 0
+        df.loc[unmapped_mask, 'cluster_id'] = range(start, start + unmapped)
     
     df['cluster_id'] = df['cluster_id'].astype(int)
     
@@ -139,8 +138,7 @@ def create_simple_clusters(features_csv: Path, output_csv: Path,
     
     Uses a greedy approach: for each unclustered sequence, create a new cluster
     and add all sequences with >threshold identity to it.
-    
-    This is slower than CD-HIT but works without external dependencies.
+    If the CSV has no 'sequence' column, assigns one cluster per row (no grouping).
     
     Args:
         features_csv: Input features CSV
@@ -153,6 +151,13 @@ def create_simple_clusters(features_csv: Path, output_csv: Path,
     from difflib import SequenceMatcher
     
     df = pd.read_csv(features_csv)
+    if 'sequence' not in df.columns:
+        print("⚠️  No 'sequence' column in CSV; assigning one cluster per row (no sequence-based grouping).")
+        df['cluster_id'] = np.arange(len(df))
+        df.to_csv(output_csv, index=False)
+        print(f"✅ Wrote {len(df)} rows with cluster_id to {output_csv}")
+        return df
+    
     sequences = df['sequence'].tolist()
     n = len(sequences)
     
@@ -205,6 +210,60 @@ def create_simple_clusters(features_csv: Path, output_csv: Path,
     return df
 
 
+def run_cdhit_pipeline(
+    features_csv: Path,
+    output_csv: Path,
+    identity: float = 0.40,
+    cdhit_cmd: str = "cd-hit",
+    word_size: int = 2,
+    memory_mb: int = 16000,
+    fallback_to_simple: bool = True,
+) -> pd.DataFrame:
+    """
+    Generate FASTA, run CD-HIT, parse .clstr, write geometric_features_clustered.csv.
+    If CD-HIT is not found and fallback_to_simple is True, uses create_simple_clusters instead.
+    """
+    def _cdhit_available(cmd: str) -> bool:
+        return bool(shutil.which(cmd)) or (Path(cmd).is_file() if cmd else False)
+
+    if not _cdhit_available(cdhit_cmd):
+        if fallback_to_simple:
+            print("CD-HIT not found; using built-in sequence clustering (--simple-clusters style).")
+            return create_simple_clusters(features_csv, output_csv, identity_threshold=0.80)
+        raise FileNotFoundError(
+            f"CD-HIT not found: {cdhit_cmd}. Install CD-HIT, pass --cdhit-path, or use --simple-clusters."
+        )
+
+    work_dir = output_csv.parent
+    work_dir.mkdir(parents=True, exist_ok=True)
+    fasta_path = work_dir / "sequences_cdhit.fasta"
+    cluster_stem = work_dir / "clusters"
+    clstr_path = Path(str(cluster_stem) + ".clstr")
+
+    print("Step 1: Generating FASTA for CD-HIT...")
+    generate_fasta(features_csv, fasta_path)
+
+    print("Step 2: Running CD-HIT...")
+    cmd = [
+        cdhit_cmd,
+        "-i", str(fasta_path),
+        "-o", str(cluster_stem),
+        "-c", str(identity),
+        "-n", str(word_size),
+        "-M", str(memory_mb),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
+        raise RuntimeError(f"CD-HIT failed with return code {result.returncode}")
+    if not clstr_path.exists():
+        raise FileNotFoundError(f"CD-HIT did not produce {clstr_path}")
+
+    print("Step 3: Parsing clusters and writing output...")
+    return add_clusters_to_features(features_csv, clstr_path, output_csv)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Prepare sequence clusters for training")
     
@@ -215,6 +274,8 @@ def main():
                         help='Parse CD-HIT output and add to features')
     parser.add_argument('--simple-clusters', action='store_true',
                         help='Create simple clusters without CD-HIT')
+    parser.add_argument('--run-cdhit', action='store_true',
+                        help='Generate FASTA, run CD-HIT, parse .clstr, write clustered CSV (all in one)')
     
     # Input/output
     parser.add_argument('--input', '-i', type=Path,
@@ -224,11 +285,24 @@ def main():
     parser.add_argument('--clstr-file', type=Path,
                         help='CD-HIT .clstr file (for --parse-clusters)')
     parser.add_argument('--identity', type=float, default=0.80,
-                        help='Sequence identity threshold (default: 0.80)')
+                        help='Sequence identity threshold for --simple-clusters (default: 0.80)')
+    parser.add_argument('--cdhit-path', type=str, default='cd-hit',
+                        help='Path to cd-hit executable (default: cd-hit from PATH)')
+    parser.add_argument('--cdhit-identity', type=float, default=0.40,
+                        help='CD-HIT -c threshold when using --run-cdhit (default: 0.40)')
     
     args = parser.parse_args()
     
-    if args.generate_fasta:
+    if args.run_cdhit:
+        if not args.input or not args.output:
+            parser.error("--run-cdhit requires --input and --output")
+        run_cdhit_pipeline(
+            args.input,
+            args.output,
+            identity=args.cdhit_identity,
+            cdhit_cmd=args.cdhit_path,
+        )
+    elif args.generate_fasta:
         if not args.input or not args.output:
             parser.error("--generate-fasta requires --input and --output")
         generate_fasta(args.input, args.output)
