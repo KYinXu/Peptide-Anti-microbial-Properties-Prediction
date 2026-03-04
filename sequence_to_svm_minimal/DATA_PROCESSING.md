@@ -12,12 +12,35 @@ Compact pipeline from sequence files to GNN/NN trainable data. All paths below a
 
 ---
 
+## 0. Optional: Clean FASTA data
+
+**Script:** `scripts/data_generation/clean_fasta_file.py`
+
+- Removes duplicate sequences from raw FASTA.
+- Optional filters: `--min-len`, `--max-len`, `--drop-empty-id`.
+- Controls duplicate retention: `--keep first` (default) or `last`.
+- Input: `--input raw_amps.fasta`. Output: `--output amps.fasta`.
+
+**Example:**
+
+```bash
+python scripts/data_generation/clean_fasta_file.py --input raw_amps.fasta --output amps.fasta --min-len 5 --max-len 200
+```
+
+---
+
 ## 1. Optional: FASTA → seqs
 
 **Script:** `scripts/data_generation/convert_fasta_to_svm.py`
 
 - Input: `--amp-fasta`, `--decoy-fasta`. Output: `--output-dir`/`seqs_AMP.txt`, `seqs_decoy.txt` (id, sequence).
 - Optional: `--max-decoys`, `--min-length`, `--max-length`, `--seed`.
+
+**Example:**
+
+```bash
+python scripts/data_generation/convert_fasta_to_svm.py --amp-fasta amps.fasta --decoy-fasta decoys.fasta --output-dir data/seqs --max-decoys 1000
+```
 
 ---
 
@@ -27,6 +50,12 @@ Compact pipeline from sequence files to GNN/NN trainable data. All paths below a
 
 - Args: `--amp-file`, `--decoy-file`, `--output` (directory).
 - **Output:** `{output}/AMP/*.pdb`, `{output}/DECOY/*.pdb`, `{output}/results_log.csv`. Use `--output` = a dir named e.g. `structures` so that GNN can use its parent as `pdb_dir` (see below).
+
+**Example:**
+
+```bash
+python models/run_esmfold_peptides.py --amp-file data/seqs/seqs_AMP.txt --decoy-file data/seqs/seqs_decoy.txt --output data
+```
 
 ---
 
@@ -38,6 +67,12 @@ Compact pipeline from sequence files to GNN/NN trainable data. All paths below a
 - Optional: `--svm-predictions`, `--qsar-descriptors` to merge SVM/12-descriptor columns (index must align with peptide_id suffix).
 - **Output:** `geometric_features.csv` (peptide_id, sequence, pdb_file, label, features). Main trainable table for NN and GNN.
 
+**Example:**
+
+```bash
+python scripts/data_generation/build_geometric_features.py --pdb-dir data/structures --output data/geometric_features.csv
+```
+
 ---
 
 ## 4. Optional: Clustering (for cluster-based CV)
@@ -47,6 +82,16 @@ Compact pipeline from sequence files to GNN/NN trainable data. All paths below a
 - **CD-HIT:** `--generate-fasta` (from geometric_features.csv) → run `cd-hit -i … -o clusters -c 0.40 -n 2 -M 16000` → `--parse-clusters` with `--clstr-file`, `--features-csv`, `--output` → `geometric_features_clustered.csv`.
 - **Simple:** `--simple-clusters --input … --output …` (no CD-HIT). Adds `cluster_id`.
 
+**Example:**
+
+```bash
+# Using simple clustering (built-in fallback)
+python nn_pipeline/prepare_clusters.py --simple-clusters --input data/geometric_features.csv --output data/geometric_features_clustered.csv
+
+# Or using CD-HIT directly (if installed)
+python nn_pipeline/prepare_clusters.py --run-cdhit --features-csv data/geometric_features.csv --output data/geometric_features_clustered.csv
+```
+
 ---
 
 ## 5. SVM path (sequences → descriptors → predictions)
@@ -55,14 +100,22 @@ Compact pipeline from sequence files to GNN/NN trainable data. All paths below a
 - **Seqs → descriptors + SVM:** `scripts/data_generation/run_sequence_svm.py` — `--seqs` (2-col: index, sequence), `--aaindex`, `--output-dir`, `--model-pkl`, `--scaler-csv`. Produces `descriptors.csv`, `descriptors_PREDICTIONS.csv` in `--output-dir`. Optional `--start`, `--stop`.
 - Use these CSVs in step 3 via `--svm-predictions` / `--qsar-descriptors` so geometric CSV has SVM/QSAR columns for NN pipeline.
 
+**Example:**
+
+```bash
+python scripts/data_generation/run_sequence_svm.py --seqs data/seqs/seqs_AMP.txt --aaindex data/aaindex.csv --output-dir data/svm_out --model-pkl models/svm_model.pkl --scaler-csv models/scaler.csv
+```
+
 ---
 
 ## Consumers
 
-| Consumer | CSV | PDB dir |
-|----------|-----|--------|
-| GNN (`scripts/run_gnn_training.py`) | geometric_features.csv or _clustered | Parent of dir containing `structures/AMP/` and `structures/DECOY/` |
-| NN / FeaturePipeline | geometric_features.csv (or _clustered) | — |
+
+| Consumer                            | CSV                                    | PDB dir                                                            |
+| ----------------------------------- | -------------------------------------- | ------------------------------------------------------------------ |
+| GNN (`scripts/run_gnn_training.py`) | geometric_features.csv or _clustered   | Parent of dir containing `structures/AMP/` and `structures/DECOY/` |
+| NN / FeaturePipeline                | geometric_features.csv (or _clustered) | —                                                                  |
+
 
 SVM/descriptor columns are optional; training works with geometric_features.csv only.
 
@@ -71,7 +124,8 @@ SVM/descriptor columns are optional; training works with geometric_features.csv 
 ## Flow
 
 ```
-FASTA/TXT → [convert_fasta_to_svm] → seqs_AMP.txt, seqs_decoy.txt
+FASTA → [clean_fasta_file] → Clean FASTA
+  → [convert_fasta_to_svm] → seqs_AMP.txt, seqs_decoy.txt
   → run_esmfold_peptides → {output}/AMP|DECOY/*.pdb, results_log.csv
   → build_geometric_features → geometric_features.csv
   → [prepare_clusters] → geometric_features_clustered.csv
@@ -85,3 +139,4 @@ FASTA/TXT → [convert_fasta_to_svm] → seqs_AMP.txt, seqs_decoy.txt
 - **CSV:** `peptide_id`, `label`; optional `pdb_file`, `cluster_id`, geometric columns.
 - **PDB resolve:** `pdb_dir`/`structures/AMP`, `structures/DECOY`, `structures`, or `pdb_dir` + `pdb_file` or `{peptide_id}.pdb`.
 - **Per PDB:** Cα + B-factor → nodes (26-dim); sequential + spatial edges (< 8 Å); `pos` = Cα; optional graph-level `geo_features` from CSV.
+

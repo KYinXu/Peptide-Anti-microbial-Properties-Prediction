@@ -16,4 +16,5 @@ sequence_to_svm_minimal/evaluation/
 sequence_to_svm_minimal/**/evaluation_plots/
 
 # Generated data files
-data/**/structures/
+**/data/**/structures/
+**/data/**/generated/

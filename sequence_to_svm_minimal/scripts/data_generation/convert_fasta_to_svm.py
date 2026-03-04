@@ -145,8 +145,8 @@ Examples:
     parser.add_argument(
         "--max-decoys",
         type=int,
-        default=300,
-        help="Subsample decoys to N (default: 300)",
+        default=10000,
+        help="Subsample decoys to N (default: 10,000)",
     )
     parser.add_argument(
         "--max-length",
