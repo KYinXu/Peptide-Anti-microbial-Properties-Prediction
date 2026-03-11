@@ -10,8 +10,9 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Output files (curves, metrics, plots, checkpoints from train/comparison runs)
-results/
-sequence_to_svm_minimal/results/
+**/results/gnn
+**/results/examples
+**/results/evaluation
 sequence_to_svm_minimal/evaluation/
 sequence_to_svm_minimal/**/evaluation_plots/
 
