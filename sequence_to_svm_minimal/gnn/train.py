@@ -274,6 +274,7 @@ def cross_validate(
     epochs: int = 100,
     lr: float = 1e-3,
     patience: int = 15,
+    class_weights: Optional[torch.Tensor] = None,
     verbose: bool = True
 ) -> Dict[str, List[float]]:
     """
@@ -288,6 +289,7 @@ def cross_validate(
         epochs: Max epochs per fold
         lr: Learning rate
         patience: Early stopping patience
+        class_weights: Optional class weights for imbalanced data
         verbose: Print progress
         
     Returns:
@@ -328,6 +330,7 @@ def cross_validate(
             epochs=epochs,
             lr=lr,
             patience=patience,
+            class_weights=class_weights,
             verbose=verbose
         )
         

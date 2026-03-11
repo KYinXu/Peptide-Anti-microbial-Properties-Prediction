@@ -146,10 +146,19 @@ def load_dataset(args) -> tuple:
     labels = np.where(raw_labels == 1, 1, 0)  # Convert -1 to 0, keep 1 as 1
     clusters = df['cluster_id'].values if has_clusters else None
     
-    return dataset, df, labels, clusters
+    # Compute inverse-frequency class weights for imbalanced data
+    n_samples = len(labels)
+    n_classes = len(np.unique(labels))
+    class_weights = torch.tensor(
+        [n_samples / (n_classes * np.sum(labels == c)) for c in range(n_classes)],
+        dtype=torch.float32
+    )
+    print(f"   Class weights: {dict(enumerate(class_weights.tolist()))}")
+    
+    return dataset, df, labels, clusters, class_weights
 
 
-def run_cluster_cv(args, dataset, labels, clusters, device):
+def run_cluster_cv(args, dataset, labels, clusters, device, class_weights):
     """Run cluster-based GroupKFold cross-validation."""
     print("\n" + "="*60)
     print(f"Protocol: Cluster-Based GroupKFold ({args.n_folds}-fold)")
@@ -201,6 +210,7 @@ def run_cluster_cv(args, dataset, labels, clusters, device):
         epochs=args.epochs,
         lr=args.lr,
         patience=args.patience,
+        class_weights=class_weights,
         verbose=True
     )
     
@@ -209,7 +219,7 @@ def run_cluster_cv(args, dataset, labels, clusters, device):
     return cv_results
 
 
-def run_pnas_evaluation(args, dataset, df, labels, device):
+def run_pnas_evaluation(args, dataset, df, labels, device, class_weights):
     """Run PNAS-style evaluation with blind test set."""
     print("\n" + "="*60)
     print(f"Protocol: PNAS-Style (15-round CV + {args.test_size*100:.0f}% Blind Test)")
@@ -283,6 +293,7 @@ def run_pnas_evaluation(args, dataset, df, labels, device):
             epochs=args.epochs,
             lr=args.lr,
             patience=args.patience,
+            class_weights=class_weights,
             verbose=False
         )
         
@@ -337,6 +348,7 @@ def run_pnas_evaluation(args, dataset, df, labels, device):
         epochs=args.epochs,
         lr=args.lr,
         patience=args.patience,
+        class_weights=class_weights,
         verbose=True
     )
     
@@ -377,11 +389,12 @@ def main():
     print(f"   Evaluation protocol: {args.eval_protocol}")
     
     # Load data
-    dataset, df, labels, clusters = load_dataset(args)
+    dataset, df, labels, clusters, class_weights = load_dataset(args)
+    class_weights = class_weights.to(device)
     
     # Run evaluation
     if args.eval_protocol == 'cluster_cv':
-        cv_results = run_cluster_cv(args, dataset, labels, clusters, device)
+        cv_results = run_cluster_cv(args, dataset, labels, clusters, device, class_weights)
         results = {
             'protocol': 'cluster_cv',
             'cv_results': {k: [float(v) for v in vals] for k, vals in cv_results.items()},
@@ -389,7 +402,7 @@ def main():
                           for k, v in cv_results.items()}
         }
     else:
-        cv_results, test_metrics, final_model = run_pnas_evaluation(args, dataset, df, labels, device)
+        cv_results, test_metrics, final_model = run_pnas_evaluation(args, dataset, df, labels, device, class_weights)
         results = {
             'protocol': 'pnas_style',
             'cv_results': {k: [float(v) for v in vals] for k, vals in cv_results.items()},
