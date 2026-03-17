@@ -197,6 +197,9 @@ Examples:
       --svm-predictions predictionsParameters/descriptors_PREDICTIONS.csv \\
       --qsar-descriptors predictionsParameters/descriptors.csv \\
       --output features.parquet
+
+  # Unlabeled dataset (no AMP/decoy distinction)
+  python build_geometric_features.py --pdb-dir structures/ --output features.csv --unlabeled
         """
     )
     
@@ -212,6 +215,8 @@ Examples:
                         help='Path to QSAR descriptors CSV')
     parser.add_argument('--save-feature-names', action='store_true',
                         help='Save feature names to JSON file')
+    parser.add_argument('--unlabeled', action='store_true',
+                        help='Unlabeled dataset: no AMP/decoy distinction; do not require or expect labels')
     
     args = parser.parse_args()
     
@@ -323,11 +328,14 @@ Examples:
     
     print(f"\n📁 Saved features to: {output_path}")
     print(f"   Shape: {df.shape[0]} samples × {df.shape[1]} columns")
-    if "label" not in df.columns:
-        print("   ⚠️  No 'label' column. Pass --results-log or use --pdb-dir so results_log.csv is found")
-        print("      (script checks pdb_dir and pdb_dir.parent for results_log.csv).")
-    elif df["label"].isna().all():
-        print("   ⚠️  All labels are NaN. PDB peptide_id (filename stem) may not match results_log IDs.")
+    if not args.unlabeled:
+        if "label" not in df.columns:
+            print("   ⚠️  No 'label' column. Pass --results-log or use --pdb-dir so results_log.csv is found")
+            print("      (script checks pdb_dir and pdb_dir.parent for results_log.csv).")
+        elif df["label"].isna().all():
+            print("   ⚠️  All labels are NaN. PDB peptide_id (filename stem) may not match results_log IDs.")
+    elif args.unlabeled:
+        print("   📋 Unlabeled mode: no label column required.")
     if "sequence" not in df.columns and results_lookup is None:
         print("   ⚠️  No 'sequence' column. results_log.csv is required for sequence and label.")
     
@@ -376,7 +384,7 @@ Examples:
         print(f"   Mean pLDDT: {df['plddt_mean'].mean():.3f} ± {df['plddt_mean'].std():.3f}")
     if 'fraction_helix' in df.columns:
         print(f"   Avg helix fraction: {df['fraction_helix'].mean():.3f}")
-    if 'label' in df.columns:
+    if 'label' in df.columns and not args.unlabeled:
         label_counts = df['label'].value_counts()
         print(f"   Label distribution: {dict(label_counts)}")
     

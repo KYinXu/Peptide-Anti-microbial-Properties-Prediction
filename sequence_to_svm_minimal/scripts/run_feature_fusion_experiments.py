@@ -15,6 +15,7 @@ B) PNAS-style blind test + 15-round shuffled CV
 
 Usage:
     python run_feature_fusion_experiments.py
+    python run_feature_fusion_experiments.py --geo-csv path/to/geo.csv --qsar-cache path/to/qsar.csv --results-dir path/to/out
 """
 
 import argparse
@@ -566,35 +567,47 @@ def run_pnas_cv(X: np.ndarray, y: np.ndarray,
 # ============================================================================
 
 def main():
+    base_dir = Path(__file__).parent
+    default_geo = base_dir / "data" / "training_dataset" / "geometric_features_clustered.csv"
+    default_qsar = base_dir / "data" / "training_dataset" / "qsar12_descriptors.csv"
+    default_results = base_dir / "results"
+
     parser = argparse.ArgumentParser(description="Feature Fusion Experiments")
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--n_folds', type=int, default=5, help='Folds for cluster CV')
     parser.add_argument('--pnas_rounds', type=int, default=15)
     parser.add_argument('--skip_qsar_compute', action='store_true',
                         help='Skip QSAR computation if already cached')
+    parser.add_argument('--geo-csv', type=str, default=None,
+                        help=f'Path to geometric features CSV (default: {default_geo})')
+    parser.add_argument('--qsar-cache', type=str, default=None,
+                        help=f'Path to QSAR-12 cache CSV; computed and saved here if missing (default: {default_qsar})')
+    parser.add_argument('--results-dir', type=str, default=None,
+                        help=f'Directory for results JSON/CSV and evaluation outputs (default: {default_results})')
     args = parser.parse_args()
-    
+
+    geo_csv = Path(args.geo_csv) if args.geo_csv else default_geo
+    qsar_cache = Path(args.qsar_cache) if args.qsar_cache else default_qsar
+    results_dir = Path(args.results_dir) if args.results_dir else default_results
+
     set_seed(args.seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+
     print("\n" + "="*80)
     print("  Feature Fusion Experiments: AMP vs DECOY Classification")
     print("="*80)
     print(f"\n🖥️  Device: {device}")
     if device.type == 'cuda':
         print(f"   GPU: {torch.cuda.get_device_name(0)}")
-    
+    print(f"\n📂 Paths: geo={geo_csv}, qsar_cache={qsar_cache}, results={results_dir}")
+
     # ========================================================================
     # Load Data
     # ========================================================================
     print("\n" + "-"*80)
     print("  Loading Data")
     print("-"*80)
-    
-    base_dir = Path(__file__).parent
-    geo_csv = base_dir / "data" / "training_dataset" / "geometric_features_clustered.csv"
-    qsar_cache = base_dir / "data" / "training_dataset" / "qsar12_descriptors.csv"
-    
+
     # Load geometric features
     geo_df = pd.read_csv(geo_csv)
     print(f"\n📂 Geometric features: {geo_csv.name}")
@@ -611,6 +624,7 @@ def main():
     else:
         print(f"\n🔧 Computing QSAR-12 descriptors...")
         qsar_df = compute_qsar12_descriptors(sequences, peptide_ids)
+        qsar_cache.parent.mkdir(parents=True, exist_ok=True)
         qsar_df.to_csv(qsar_cache, index=False)
         print(f"   Cached to: {qsar_cache}")
     
@@ -672,7 +686,6 @@ def main():
         'pnas_cv': {},
         'pnas_blind': {}
     }
-    results_dir = Path(__file__).parent / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
     evaluation_dir = results_dir / "evaluation"
     
@@ -748,9 +761,6 @@ def main():
     print("\n" + "-"*80)
     print("  Saving Results")
     print("-"*80)
-    
-    results_dir = base_dir / "results"
-    results_dir.mkdir(exist_ok=True)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     

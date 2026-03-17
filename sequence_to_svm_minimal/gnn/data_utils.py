@@ -364,7 +364,7 @@ class PeptideGraphDataset(Dataset):
         
         # Check multiple possible locations
         pdb_path = None
-        for subdir in ['structures/AMP', 'structures/DECOY', 'structures', '']:
+        for subdir in ['structures/AMP', 'structures/DECOY', 'structures/sequences', 'structures', '']:
             candidate = self.pdb_dir / subdir / pdb_file
             if candidate.exists():
                 pdb_path = candidate

@@ -161,6 +161,9 @@ Examples:
 
   # Reset and start fresh
   python run_esmfold_peptides.py --output structures/ --reset
+
+  # Unlabeled dataset (single file; PDBs in sequences/, IDs SEQ_1, SEQ_2, ..., label=0)
+  python run_esmfold_peptides.py --amp-file data/test_seqs.txt --output structures/ --unlabeled
         """
     )
     
@@ -187,6 +190,8 @@ Examples:
                         help='Only process AMP sequences')
     parser.add_argument('--decoy-only', action='store_true',
                         help='Only process decoy sequences')
+    parser.add_argument('--unlabeled', action='store_true',
+                        help='Unlabeled dataset: single sequence file, no AMP/decoy; PDBs in sequences/, IDs SEQ_N, label=0 in results_log')
     
     args = parser.parse_args()
     
@@ -206,12 +211,16 @@ Examples:
             print(f"   Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
     
     output_dir = Path(args.output)
-    amp_dir = output_dir / "AMP"
-    decoy_dir = output_dir / "DECOY"
-    
-    output_dir.mkdir(parents=True, exist_ok=True)
-    amp_dir.mkdir(exist_ok=True)
-    decoy_dir.mkdir(exist_ok=True)
+    if args.unlabeled:
+        sequences_dir = output_dir / "sequences"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        sequences_dir.mkdir(exist_ok=True)
+    else:
+        amp_dir = output_dir / "AMP"
+        decoy_dir = output_dir / "DECOY"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        amp_dir.mkdir(exist_ok=True)
+        decoy_dir.mkdir(exist_ok=True)
     
     checkpoint_file = output_dir / "checkpoint.json"
     
@@ -228,25 +237,34 @@ Examples:
     
     all_sequences = []
     
-    if not args.decoy_only:
+    if args.unlabeled:
         if os.path.exists(args.amp_file):
-            amp_seqs = parse_sequence_file(args.amp_file, label=1, prefix="AMP")
-            all_sequences.extend(amp_seqs)
-            print(f"✅ AMP sequences loaded: {len(amp_seqs)}")
+            seqs = parse_sequence_file(args.amp_file, label=0, prefix="SEQ")
+            all_sequences.extend(seqs)
+            print(f"✅ Unlabeled sequences loaded: {len(seqs)} (no class distinction)")
         else:
-            print(f"❌ AMP file not found: {args.amp_file}")
-            if not args.decoy_only:
-                sys.exit(1)
-    
-    if not args.amp_only:
-        if os.path.exists(args.decoy_file):
-            decoy_seqs = parse_sequence_file(args.decoy_file, label=-1, prefix="DECOY")
-            all_sequences.extend(decoy_seqs)
-            print(f"✅ Decoy sequences loaded: {len(decoy_seqs)}")
-        else:
-            print(f"❌ Decoy file not found: {args.decoy_file}")
-            if not args.amp_only:
-                sys.exit(1)
+            print(f"❌ Sequence file not found: {args.amp_file}")
+            sys.exit(1)
+    else:
+        if not args.decoy_only:
+            if os.path.exists(args.amp_file):
+                amp_seqs = parse_sequence_file(args.amp_file, label=1, prefix="AMP")
+                all_sequences.extend(amp_seqs)
+                print(f"✅ AMP sequences loaded: {len(amp_seqs)}")
+            else:
+                print(f"❌ AMP file not found: {args.amp_file}")
+                if not args.decoy_only:
+                    sys.exit(1)
+        
+        if not args.amp_only:
+            if os.path.exists(args.decoy_file):
+                decoy_seqs = parse_sequence_file(args.decoy_file, label=-1, prefix="DECOY")
+                all_sequences.extend(decoy_seqs)
+                print(f"✅ Decoy sequences loaded: {len(decoy_seqs)}")
+            else:
+                print(f"❌ Decoy file not found: {args.decoy_file}")
+                if not args.amp_only:
+                    sys.exit(1)
     
     print(f"   Total sequences: {len(all_sequences)}")
     
@@ -282,7 +300,10 @@ Examples:
         pbar = tqdm(sequences_to_process, desc="Folding", unit="seq")
         
         for unique_id, orig_idx, seq, label in pbar:
-            if label == 1:
+            if args.unlabeled:
+                pdb_subdir = sequences_dir
+                class_name = "seq"
+            elif label == 1:
                 pdb_subdir = amp_dir
                 class_name = "AMP"
             else:
@@ -313,6 +334,7 @@ Examples:
                     pdb_file = pdb_subdir / f"{unique_id}.pdb"
                     with open(pdb_file, 'w') as f:
                         f.write(pdb_string)
+                    pdb_file_rel = str(pdb_file.relative_to(output_dir))
                     
                     result = {
                         'unique_id': unique_id,
@@ -321,13 +343,15 @@ Examples:
                         'length': len(seq),
                         'label': label,
                         'status': 'success',
-                        'pdb_file': str(pdb_file),
+                        'pdb_file': pdb_file_rel,
                         'time_seconds': round(elapsed, 2),
                         'timestamp': datetime.now().isoformat()
                     }
                     
                     checkpoint['completed_ids'].append(unique_id)
-                    if label == 1:
+                    if args.unlabeled:
+                        checkpoint['sequences_completed'] = checkpoint.get('sequences_completed', 0) + 1
+                    elif label == 1:
                         checkpoint['amp_completed'] = checkpoint.get('amp_completed', 0) + 1
                     else:
                         checkpoint['decoy_completed'] = checkpoint.get('decoy_completed', 0) + 1
@@ -387,8 +411,11 @@ Examples:
     print(f"   Total time: {timedelta(seconds=int(total_time))}")
     print(f"\n   Output structure:")
     print(f"   ├── {output_dir}/")
-    print(f"   │   ├── AMP/           ({checkpoint.get('amp_completed', 0)} structures)")
-    print(f"   │   ├── DECOY/         ({checkpoint.get('decoy_completed', 0)} structures)")
+    if args.unlabeled:
+        print(f"   │   ├── sequences/     ({checkpoint.get('sequences_completed', 0)} structures)")
+    else:
+        print(f"   │   ├── AMP/           ({checkpoint.get('amp_completed', 0)} structures)")
+        print(f"   │   ├── DECOY/         ({checkpoint.get('decoy_completed', 0)} structures)")
     print(f"   │   ├── results_log.csv")
     print(f"   │   └── checkpoint.json")
     print()

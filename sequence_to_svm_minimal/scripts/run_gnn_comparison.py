@@ -10,6 +10,7 @@ Compares GCN, GAT, and EGNN architectures with different feature combinations:
 Prints results side-by-side for comparison with MLP/SVM baselines.
 """
 
+import argparse
 import os
 import sys
 import warnings
@@ -40,9 +41,9 @@ from torch_geometric.loader import DataLoader
 # =============================================================================
 
 CONFIG = {
-    'csv_path': 'data/training_dataset/geometric_features_clustered.csv',
-    'pdb_dir': 'data/training_dataset',
-    'qsar_csv': 'data/training_dataset/qsar12_descriptors.csv',
+    'csv_path': 'data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/geometric_features_clustered.csv',
+    'pdb_dir': 'data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced',
+    'qsar_csv': 'data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/qsar12_descriptors.csv',
     'seed': 42,
     'n_folds': 5,
     'epochs': 500,
@@ -192,7 +193,7 @@ class CustomPeptideDataset:
         return data
 
 
-def run_single_experiment(arch, feature_name, feature_config, all_data, labels, clusters, device, config, curves_base_dir):
+def run_single_experiment(arch, feature_name, feature_config, all_data, labels, clusters, device, config, curves_base_dir, save_checkpoints=False):
     """Run a single experiment configuration and save training curves."""
     
     geo_dim = feature_config['geo_dim']
@@ -201,6 +202,8 @@ def run_single_experiment(arch, feature_name, feature_config, all_data, labels, 
     model_name = f"{arch.upper()}_{feature_name.replace('+', '_plus_')}"
     curves_dir = Path(curves_base_dir) / model_name
     curves_dir.mkdir(parents=True, exist_ok=True)
+    if save_checkpoints:
+        (curves_dir / "checkpoints").mkdir(exist_ok=True)
     
     # Model factory
     def model_fn():
@@ -292,6 +295,10 @@ def run_single_experiment(arch, feature_name, feature_config, all_data, labels, 
         for metric in cv_results:
             cv_results[metric].append(best_metrics.get(metric, 0.0))
         
+        if save_checkpoints:
+            ckpt_path = curves_dir / "checkpoints" / f"fold_{fold+1}.pt"
+            torch.save(model.state_dict(), ckpt_path)
+        
         print(f"      Fold {fold+1}: AUC={best_metrics['auc_roc']:.4f}, F1={best_metrics['f1']:.4f}")
     
     # Save summary for this model
@@ -323,7 +330,16 @@ def run_single_experiment(arch, feature_name, feature_config, all_data, labels, 
     return cv_results
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='Compare GCN, GAT, and EGNN architectures')
+    parser.add_argument('--save_checkpoints', action='store_true',
+                        help='Save a .pt checkpoint for each fold of each model (under curves/<model>/checkpoints/)')
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+    
     print("="*80)
     print("GNN Architecture Comparison: GCN vs GAT vs EGNN")
     print("="*80)
@@ -342,6 +358,7 @@ def main():
     print(f"   Hidden channels: {CONFIG['hidden_channels']}")
     print(f"   Num layers: {CONFIG['num_layers']}")
     print(f"   CV folds: {CONFIG['n_folds']}")
+    print(f"   Save checkpoints: {args.save_checkpoints}")
     
     # Load data
     print("\n" + "-"*80)
@@ -407,7 +424,8 @@ def main():
             cv_results = run_single_experiment(
                 arch, feature_name, feature_config,
                 all_data, labels, clusters, device, CONFIG,
-                curves_base_dir
+                curves_base_dir,
+                save_checkpoints=args.save_checkpoints
             )
             
             # Store results
@@ -477,6 +495,8 @@ MLP (Combined-36)          0.9908 ± 0.0040    0.9453 ± 0.0243    0.8946 ± 0.0
         json.dump(results_dict, f, indent=2)
     print(f"\n💾 Results saved to: {json_path}")
     print(f"📁 Training curves saved to: {curves_base_dir}")
+    if args.save_checkpoints:
+        print(f"📁 Model checkpoints saved under: {curves_base_dir}/<model_name>/checkpoints/")
     
     print("\n✅ Comparison complete!")
 
