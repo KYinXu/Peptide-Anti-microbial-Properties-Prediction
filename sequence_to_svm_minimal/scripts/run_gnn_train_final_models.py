@@ -44,6 +44,7 @@ CONFIG = {
 FEATURE_CONFIGS = {
     "Graph-only": {"use_geo": False, "use_qsar": False, "geo_dim": 0},
     "Graph+Geo20": {"use_geo": True, "use_qsar": False, "geo_dim": 20},
+    "Graph+QSAR12": {"use_geo": False, "use_qsar": True, "geo_dim": 12},
     "Graph+Combined32": {"use_geo": True, "use_qsar": True, "geo_dim": 32},
 }
 
@@ -246,6 +247,17 @@ def parse_args():
     ap.add_argument("--qsar_csv", type=str, default=CONFIG["qsar_csv"])
     ap.add_argument("--architectures", type=str, nargs="+", default=ARCHITECTURES, choices=ARCHITECTURES)
     ap.add_argument("--feature_sets", type=str, nargs="+", default=list(FEATURE_CONFIGS.keys()), choices=list(FEATURE_CONFIGS.keys()))
+    ap.add_argument(
+        "--models",
+        type=str,
+        nargs="+",
+        default=None,
+        help=(
+            "Optional explicit model selections as ARCH:FEATURE (e.g. "
+            "gat:Graph-only gat:Graph+QSAR12). If set, --architectures and "
+            "--feature_sets are ignored."
+        ),
+    )
     ap.add_argument("--epochs", type=int, default=CONFIG["epochs"])
     ap.add_argument("--batch_size", type=int, default=CONFIG["batch_size"])
     ap.add_argument("--lr", type=float, default=CONFIG["lr"])
@@ -283,27 +295,64 @@ def main():
 
     summary = {"timestamp": datetime.now().isoformat(), "models": []}
 
-    for feature_name in args.feature_sets:
+    selected_pairs = []
+    if args.models:
+        for item in args.models:
+            if ":" not in item:
+                raise ValueError(
+                    f"Invalid --models entry '{item}'. Expected format ARCH:FEATURE "
+                    f"(e.g. gat:Graph-only)."
+                )
+            arch, feature_name = item.split(":", 1)
+            arch = arch.strip().lower()
+            feature_name = feature_name.strip()
+
+            if arch not in ARCHITECTURES:
+                raise ValueError(
+                    f"Unknown architecture '{arch}' in --models. "
+                    f"Choose from: {ARCHITECTURES}"
+                )
+            if feature_name not in FEATURE_CONFIGS:
+                raise ValueError(
+                    f"Unknown feature set '{feature_name}' in --models. "
+                    f"Choose from: {list(FEATURE_CONFIGS.keys())}"
+                )
+            selected_pairs.append((arch, feature_name))
+    else:
+        for feature_name in args.feature_sets:
+            for arch in args.architectures:
+                selected_pairs.append((arch, feature_name))
+
+    # Keep output deterministic when duplicates are provided:
+    # run once per unique pair while preserving first-seen order.
+    unique_pairs = []
+    seen = set()
+    for pair in selected_pairs:
+        if pair in seen:
+            continue
+        seen.add(pair)
+        unique_pairs.append(pair)
+
+    for arch, feature_name in unique_pairs:
         f_cfg = FEATURE_CONFIGS[feature_name]
-        for arch in args.architectures:
-            ckpt_path, metrics = train_single_model(
-                arch=arch,
-                feature_name=feature_name,
-                feature_cfg=f_cfg,
-                df=merged_df,
-                qsar_cols=qsar_cols,
-                args=args,
-                device=device,
-                out_dir=out_dir,
-            )
-            summary["models"].append(
-                {
-                    "architecture": arch,
-                    "feature_set": feature_name,
-                    "checkpoint": ckpt_path,
-                    "metrics": {k: float(v) for k, v in metrics.items()},
-                }
-            )
+        ckpt_path, metrics = train_single_model(
+            arch=arch,
+            feature_name=feature_name,
+            feature_cfg=f_cfg,
+            df=merged_df,
+            qsar_cols=qsar_cols,
+            args=args,
+            device=device,
+            out_dir=out_dir,
+        )
+        summary["models"].append(
+            {
+                "architecture": arch,
+                "feature_set": feature_name,
+                "checkpoint": ckpt_path,
+                "metrics": {k: float(v) for k, v in metrics.items()},
+            }
+        )
 
     summary_path = out_dir / "ready_models_summary.json"
     with open(summary_path, "w") as f:

@@ -24,24 +24,85 @@ def _format_float(x, ndigits: int = 3):
         return str(x)
 
 
-def _summarize_models(df: pd.DataFrame, models: list[str]) -> None:
+def _metric_col_for_model(df: pd.DataFrame, model: str, metric_mode: str) -> str | None:
+    if metric_mode == "prob":
+        col = f"{model}_prob_AMP"
+        if col in df.columns:
+            return col
+        fallback = f"{model}_confidence"
+        return fallback if fallback in df.columns else None
+
+    if metric_mode == "confidence":
+        col = f"{model}_confidence"
+        if col in df.columns:
+            return col
+        fallback = f"{model}_prob_AMP"
+        return fallback if fallback in df.columns else None
+
+    if metric_mode == "logit_margin":
+        col = f"{model}_logit_margin"
+        return col if col in df.columns else None
+
+    if metric_mode == "svm_distance":
+        if model == "SVM":
+            col = "SVM_distance"
+            return col if col in df.columns else None
+        return None
+
+    if metric_mode == "distance_like":
+        if model == "SVM":
+            col = "SVM_distance"
+            return col if col in df.columns else None
+        col = f"{model}_logit_margin"
+        return col if col in df.columns else None
+
+    return None
+
+
+def _metric_label(metric_mode: str) -> str:
+    if metric_mode == "prob":
+        return "P(AMP)"
+    if metric_mode == "confidence":
+        return "Confidence"
+    if metric_mode == "logit_margin":
+        return "Logit margin"
+    if metric_mode == "svm_distance":
+        return "SVM hyperplane distance"
+    if metric_mode == "distance_like":
+        return "Distance-like (SVM distance / GNN logit margin)"
+    return "Metric"
+
+
+def _print_metric_legend(models: list[str], df: pd.DataFrame, metric_mode: str) -> None:
+    print("\nLegend")
+    print("- ✓ = predicted AMP (1), · = predicted non-AMP (0)")
+    print(f"- Displayed numeric value = {_metric_label(metric_mode)}")
+    if metric_mode == "distance_like":
+        print("- Side-by-side mapping: SVM uses decision_function distance; GNN models use logit_margin")
+    for m in models:
+        col = _metric_col_for_model(df, m, metric_mode)
+        label = col if col is not None else "N/A for this model"
+        print(f"- {m}: {label}")
+
+
+def _summarize_models(df: pd.DataFrame, models: list[str], metric_mode: str) -> None:
     print("\nSummary statistics")
-    header = f"{'Model':<18}{'N':>8}{'AMP':>8}{'%AMP':>8}{'Mean conf':>12}"
+    header = f"{'Model':<18}{'N':>8}{'AMP':>8}{'%AMP':>8}{('Mean ' + _metric_label(metric_mode)):>18}"
     print("-" * len(header))
     print(header)
     print("-" * len(header))
     for m in models:
         pred_col = f"{m}_pred"
-        conf_col = f"{m}_confidence" if f"{m}_confidence" in df.columns else f"{m}_prob_AMP"
+        metric_col = _metric_col_for_model(df, m, metric_mode)
         if pred_col not in df.columns:
             continue
         pred = df[pred_col].dropna().astype(int)
         n = int(pred.shape[0])
         n_amp = int((pred == 1).sum())
         pct = (100.0 * n_amp / n) if n else 0.0
-        conf = df.loc[pred.index, conf_col] if conf_col in df.columns else None
-        mean_conf = float(np.nanmean(conf.values.astype(float))) if conf is not None else float("nan")
-        print(f"{m:<18}{n:>8d}{n_amp:>8d}{pct:>7.1f}%{mean_conf:>12.4f}")
+        metric_vals = df.loc[pred.index, metric_col] if metric_col in df.columns else None
+        mean_metric = float(np.nanmean(metric_vals.values.astype(float))) if metric_vals is not None else float("nan")
+        print(f"{m:<18}{n:>8d}{n_amp:>8d}{pct:>7.1f}%{mean_metric:>18.4f}")
 
 
 def _pairwise_agreement(df: pd.DataFrame, models: list[str]) -> None:
@@ -95,6 +156,13 @@ def main():
         help=f"Path to model comparison CSV (default: {default_csv})",
     )
     ap.add_argument("--show", type=int, default=10, help="Number of rows to display (default: 10)")
+    ap.add_argument(
+        "--metric",
+        type=str,
+        default="prob",
+        choices=["prob", "confidence", "logit_margin", "svm_distance", "distance_like"],
+        help="Numeric metric to display in model cells",
+    )
     args = ap.parse_args()
 
     csv_path = Path(args.csv)
@@ -124,11 +192,12 @@ def main():
         models.append(base)
 
     # Stable, user-friendly ordering and labels
-    display_order = ["SVM", "Graph-only", "Graph+Geo20", "Graph+Combined32"]
+    display_order = ["SVM", "Graph-only", "Graph+Geo20", "Graph+QSAR12", "Graph+Combined32"]
     label_map = {
         "SVM": "SVM",
         "Graph-only": "GNN Graph-only",
         "Graph+Geo20": "GNN Geo",
+        "Graph+QSAR12": "GNN QSAR",
         "Graph+Combined32": "GNN QSAR+Geo",
     }
     ordered_models = [m for m in display_order if m in models]
@@ -166,16 +235,16 @@ def main():
 
         for m in ordered_models:
             pred_col = f"{m}_pred"
-            conf_col = f"{m}_confidence" if f"{m}_confidence" in df.columns else f"{m}_prob_AMP"
+            metric_col = _metric_col_for_model(df, m, args.metric)
 
             pred = row[pred_col] if pred_col in df.columns else None
-            conf = row[conf_col] if conf_col in df.columns else None
+            metric_val = row[metric_col] if metric_col in df.columns else None
 
             if pd.isna(pred):
                 cell = ""
             else:
                 mark = "✓" if int(pred) == 1 else "·"
-                conf_str = _format_float(conf, 2) if conf is not None and pd.notna(conf) else ""
+                conf_str = _format_float(metric_val, 2) if metric_val is not None and pd.notna(metric_val) else ""
                 # Confidence first, checkmark/dot to the right
                 if conf_str:
                     cell = f"{conf_str}{mark}"
@@ -193,7 +262,8 @@ def main():
         print(f"Total peptides shown: {len(df)}")
     print("=" * len(header_line))
 
-    _summarize_models(df, ordered_models)
+    _print_metric_legend(ordered_models, df, args.metric)
+    _summarize_models(df, ordered_models, args.metric)
     _pairwise_agreement(df, ordered_models)
 
 

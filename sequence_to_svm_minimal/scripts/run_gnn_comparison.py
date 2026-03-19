@@ -61,6 +61,7 @@ CONFIG = {
 FEATURE_CONFIGS = {
     'Graph-only': {'use_geo': False, 'use_qsar': False, 'geo_dim': 0},
     'Graph+Geo20': {'use_geo': True, 'use_qsar': False, 'geo_dim': 20},
+    'Graph+QSAR12': {'use_geo': False, 'use_qsar': True, 'geo_dim': 12},
     'Graph+Combined32': {'use_geo': True, 'use_qsar': True, 'geo_dim': 32},
 }
 

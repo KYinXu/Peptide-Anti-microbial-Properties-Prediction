@@ -29,6 +29,7 @@ CONFIG = {
     'architecture': 'gat',  # 'gcn', 'gat', or 'egnn'
     'graph_only_pt': str(_ROOT / 'results/gnn/alpha_and_beta_combined/ready_models/gat_ready_Graph-only.pt'),
     'graph_geo_pt': str(_ROOT / 'results/gnn/alpha_and_beta_combined/ready_models/gat_ready_Graph_plus_Geo20.pt'),
+    'graph_qsar_pt': str(_ROOT / 'results/gnn/alpha_and_beta_combined/ready_models/gat_ready_Graph_plus_QSAR12.pt'),
     'graph_combined_pt': str(_ROOT / 'results/gnn/alpha_and_beta_combined/ready_models/gat_ready_Graph_plus_Combined32.pt'),
     'gnn_hidden': 64,
     'gnn_layers': 3,
@@ -40,12 +41,13 @@ CONFIG = {
 FEATURE_SETS = [
     ('Graph-only', 'graph_only_pt'),
     ('Graph+Geo20', 'graph_geo_pt'),
+    ('Graph+QSAR12', 'graph_qsar_pt'),
     ('Graph+Combined32', 'graph_combined_pt'),
 ]
 
 
 def _load_svm_predictions(descriptor_csv: str, z_file: str, pkl_path: str):
-    """Load SVM, Z-score descriptors, return (ids, preds, prob_amp)."""
+    """Load SVM, Z-score descriptors, return (ids, preds, prob_amp, distance)."""
     try:
         import joblib
     except ImportError:
@@ -78,9 +80,13 @@ def _load_svm_predictions(descriptor_csv: str, z_file: str, pkl_path: str):
         prob_amp = proba[:, pos_idx].ravel()
     else:
         prob_amp = np.where(raw_preds == pos_class, 1.0, 0.0)
+    if hasattr(clf, 'decision_function'):
+        distance = np.asarray(clf.decision_function(X)).ravel()
+    else:
+        distance = np.full_like(prob_amp, np.nan, dtype=np.float64)
 
     preds = (raw_preds == pos_class).astype(int)
-    return ids, preds, prob_amp
+    return ids, preds, prob_amp, distance
 
 
 def _run_gnn_predictions(csv_path: str,
@@ -93,7 +99,7 @@ def _run_gnn_predictions(csv_path: str,
                          batch_size: int,
                          use_geometric_features: bool,
                          geometric_feature_cols=None):
-    """Run one GNN checkpoint and return (ids, preds, prob_amp)."""
+    """Run one GNN checkpoint and return ids/preds/prob/logits/margin."""
     import torch
     import torch.nn.functional as F
     from torch_geometric.loader import DataLoader
@@ -132,19 +138,31 @@ def _run_gnn_predictions(csv_path: str,
     model.eval()
 
     all_probs = []
+    all_logit_amp = []
+    all_logit_nonamp = []
+    all_logit_margin = []
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(device)
             out = model(batch)
+            logit_nonamp = out[:, 0].cpu().numpy()
+            logit_amp = out[:, 1].cpu().numpy()
+            logit_margin = (out[:, 1] - out[:, 0]).cpu().numpy()
             probs = F.softmax(out, dim=1)[:, 1].cpu().numpy()
             all_probs.extend(probs)
+            all_logit_amp.extend(logit_amp)
+            all_logit_nonamp.extend(logit_nonamp)
+            all_logit_margin.extend(logit_margin)
     probs = np.array(all_probs)
+    logit_amp = np.array(all_logit_amp)
+    logit_nonamp = np.array(all_logit_nonamp)
+    logit_margin = np.array(all_logit_margin)
     preds = (probs >= 0.5).astype(int)
 
     df = dataset.df
     id_col = 'peptide_id' if 'peptide_id' in df.columns else ('name' if 'name' in df.columns else None)
     ids = df[id_col].astype(str).tolist() if id_col else [str(i) for i in range(len(df))]
-    return ids, preds, probs
+    return ids, preds, probs, logit_amp, logit_nonamp, logit_margin
 
 
 def _confidence(prob_amp: np.ndarray) -> np.ndarray:
@@ -259,6 +277,8 @@ def main():
                     help='Checkpoint for Graph-only model')
     ap.add_argument('--graph_geo_pt', type=str, default=CONFIG['graph_geo_pt'],
                     help='Checkpoint for Graph+Geo20 model')
+    ap.add_argument('--graph_qsar_pt', type=str, default=CONFIG['graph_qsar_pt'],
+                    help='Checkpoint for Graph+QSAR12 model')
     ap.add_argument('--graph_combined_pt', type=str, default=CONFIG['graph_combined_pt'],
                     help='Checkpoint for Graph+Combined32 model')
     ap.add_argument('--gnn_hidden', type=int, default=CONFIG['gnn_hidden'])
@@ -268,6 +288,10 @@ def main():
     ap.add_argument('--output_csv', type=str, default=CONFIG['output_csv'], help='Save combined predictions CSV')
     ap.add_argument('--only_amp', action='store_true',
                     help='If set, save only peptides predicted as AMP (1) by at least one model')
+    ap.add_argument('--store_svm_distance', action='store_true',
+                    help='If set, store SVM decision_function distance in output CSV')
+    ap.add_argument('--store_gnn_logits', action='store_true',
+                    help='If set, store GNN raw logits and logit margin in output CSV')
     args = ap.parse_args()
 
     geo_df = pd.read_csv(args.geo_csv)
@@ -280,17 +304,24 @@ def main():
 
     if args.svm_pkl and args.svm_descriptor_csv and args.svm_z_file:
         print("Running SVM...")
-        ids, preds, prob_amp = _load_svm_predictions(
+        ids, preds, prob_amp, distance = _load_svm_predictions(
             args.svm_descriptor_csv, args.svm_z_file, args.svm_pkl
         )
-        results['SVM'] = {'ids': ids, 'pred': preds, 'prob_amp': prob_amp, 'confidence': _confidence(prob_amp)}
+        results['SVM'] = {
+            'ids': ids,
+            'pred': preds,
+            'prob_amp': prob_amp,
+            'confidence': _confidence(prob_amp),
+            'distance': distance,
+        }
         pred_frames['SVM'] = pd.DataFrame({'pred': preds, 'prob_amp': prob_amp, 'confidence': results['SVM']['confidence']}, index=ids)
 
     feature_models = [
         # (name, checkpoint_path, use_geometric_features_flag, feature_mode)
-        # feature_mode: 'graph', 'geo20', or 'combined32'
+        # feature_mode: 'graph', 'geo20', 'qsar12', or 'combined32'
         ('Graph-only', args.graph_only_pt, False, 'graph'),
         ('Graph+Geo20', args.graph_geo_pt, True, 'geo20'),
+        ('Graph+QSAR12', args.graph_qsar_pt, True, 'qsar12'),
         ('Graph+Combined32', args.graph_combined_pt, True, 'combined32'),
     ]
 
@@ -339,14 +370,41 @@ def main():
         if feat_mode == 'combined32' and combined_csv_path is not None and combined_feature_cols is not None:
             run_csv = str(combined_csv_path)
             geom_cols = combined_feature_cols
+        elif feat_mode == 'qsar12' and combined_csv_path is not None:
+            run_csv = str(combined_csv_path)
+            geom_cols = [
+                "netCharge",
+                "FC",
+                "LW",
+                "DP",
+                "NK",
+                "AE",
+                "pcMK",
+                "_SolventAccessibilityD1025",
+                "tau2_GRAR740104",
+                "tau4_GRAR740104",
+                "QSO50_GRAR740104",
+                "QSO29_GRAR740104",
+            ]
+        elif feat_mode in ('combined32', 'qsar12'):
+            print(f"Skipping {name}: requires --qsar_csv with QSAR-12 descriptors")
+            continue
 
-        ids, preds, prob_amp = _run_gnn_predictions(
+        ids, preds, prob_amp, logit_amp, logit_nonamp, logit_margin = _run_gnn_predictions(
             run_csv, args.pdb_dir, path, args.architecture,
             args.gnn_hidden, args.gnn_layers, args.gnn_pooling,
             args.batch_size, use_geometric_features=use_geo,
             geometric_feature_cols=geom_cols
         )
-        results[name] = {'ids': ids, 'pred': preds, 'prob_amp': prob_amp, 'confidence': _confidence(prob_amp)}
+        results[name] = {
+            'ids': ids,
+            'pred': preds,
+            'prob_amp': prob_amp,
+            'confidence': _confidence(prob_amp),
+            'logit_amp': logit_amp,
+            'logit_nonamp': logit_nonamp,
+            'logit_margin': logit_margin,
+        }
         pred_frames[name] = pd.DataFrame({'pred': preds, 'prob_amp': prob_amp, 'confidence': results[name]['confidence']}, index=ids)
 
     if not results:
@@ -370,10 +428,22 @@ def main():
                 row[f'{m}_pred'] = int(r['pred'][i])
                 row[f'{m}_confidence'] = float(r['confidence'][i])
                 row[f'{m}_prob_AMP'] = float(r['prob_amp'][i])
+                if args.store_svm_distance and m == 'SVM':
+                    row[f'{m}_distance'] = float(r['distance'][i]) if np.isfinite(r['distance'][i]) else None
+                if args.store_gnn_logits and m != 'SVM':
+                    row[f'{m}_logit_AMP'] = float(r['logit_amp'][i])
+                    row[f'{m}_logit_nonAMP'] = float(r['logit_nonamp'][i])
+                    row[f'{m}_logit_margin'] = float(r['logit_margin'][i])
             else:
                 row[f'{m}_pred'] = None
                 row[f'{m}_confidence'] = None
                 row[f'{m}_prob_AMP'] = None
+                if args.store_svm_distance and m == 'SVM':
+                    row[f'{m}_distance'] = None
+                if args.store_gnn_logits and m != 'SVM':
+                    row[f'{m}_logit_AMP'] = None
+                    row[f'{m}_logit_nonAMP'] = None
+                    row[f'{m}_logit_margin'] = None
         out_rows.append(row)
 
     out_df = pd.DataFrame(out_rows)
