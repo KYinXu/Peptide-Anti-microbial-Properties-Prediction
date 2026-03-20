@@ -4,7 +4,7 @@
 
 # Model files (huge)
 sequence_to_svm_minimal/models/esmfold_v1_local/
-*.pt
+sequence_to_svm_minimal/models/results/**/*.pt
 *.bin
 __pycache__/
 .ipynb_checkpoints/
