@@ -4,9 +4,10 @@ Train single GNN models (no CV) for each architecture/feature config,
 and save checkpoints ready for use with `data_evaluation/compare_model_predictions.py`.
 
 Configs mirror `run_gnn_comparison.py`:
-- Graph-only
-- Graph+Geo20
-- Graph+Combined32 (geo + QSAR)
+- ESM (graph + ESM2)
+- Geo (graph + Geo20 + ESM2)
+- QSAR (graph + QSAR12 + ESM2)
+- Combined (graph + Geo20 + QSAR12 + ESM2)
 """
 
 import argparse
@@ -30,6 +31,9 @@ CONFIG = {
     "csv_path": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/geometric_features_clustered.csv",
     "pdb_dir": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced",
     "qsar_csv": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/qsar12_descriptors.csv",
+    "esm2_csv": None,
+    "esm2_amp_csv": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/esm2_amp.csv",
+    "esm2_decoy_csv": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/esm2_decoy.csv",
     "seed": 42,
     "epochs": 300,
     "batch_size": 32,
@@ -42,10 +46,10 @@ CONFIG = {
 }
 
 FEATURE_CONFIGS = {
-    "Graph-only": {"use_geo": False, "use_qsar": False, "geo_dim": 0},
-    "Graph+Geo20": {"use_geo": True, "use_qsar": False, "geo_dim": 20},
-    "Graph+QSAR12": {"use_geo": False, "use_qsar": True, "geo_dim": 12},
-    "Graph+Combined32": {"use_geo": True, "use_qsar": True, "geo_dim": 32},
+    "ESM": {"use_geo": False, "use_qsar": False, "use_esm2": True},
+    "Geo": {"use_geo": True, "use_qsar": False, "use_esm2": True},
+    "QSAR": {"use_geo": False, "use_qsar": True, "use_esm2": True},
+    "Combined": {"use_geo": True, "use_qsar": True, "use_esm2": True},
 }
 
 ARCHITECTURES = ["gcn", "gat", "egnn"]
@@ -58,8 +62,55 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def load_data_with_features(csv_path: str, qsar_csv: str):
-    """Load geometric CSV and merge QSAR if available."""
+def _normalize_core_id(series: pd.Series) -> pd.Series:
+    """Normalize IDs to a common core ID for AMP/DECOY joining."""
+    s = series.astype(str)
+    s = s.str.replace(r"^(AMP_|DECOY_)", "", regex=True)
+    return s
+
+
+def _load_esm2_table(esm2_csv: str | None, esm2_amp_csv: str | None, esm2_decoy_csv: str | None):
+    """Load ESM2 embeddings from a combined CSV or AMP/DECOY CSV pair."""
+    if esm2_csv:
+        df = pd.read_csv(esm2_csv)
+        if "peptide_id" in df.columns:
+            id_col = "peptide_id"
+        elif "seqIndex" in df.columns:
+            id_col = "seqIndex"
+        else:
+            raise ValueError("ESM2 CSV must contain 'peptide_id' or 'seqIndex'")
+        emb_cols = [c for c in df.columns if c.startswith("esm2_dim_")]
+        if not emb_cols:
+            raise ValueError("No ESM2 embedding columns found (expected prefix 'esm2_dim_')")
+        out = df[[id_col] + emb_cols].copy()
+        out["core_id"] = _normalize_core_id(out[id_col])
+        return out[["core_id"] + emb_cols], emb_cols
+
+    if esm2_amp_csv and esm2_decoy_csv:
+        amp_df = pd.read_csv(esm2_amp_csv)
+        decoy_df = pd.read_csv(esm2_decoy_csv)
+        for d in (amp_df, decoy_df):
+            if "seqIndex" not in d.columns:
+                raise ValueError("ESM2 AMP/DECOY CSVs must contain 'seqIndex'")
+        emb_cols = [c for c in amp_df.columns if c.startswith("esm2_dim_")]
+        if not emb_cols:
+            raise ValueError("No ESM2 embedding columns found (expected prefix 'esm2_dim_')")
+        amp = amp_df[["seqIndex"] + emb_cols].copy()
+        decoy = decoy_df[["seqIndex"] + emb_cols].copy()
+        amp["core_id"] = _normalize_core_id(amp["seqIndex"])
+        decoy["core_id"] = _normalize_core_id(decoy["seqIndex"])
+        merged = pd.concat([amp[["core_id"] + emb_cols], decoy[["core_id"] + emb_cols]], axis=0, ignore_index=True)
+        return merged.drop_duplicates(subset=["core_id"]), emb_cols
+
+    return None, []
+
+
+def load_data_with_features(csv_path: str,
+                            qsar_csv: str,
+                            esm2_csv: str | None = None,
+                            esm2_amp_csv: str | None = None,
+                            esm2_decoy_csv: str | None = None):
+    """Load geometric CSV and merge QSAR and optional ESM2 embeddings."""
     geo_df = pd.read_csv(csv_path)
     qsar_df = pd.read_csv(qsar_csv)
 
@@ -79,10 +130,18 @@ def load_data_with_features(csv_path: str, qsar_csv: str):
     ]
 
     merged_df = geo_df.merge(qsar_df[["peptide_id"] + qsar_cols], on="peptide_id", how="left")
-    return merged_df, qsar_cols
+
+    esm2_cols = []
+    esm2_df, esm2_cols = _load_esm2_table(esm2_csv, esm2_amp_csv, esm2_decoy_csv)
+    if esm2_df is not None:
+        merged_df["core_id"] = _normalize_core_id(merged_df["peptide_id"])
+        merged_df = merged_df.merge(esm2_df, on="core_id", how="left")
+        merged_df = merged_df.drop(columns=["core_id"])
+
+    return merged_df, qsar_cols, esm2_cols
 
 
-def create_feature_cols(use_geo: bool, use_qsar: bool, qsar_cols):
+def create_feature_cols(use_geo: bool, use_qsar: bool, use_esm2: bool, qsar_cols, esm2_cols):
     geo_cols = [
         "radius_gyration",
         "end_to_end_distance",
@@ -110,6 +169,8 @@ def create_feature_cols(use_geo: bool, use_qsar: bool, qsar_cols):
         cols.extend(geo_cols)
     if use_qsar and qsar_cols:
         cols.extend(qsar_cols)
+    if use_esm2 and esm2_cols:
+        cols.extend(esm2_cols)
     return cols
 
 
@@ -176,9 +237,23 @@ class CustomPeptideDataset:
         return data
 
 
-def train_single_model(arch: str, feature_name: str, feature_cfg: dict, df: pd.DataFrame, qsar_cols, args, device: torch.device, out_dir: Path):
+def train_single_model(arch: str,
+                       feature_name: str,
+                       feature_cfg: dict,
+                       df: pd.DataFrame,
+                       qsar_cols,
+                       esm2_cols,
+                       args,
+                       device: torch.device,
+                       out_dir: Path):
     """Train a single model with a train/val split and save checkpoint."""
-    feature_cols = create_feature_cols(feature_cfg["use_geo"], feature_cfg["use_qsar"], qsar_cols)
+    feature_cols = create_feature_cols(
+        feature_cfg["use_geo"],
+        feature_cfg["use_qsar"],
+        feature_cfg.get("use_esm2", False),
+        qsar_cols,
+        esm2_cols,
+    )
     dataset = CustomPeptideDataset(df, args.pdb_dir, feature_cols if feature_cols else None, args.distance_threshold)
 
     labels = np.where(df["label"].values == 1, 1, 0)
@@ -202,7 +277,7 @@ def train_single_model(arch: str, feature_name: str, feature_cfg: dict, df: pd.D
         device=device,
     )
 
-    geo_dim = feature_cfg["geo_dim"]
+    geo_dim = len(feature_cols)
     model = PeptideGNN(
         architecture=arch,
         in_channels=26,
@@ -254,7 +329,7 @@ def parse_args():
         default=None,
         help=(
             "Optional explicit model selections as ARCH:FEATURE (e.g. "
-            "gat:Graph-only gat:Graph+QSAR12). If set, --architectures and "
+            "gat:ESM gat:QSAR). If set, --architectures and "
             "--feature_sets are ignored."
         ),
     )
@@ -290,7 +365,18 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     out_dir = Path(args.output_dir)
 
-    merged_df, qsar_cols = load_data_with_features(args.csv_path, args.qsar_csv)
+    merged_df, qsar_cols, esm2_cols = load_data_with_features(
+        args.csv_path,
+        args.qsar_csv,
+        CONFIG.get("esm2_csv"),
+        CONFIG.get("esm2_amp_csv"),
+        CONFIG.get("esm2_decoy_csv"),
+    )
+    if not esm2_cols:
+        raise ValueError(
+            "ESM2 embeddings are required for all feature configs, but no esm2_dim_* columns were loaded. "
+            "Check CONFIG['esm2_csv'] or CONFIG['esm2_amp_csv']/CONFIG['esm2_decoy_csv']."
+        )
     print(f"Loaded training data: {len(merged_df)} samples")
 
     summary = {"timestamp": datetime.now().isoformat(), "models": []}
@@ -341,6 +427,7 @@ def main():
             feature_cfg=f_cfg,
             df=merged_df,
             qsar_cols=qsar_cols,
+            esm2_cols=esm2_cols,
             args=args,
             device=device,
             out_dir=out_dir,

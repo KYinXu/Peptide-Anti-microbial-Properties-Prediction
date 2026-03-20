@@ -4,7 +4,9 @@ Takes peptide sequences and generates:
 1. ESMFold structure predictions (PDB files)
 2. ESM-2 embeddings (features for downstream ML)
 
-Compatible with SVM input format (index + sequence)
+Compatible with:
+- SVM input format (index + sequence)
+- FASTA format
 """
 
 import argparse
@@ -17,33 +19,75 @@ import pandas as pd
 from tqdm import tqdm
 
 
-def parse_sequence_file(input_file):
-    """
-    Parse sequence file in SVM format:
-    1 MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPN
-    2 GVVDSDDLPLVVAASNAGKSTVVQLLAAAG
-    
-    Returns list of (index, sequence) tuples
-    """
+def _parse_svm_style_file(input_file):
+    """Parse plain text sequence file: 'index sequence' or 'sequence' per line."""
     sequences = []
-    
     with open(input_file, 'r') as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith('#'):
                 continue
-            
-            parts = line.split(None, 1)  # Split on whitespace, max 2 parts
+
+            parts = line.split(None, 1)
             if len(parts) == 2:
                 idx, seq = parts
                 sequences.append((idx, seq.strip()))
             elif len(parts) == 1:
-                # Just sequence, no index
                 seq = parts[0]
                 idx = len(sequences) + 1
                 sequences.append((str(idx), seq.strip()))
-    
     return sequences
+
+
+def _parse_fasta_file(input_file):
+    """Parse FASTA file into (index, sequence) tuples."""
+    sequences = []
+    current_id = None
+    current_seq = []
+    fallback_idx = 1
+
+    with open(input_file, 'r') as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith('>'):
+                if current_id is not None and current_seq:
+                    sequences.append((current_id, ''.join(current_seq)))
+                header = line[1:].strip()
+                header_id = header.split()[0] if header else f"seq_{fallback_idx}"
+                current_id = header_id
+                current_seq = []
+                fallback_idx += 1
+            else:
+                if current_id is None:
+                    current_id = f"seq_{fallback_idx}"
+                    fallback_idx += 1
+                current_seq.append(line)
+
+    if current_id is not None and current_seq:
+        sequences.append((current_id, ''.join(current_seq)))
+
+    return sequences
+
+
+def parse_sequence_file(input_file):
+    """
+    Parse sequence file and return list of (index, sequence) tuples.
+
+    Supports:
+    - SVM-style text: 'index sequence' (or bare sequence)
+    - FASTA: lines starting with '>'
+    """
+    with open(input_file, 'r') as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith('>'):
+                return _parse_fasta_file(input_file)
+            break
+    return _parse_svm_style_file(input_file)
 
 
 def extract_esm2_embeddings(sequences, model_name="esm2_t33_650M_UR50D", device="cuda"):
@@ -246,14 +290,21 @@ Examples:
   # Do both
   python esm_sequence_processor.py --input seqs.txt --output results/ --mode both
 
-Input format (same as SVM):
-  1 MKTAYIAKQRQISFVKSHFSRQL
-  2 GVVDSDDLPLVVAASNAGKSTVVQLLAAAG
+Input formats:
+  SVM style:
+    1 MKTAYIAKQRQISFVKSHFSRQL
+    2 GVVDSDDLPLVVAASNAGKSTVVQLLAAAG
+
+  FASTA:
+    >seq1
+    MKTAYIAKQRQISFVKSHFSRQL
+    >seq2
+    GVVDSDDLPLVVAASNAGKSTVVQLLAAAG
         """
     )
     
     parser.add_argument('--input', '-i', required=True,
-                        help='Input sequence file (SVM format: index sequence)')
+                        help='Input sequence file (SVM-style text or FASTA)')
     parser.add_argument('--output', '-o', required=True,
                         help='Output path (CSV for embeddings, directory for structures)')
     parser.add_argument('--mode', '-m', choices=['embeddings', 'fold', 'both'],
