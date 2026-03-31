@@ -44,28 +44,85 @@ def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> dict:
     }
 
 
+def _normalize_core_id(series: pd.Series) -> pd.Series:
+    s = series.astype(str)
+    s = s.str.replace(r"^(AMP_|DECOY_)", "", regex=True)
+    return s
+
+
+def _load_esm2_features(esm2_csv: str | None, esm2_amp_csv: str | None, esm2_decoy_csv: str | None):
+    """Load ESM2 embeddings from a single CSV or AMP/DECOY CSV pair."""
+    if esm2_csv:
+        df = pd.read_csv(esm2_csv)
+        if "peptide_id" in df.columns:
+            id_col = "peptide_id"
+        elif "seqIndex" in df.columns:
+            id_col = "seqIndex"
+        else:
+            raise ValueError("ESM2 CSV must contain 'peptide_id' or 'seqIndex'")
+        esm2_cols = [c for c in df.columns if c.startswith("esm2_dim_")]
+        if not esm2_cols:
+            raise ValueError("No ESM2 columns found in ESM2 CSV (expected prefix 'esm2_dim_').")
+        out = df[[id_col] + esm2_cols].copy()
+        out["core_id"] = _normalize_core_id(out[id_col])
+        return out[["core_id"] + esm2_cols], esm2_cols
+
+    if esm2_amp_csv and esm2_decoy_csv:
+        amp_df = pd.read_csv(esm2_amp_csv)
+        decoy_df = pd.read_csv(esm2_decoy_csv)
+        for d in (amp_df, decoy_df):
+            if "seqIndex" not in d.columns:
+                raise ValueError("ESM2 AMP/DECOY CSV must contain 'seqIndex'.")
+        esm2_cols = [c for c in amp_df.columns if c.startswith("esm2_dim_")]
+        if not esm2_cols:
+            raise ValueError("No ESM2 columns found in AMP/DECOY CSVs (expected prefix 'esm2_dim_').")
+
+        amp = amp_df[["seqIndex"] + esm2_cols].copy()
+        decoy = decoy_df[["seqIndex"] + esm2_cols].copy()
+        amp["core_id"] = _normalize_core_id(amp["seqIndex"])
+        decoy["core_id"] = _normalize_core_id(decoy["seqIndex"])
+
+        merged = pd.concat([amp[["core_id"] + esm2_cols], decoy[["core_id"] + esm2_cols]], axis=0, ignore_index=True)
+        merged = merged.drop_duplicates(subset=["core_id"])
+        return merged, esm2_cols
+
+    return None, []
+
+
 def main():
     base_dir = Path(__file__).resolve().parents[1]
 
     default_geo = base_dir / "data" / "gnn_training_dataset" / "alpha_and_beta_combined" / "generated" / "spliced" / "geometric_features_clustered.csv"
     default_qsar = base_dir / "data" / "gnn_training_dataset" / "alpha_and_beta_combined" / "generated" / "spliced" / "qsar12_descriptors.csv"
+    default_esm2_amp = base_dir / "data" / "gnn_training_dataset" / "alpha_and_beta_combined" / "generated" / "spliced" / "esm2_amp.csv"
+    default_esm2_decoy = base_dir / "data" / "gnn_training_dataset" / "alpha_and_beta_combined" / "generated" / "spliced" / "esm2_decoy.csv"
     default_out_dir = base_dir / "results" / "svm"
 
     ap = argparse.ArgumentParser(description="Train SVM for use with compare_model_predictions.py")
     ap.add_argument("--geo_csv", type=str, default=str(default_geo), help="Geometric features CSV used for training")
     ap.add_argument("--qsar_csv", type=str, default=str(default_qsar), help="QSAR-12 descriptors CSV aligned with geo_csv")
+    ap.add_argument("--esm2_csv", type=str, default=None,
+                    help="Optional single ESM2 CSV with peptide_id/seqIndex + esm2_dim_*")
+    ap.add_argument("--esm2_amp_csv", type=str, default=str(default_esm2_amp),
+                    help="AMP ESM2 CSV (used if --esm2_csv not provided)")
+    ap.add_argument("--esm2_decoy_csv", type=str, default=str(default_esm2_decoy),
+                    help="DECOY ESM2 CSV (used if --esm2_csv not provided)")
     ap.add_argument("--out_dir", type=str, default=str(default_out_dir), help="Output directory for SVM .pkl and Z-score file")
     ap.add_argument("--kernel", type=str, default="rbf", choices=["rbf", "linear"], help="SVM kernel")
     args = ap.parse_args()
 
     geo_csv = Path(args.geo_csv)
     qsar_csv = Path(args.qsar_csv)
+    esm2_csv = Path(args.esm2_csv) if args.esm2_csv else None
+    esm2_amp_csv = Path(args.esm2_amp_csv) if args.esm2_amp_csv else None
+    esm2_decoy_csv = Path(args.esm2_decoy_csv) if args.esm2_decoy_csv else None
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("\n=== Training SVM for compare_model_predictions.py ===")
     print(f"Geo CSV : {geo_csv}")
     print(f"QSAR CSV: {qsar_csv}")
+    print(f"ESM2 CSV: {esm2_csv if esm2_csv else f'{esm2_amp_csv} + {esm2_decoy_csv}'}")
     print(f"Out dir : {out_dir}")
 
     geo_df = pd.read_csv(geo_csv)
@@ -98,7 +155,25 @@ def main():
         if c not in qsar_df.columns:
             raise ValueError(f"QSAR column missing from {qsar_csv}: {c}")
 
-    X_raw = qsar_df[qsar_cols].values.astype(np.float64)
+    # Merge ESM2 embeddings via normalized core IDs (strip AMP_/DECOY_ prefixes)
+    esm2_df, esm2_cols = _load_esm2_features(
+        str(esm2_csv) if esm2_csv else None,
+        str(esm2_amp_csv) if esm2_amp_csv else None,
+        str(esm2_decoy_csv) if esm2_decoy_csv else None,
+    )
+    if esm2_df is None or not esm2_cols:
+        raise ValueError("ESM2 embeddings are required but were not loaded.")
+
+    train_df = geo_df[["peptide_id", "label"]].merge(qsar_df[["peptide_id"] + qsar_cols], on="peptide_id", how="left")
+    train_df["core_id"] = _normalize_core_id(train_df["peptide_id"])
+    train_df = train_df.merge(esm2_df, on="core_id", how="left")
+
+    feature_cols = qsar_cols + esm2_cols
+    missing_after_merge = train_df[feature_cols].isna().any(axis=1).sum()
+    if missing_after_merge > 0:
+        raise ValueError(f"Found {missing_after_merge} rows with missing QSAR/ESM2 features after merge.")
+
+    X_raw = train_df[feature_cols].values.astype(np.float64)
 
     # Z-score normalization (full dataset) and save stats for compare_model_predictions.py
     means = X_raw.mean(axis=0)
@@ -128,7 +203,7 @@ def main():
     svm.fit(X, y)
 
     # Save SVM model
-    svm_path = out_dir / "svm_qsar12_model.pkl"
+    svm_path = out_dir / "svm_qsar12_esm2_model.pkl"
     joblib.dump(svm, svm_path)
     print(f"\nSaved SVM model: {svm_path}")
 
@@ -136,15 +211,15 @@ def main():
     # line 1: comma-separated descriptor names in order
     # line 2: comma-separated means
     # line 3: comma-separated stds
-    z_path = out_dir / "svm_qsar12_zscores.txt"
+    z_path = out_dir / "svm_qsar12_esm2_zscores.txt"
     with z_path.open("w") as f:
-        f.write(",".join(qsar_cols) + "\n")
+        f.write(",".join(feature_cols) + "\n")
         f.write(",".join(f"{m:.10f}" for m in means) + "\n")
         f.write(",".join(f"{s:.10f}" for s in stds_safe) + "\n")
     print(f"Saved Z-score file: {z_path}")
 
     print("\nDone. To use this SVM in compare_model_predictions.py, run it with:")
-    print(f"  --svm_descriptor_csv {qsar_csv}")
+    print("  --svm_descriptor_csv <descriptor CSV containing all features listed in z_file line 1>")
     print(f"  --svm_z_file {z_path}")
     print(f"  --svm_pkl {svm_path}")
 
