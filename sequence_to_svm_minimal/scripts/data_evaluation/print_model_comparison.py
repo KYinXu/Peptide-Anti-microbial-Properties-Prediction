@@ -56,6 +56,10 @@ def _metric_col_for_model(df: pd.DataFrame, model: str, metric_mode: str) -> str
         col = f"{model}_logit_margin"
         return col if col in df.columns else None
 
+    if metric_mode == "score_z":
+        col = f"{model}_score_z"
+        return col if col in df.columns else None
+
     return None
 
 
@@ -70,6 +74,8 @@ def _metric_label(metric_mode: str) -> str:
         return "SVM hyperplane distance"
     if metric_mode == "distance_like":
         return "Distance-like (SVM distance / GNN logit margin)"
+    if metric_mode == "score_z":
+        return "Z-score (per model, this CSV)"
     return "Metric"
 
 
@@ -79,6 +85,8 @@ def _print_metric_legend(models: list[str], df: pd.DataFrame, metric_mode: str) 
     print(f"- Displayed numeric value = {_metric_label(metric_mode)}")
     if metric_mode == "distance_like":
         print("- Side-by-side mapping: SVM uses decision_function distance; GNN models use logit_margin")
+    if metric_mode == "score_z":
+        print("- Z-score columns from compare_model_predictions.py (--score_z); comparable scale across models on this run")
     for m in models:
         col = _metric_col_for_model(df, m, metric_mode)
         label = col if col is not None else "N/A for this model"
@@ -160,7 +168,7 @@ def main():
         "--metric",
         type=str,
         default="prob",
-        choices=["prob", "confidence", "logit_margin", "svm_distance", "distance_like"],
+        choices=["prob", "confidence", "logit_margin", "svm_distance", "distance_like", "score_z"],
         help="Numeric metric to display in model cells",
     )
     args = ap.parse_args()
@@ -192,13 +200,13 @@ def main():
         models.append(base)
 
     # Stable, user-friendly ordering and labels
-    display_order = ["SVM", "Graph-only", "Graph+Geo20", "Graph+QSAR12", "Graph+Combined32"]
+    display_order = ["SVM", "ESM-only", "ESM+Geo20", "ESM+QSAR12", "ESM+Combined32"]
     label_map = {
         "SVM": "SVM",
-        "Graph-only": "GNN Graph-only",
-        "Graph+Geo20": "GNN Geo",
-        "Graph+QSAR12": "GNN QSAR",
-        "Graph+Combined32": "GNN QSAR+Geo",
+        "ESM-only": "GNN ESM-only",
+        "ESM+Geo20": "GNN ESM+Geo",
+        "ESM+QSAR12": "GNN ESM+QSAR",
+        "ESM+Combined32": "GNN ESM+QSAR+Geo",
     }
     ordered_models = [m for m in display_order if m in models]
     # Include any other models at the end

@@ -9,6 +9,7 @@ Configs mirror `run_gnn_comparison.py`:
 - QSAR (graph + QSAR12 + ESM2)
 - Combined (graph + Geo20 + QSAR12 + ESM2)
 """
+from __future__ import annotations
 
 import argparse
 import os
@@ -25,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from gnn.models import PeptideGNN
 from gnn.train import run_training, evaluate
+from gnn.extra_feature_scaler import ExtraFeatureRobustScaler, save_extra_feature_scaler
 
 
 CONFIG = {
@@ -43,6 +45,8 @@ CONFIG = {
     "num_layers": 3,
     "dropout": 0.2,
     "distance_threshold": 8.0,
+    "label_smoothing": 0.08,
+    "logit_penalty": 1e-4,
 }
 
 FEATURE_CONFIGS = {
@@ -177,11 +181,19 @@ def create_feature_cols(use_geo: bool, use_qsar: bool, use_esm2: bool, qsar_cols
 class CustomPeptideDataset:
     """Same dataset as in run_gnn_comparison, but without CV."""
 
-    def __init__(self, df, pdb_dir, feature_cols, distance_threshold: float = 8.0):
+    def __init__(
+        self,
+        df,
+        pdb_dir,
+        feature_cols,
+        distance_threshold: float = 8.0,
+        tabular_scaler: ExtraFeatureRobustScaler | None = None,
+    ):
         self.df = df
         self.pdb_dir = Path(pdb_dir)
         self.feature_cols = feature_cols
         self.distance_threshold = distance_threshold
+        self.tabular_scaler = tabular_scaler
 
         from gnn.data_utils import pdb_to_graph, parse_pdb, compute_node_features, compute_edges
 
@@ -230,8 +242,11 @@ class CustomPeptideDataset:
         )
 
         if self.feature_cols:
-            extra = row[self.feature_cols].values.astype(np.float32)
-            extra = np.nan_to_num(extra, nan=0.0)
+            if self.tabular_scaler is not None:
+                extra = self.tabular_scaler.transform_row(row).astype(np.float32)
+            else:
+                extra = row[self.feature_cols].values.astype(np.float32)
+                extra = np.nan_to_num(extra, nan=0.0)
             data.geo_features = torch.tensor(extra, dtype=torch.float32).unsqueeze(0)
 
         return data
@@ -254,12 +269,27 @@ def train_single_model(arch: str,
         qsar_cols,
         esm2_cols,
     )
-    dataset = CustomPeptideDataset(df, args.pdb_dir, feature_cols if feature_cols else None, args.distance_threshold)
 
     labels = np.where(df["label"].values == 1, 1, 0)
 
     sss = StratifiedShuffleSplit(n_splits=1, test_size=args.val_size, random_state=args.seed)
     train_idx, val_idx = next(sss.split(np.arange(len(labels)), labels))
+
+    tabular_scaler = None
+    if feature_cols and not args.no_tabular_robust_scaler:
+        tabular_scaler = ExtraFeatureRobustScaler.fit(
+            df.iloc[train_idx],
+            feature_cols,
+            balance_blocks=True,
+        )
+
+    dataset = CustomPeptideDataset(
+        df,
+        args.pdb_dir,
+        feature_cols if feature_cols else None,
+        args.distance_threshold,
+        tabular_scaler=tabular_scaler,
+    )
 
     from torch_geometric.loader import DataLoader
 
@@ -301,6 +331,8 @@ def train_single_model(arch: str,
         patience=args.patience,
         class_weights=class_weights,
         verbose=True,
+        label_smoothing=args.label_smoothing,
+        logit_penalty=args.logit_penalty,
     )
 
     print("Validation metrics:")
@@ -311,6 +343,10 @@ def train_single_model(arch: str,
     ckpt_path = out_dir / model_name
     torch.save(model.state_dict(), ckpt_path)
     print(f"Saved checkpoint: {ckpt_path}")
+    if tabular_scaler is not None:
+        scaler_path = ckpt_path.with_name(ckpt_path.stem + "_tabular_scaler.joblib")
+        save_extra_feature_scaler(tabular_scaler, str(scaler_path))
+        print(f"Saved tabular scaler: {scaler_path}")
 
     return str(ckpt_path), best_metrics
 
@@ -346,6 +382,23 @@ def parse_args():
     ap.add_argument("--seed", type=int, default=CONFIG["seed"])
     ap.add_argument("--device", type=str, default="auto")
     ap.add_argument("--output_dir", type=str, default="results/gnn/ready_models")
+    ap.add_argument(
+        "--no_tabular_robust_scaler",
+        action="store_true",
+        help="Disable per-block RobustScaler + block balancing on concatenated extras (raw CSV values).",
+    )
+    ap.add_argument(
+        "--label_smoothing",
+        type=float,
+        default=CONFIG["label_smoothing"],
+        help="Cross-entropy label smoothing (0 disables). Reduces extreme logit margins / softmax saturation.",
+    )
+    ap.add_argument(
+        "--logit_penalty",
+        type=float,
+        default=CONFIG["logit_penalty"],
+        help="Weight on mean(logits^2) added to training loss (0 disables). Softens raw score collapse.",
+    )
     return ap.parse_args()
 
 

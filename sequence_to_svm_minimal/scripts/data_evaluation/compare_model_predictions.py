@@ -3,8 +3,12 @@
 Compare model predictions on unlabeled test data (SVM, GCN, GAT, EGNN).
 
 Outputs: per-sample predictions and confidence per model, agreement statistics,
-and optional CSV. No ground-truth metrics (data is unlabeled).
+optional raw scores / logits, and per-model z-scores of a benchmark score (computed
+on this run so SVM distance and GNN logit margins are on comparable scale). No
+ground-truth metrics (data is unlabeled).
 """
+from __future__ import annotations
+
 import argparse
 import sys
 from pathlib import Path
@@ -27,10 +31,10 @@ CONFIG = {
     'svm_z_file': str(_ROOT / 'results/checkpoints/svm_alpha_beta_combined/svm_qsar12_zscores.txt'),
     'svm_pkl': str(_ROOT / 'results/checkpoints/svm_alpha_beta_combined/svm_qsar12_model.pkl'),
     'architecture': 'gat',  # 'gcn', 'gat', or 'egnn'
-    'graph_only_pt': str(_ROOT / 'results/gnn/alpha_and_beta_combined/ready_models/gat_ready_Graph-only.pt'),
-    'graph_geo_pt': str(_ROOT / 'results/gnn/alpha_and_beta_combined/ready_models/gat_ready_Graph_plus_Geo20.pt'),
-    'graph_qsar_pt': str(_ROOT / 'results/gnn/alpha_and_beta_combined/ready_models/gat_ready_Graph_plus_QSAR12.pt'),
-    'graph_combined_pt': str(_ROOT / 'results/gnn/alpha_and_beta_combined/ready_models/gat_ready_Graph_plus_Combined32.pt'),
+    'esm_only_pt': str(_ROOT / 'results/gnn/alpha_and_beta_combined/ready_models/gat_ready_Graph-only.pt'),
+    'esm_geo_pt': str(_ROOT / 'results/gnn/alpha_and_beta_combined/ready_models/gat_ready_Graph_plus_Geo20.pt'),
+    'esm_qsar_pt': str(_ROOT / 'results/gnn/alpha_and_beta_combined/ready_models/gat_ready_Graph_plus_QSAR12.pt'),
+    'esm_combined_pt': str(_ROOT / 'results/gnn/alpha_and_beta_combined/ready_models/gat_ready_Graph_plus_Combined32.pt'),
     'gnn_hidden': 64,
     'gnn_layers': 3,
     'gnn_pooling': 'mean_max',
@@ -39,10 +43,10 @@ CONFIG = {
 }
 
 FEATURE_SETS = [
-    ('Graph-only', 'graph_only_pt'),
-    ('Graph+Geo20', 'graph_geo_pt'),
-    ('Graph+QSAR12', 'graph_qsar_pt'),
-    ('Graph+Combined32', 'graph_combined_pt'),
+    ('ESM-only', 'esm_only_pt'),
+    ('ESM+Geo20', 'esm_geo_pt'),
+    ('ESM+QSAR12', 'esm_qsar_pt'),
+    ('ESM+Combined32', 'esm_combined_pt'),
 ]
 
 
@@ -89,6 +93,11 @@ def _load_svm_predictions(descriptor_csv: str, z_file: str, pkl_path: str):
     return ids, preds, prob_amp, distance
 
 
+def _default_tabular_scaler_path(model_path: str) -> str | None:
+    p = Path(model_path).with_name(Path(model_path).stem + "_tabular_scaler.joblib")
+    return str(p) if p.is_file() else None
+
+
 def _run_gnn_predictions(csv_path: str,
                          pdb_dir: str,
                          model_path: str,
@@ -98,7 +107,8 @@ def _run_gnn_predictions(csv_path: str,
                          pooling: str,
                          batch_size: int,
                          use_geometric_features: bool,
-                         geometric_feature_cols=None):
+                         geometric_feature_cols=None,
+                         tabular_scaler_path: str | None = None):
     """Run one GNN checkpoint and return ids/preds/prob/logits/margin."""
     import torch
     import torch.nn.functional as F
@@ -108,11 +118,15 @@ def _run_gnn_predictions(csv_path: str,
     from gnn.models import PeptideGNN
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    scaler_path = tabular_scaler_path
+    if scaler_path is None and use_geometric_features:
+        scaler_path = _default_tabular_scaler_path(model_path)
     dataset = PeptideGraphDataset(
         csv_path=csv_path,
         pdb_dir=pdb_dir,
         use_geometric_features=use_geometric_features,
-        geometric_feature_cols=geometric_feature_cols
+        geometric_feature_cols=geometric_feature_cols,
+        tabular_scaler_path=scaler_path,
     )
 
     # Match geo_feature_dim to how the checkpoint was trained:
@@ -167,6 +181,42 @@ def _run_gnn_predictions(csv_path: str,
 
 def _confidence(prob_amp: np.ndarray) -> np.ndarray:
     return np.maximum(prob_amp, 1.0 - prob_amp)
+
+
+def _raw_for_benchmark_z(model_name: str, result: dict, use_prob: bool) -> np.ndarray:
+    """Raw score to z-score on this run: P(AMP), or SVM decision_function / GNN logit margin."""
+    if use_prob:
+        return np.asarray(result["prob_amp"], dtype=np.float64)
+    if model_name == "SVM":
+        return np.asarray(result["distance"], dtype=np.float64)
+    return np.asarray(result["logit_margin"], dtype=np.float64)
+
+
+def _zscore_aligned_to_ids(
+    canonical_ids: list[str],
+    ids: list[str],
+    raw: np.ndarray,
+) -> tuple[np.ndarray, float, float, int]:
+    """Align raw scores to canonical_ids; z-score over finite values; return z, mu, sigma, n."""
+    idx_map = {str(i): k for k, i in enumerate(ids)}
+    aligned = np.full(len(canonical_ids), np.nan, dtype=np.float64)
+    for j, pid in enumerate(canonical_ids):
+        k = idx_map.get(str(pid))
+        if k is not None:
+            aligned[j] = float(raw[k])
+    finite = np.isfinite(aligned)
+    n_fin = int(finite.sum())
+    z = np.full_like(aligned, np.nan, dtype=np.float64)
+    if n_fin == 0:
+        return z, float("nan"), float("nan"), 0
+    v = aligned[finite]
+    mu = float(v.mean())
+    sig = float(v.std(ddof=0))
+    if sig == 0.0 or not np.isfinite(sig):
+        z[finite] = 0.0
+        return z, mu, 0.0, n_fin
+    z[finite] = (v - mu) / sig
+    return z, mu, sig, n_fin
 
 
 def _agreement_matrix(names: list, pred_dfs: list, ids_common: list):
@@ -262,6 +312,25 @@ def _print_cli_report(architecture: str,
         print(f"\nCombined per-peptide predictions saved to: {output_csv}")
 
 
+def _print_benchmark_z_summary(
+    names: list[str], results: dict, canonical_ids: list[str], use_prob: bool
+) -> None:
+    print("\nBenchmark z-scores (per model: mean=0, std=1 over finite scores in this run)")
+    if use_prob:
+        print("- Raw metric: P(AMP) for every model")
+    else:
+        print("- Raw metric: SVM decision_function; GNN logit_AMP − logit_nonAMP")
+    hdr = f"{'Model':<22}{'n':>6}{'raw μ':>12}{'raw σ':>12}"
+    print("-" * len(hdr))
+    print(hdr)
+    print("-" * len(hdr))
+    for m in names:
+        raw = _raw_for_benchmark_z(m, results[m], use_prob)
+        _, mu, sig, n_fin = _zscore_aligned_to_ids(canonical_ids, results[m]["ids"], raw)
+        print(f"{m:<22}{n_fin:>6}{mu:>12.4f}{sig:>12.4f}")
+    print("-" * len(hdr))
+
+
 def main():
     ap = argparse.ArgumentParser(description='Compare SVM and GNN predictions on unlabeled test data')
     ap.add_argument('--geo_csv', type=str, default=CONFIG['geo_csv'], help='Test geometric_features.csv')
@@ -273,14 +342,14 @@ def main():
     ap.add_argument('--architecture', type=str, default=CONFIG['architecture'],
                     choices=['gcn', 'gat', 'egnn'],
                     help='GNN architecture to compare across feature sets')
-    ap.add_argument('--graph_only_pt', type=str, default=CONFIG['graph_only_pt'],
-                    help='Checkpoint for Graph-only model')
-    ap.add_argument('--graph_geo_pt', type=str, default=CONFIG['graph_geo_pt'],
-                    help='Checkpoint for Graph+Geo20 model')
-    ap.add_argument('--graph_qsar_pt', type=str, default=CONFIG['graph_qsar_pt'],
-                    help='Checkpoint for Graph+QSAR12 model')
-    ap.add_argument('--graph_combined_pt', type=str, default=CONFIG['graph_combined_pt'],
-                    help='Checkpoint for Graph+Combined32 model')
+    ap.add_argument('--esm_only_pt', type=str, default=CONFIG['esm_only_pt'],
+                    help='Checkpoint for ESM-only model')
+    ap.add_argument('--esm_geo_pt', type=str, default=CONFIG['esm_geo_pt'],
+                    help='Checkpoint for ESM+Geo20 model')
+    ap.add_argument('--esm_qsar_pt', type=str, default=CONFIG['esm_qsar_pt'],
+                    help='Checkpoint for ESM+QSAR12 model')
+    ap.add_argument('--esm_combined_pt', type=str, default=CONFIG['esm_combined_pt'],
+                    help='Checkpoint for ESM+Combined32 model')
     ap.add_argument('--gnn_hidden', type=int, default=CONFIG['gnn_hidden'])
     ap.add_argument('--gnn_layers', type=int, default=CONFIG['gnn_layers'])
     ap.add_argument('--gnn_pooling', type=str, default=CONFIG['gnn_pooling'])
@@ -292,6 +361,17 @@ def main():
                     help='If set, store SVM decision_function distance in output CSV')
     ap.add_argument('--store_gnn_logits', action='store_true',
                     help='If set, store GNN raw logits and logit margin in output CSV')
+    ap.add_argument(
+        '--score_z',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Include per-model z-scores of benchmark score on this run (SVM: decision_function; GNN: logit margin). Use --no-score_z to omit.',
+    )
+    ap.add_argument(
+        '--score_z_prob',
+        action='store_true',
+        help='If set with --score_z, z-score P(AMP) per model instead of distance / logit margin.',
+    )
     args = ap.parse_args()
 
     geo_df = pd.read_csv(args.geo_csv)
@@ -319,10 +399,10 @@ def main():
     feature_models = [
         # (name, checkpoint_path, use_geometric_features_flag, feature_mode)
         # feature_mode: 'graph', 'geo20', 'qsar12', or 'combined32'
-        ('Graph-only', args.graph_only_pt, False, 'graph'),
-        ('Graph+Geo20', args.graph_geo_pt, True, 'geo20'),
-        ('Graph+QSAR12', args.graph_qsar_pt, True, 'qsar12'),
-        ('Graph+Combined32', args.graph_combined_pt, True, 'combined32'),
+        ('ESM-only', args.esm_only_pt, False, 'esm'),
+        ('ESM+Geo20', args.esm_geo_pt, True, 'geo20'),
+        ('ESM+QSAR12', args.esm_qsar_pt, True, 'qsar12'),
+        ('ESM+Combined32', args.esm_combined_pt, True, 'combined32'),
     ]
 
     # Precompute merged CSV for Combined32 if requested
@@ -418,6 +498,14 @@ def main():
     ids_common = [i for i in canonical_ids if i in ids_set]
     _print_cli_report(args.architecture, results, canonical_ids, ids_common, pred_frames, args.output_csv)
 
+    score_z_by_model: dict[str, np.ndarray] = {}
+    if args.score_z:
+        for m in names:
+            raw = _raw_for_benchmark_z(m, results[m], args.score_z_prob)
+            z, _, _, _ = _zscore_aligned_to_ids(canonical_ids, results[m]["ids"], raw)
+            score_z_by_model[m] = z
+        _print_benchmark_z_summary(names, results, canonical_ids, args.score_z_prob)
+
     out_rows = []
     for idx, pid in enumerate(canonical_ids):
         row = {'peptide_id': pid}
@@ -428,6 +516,9 @@ def main():
                 row[f'{m}_pred'] = int(r['pred'][i])
                 row[f'{m}_confidence'] = float(r['confidence'][i])
                 row[f'{m}_prob_AMP'] = float(r['prob_amp'][i])
+                if args.score_z:
+                    zv = score_z_by_model[m][idx]
+                    row[f'{m}_score_z'] = float(zv) if np.isfinite(zv) else None
                 if args.store_svm_distance and m == 'SVM':
                     row[f'{m}_distance'] = float(r['distance'][i]) if np.isfinite(r['distance'][i]) else None
                 if args.store_gnn_logits and m != 'SVM':
@@ -438,6 +529,8 @@ def main():
                 row[f'{m}_pred'] = None
                 row[f'{m}_confidence'] = None
                 row[f'{m}_prob_AMP'] = None
+                if args.score_z:
+                    row[f'{m}_score_z'] = None
                 if args.store_svm_distance and m == 'SVM':
                     row[f'{m}_distance'] = None
                 if args.store_gnn_logits and m != 'SVM':

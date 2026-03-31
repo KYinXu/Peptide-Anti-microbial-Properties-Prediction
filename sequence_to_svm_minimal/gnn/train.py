@@ -27,7 +27,9 @@ def train_epoch(
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-    class_weights: Optional[torch.Tensor] = None
+    class_weights: Optional[torch.Tensor] = None,
+    label_smoothing: float = 0.0,
+    logit_penalty: float = 0.0,
 ) -> float:
     """
     Train for one epoch.
@@ -38,6 +40,8 @@ def train_epoch(
         optimizer: Optimizer
         device: torch device
         class_weights: Optional class weights for imbalanced data
+        label_smoothing: Cross-entropy label smoothing (reduces logit saturation)
+        logit_penalty: L2 mean on logits added to loss (further softens extreme margins)
         
     Returns:
         Average training loss
@@ -46,7 +50,10 @@ def train_epoch(
     total_loss = 0
     n_batches = 0
     
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    criterion = nn.CrossEntropyLoss(
+        weight=class_weights,
+        label_smoothing=float(label_smoothing),
+    )
     
     for batch in loader:
         batch = batch.to(device)
@@ -60,6 +67,8 @@ def train_epoch(
             continue
         
         loss = criterion(out, target)
+        if logit_penalty > 0:
+            loss = loss + float(logit_penalty) * (out ** 2).mean()
         
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -175,7 +184,9 @@ def run_training(
     patience: int = 15,
     min_delta: float = 1e-4,
     class_weights: Optional[torch.Tensor] = None,
-    verbose: bool = True
+    verbose: bool = True,
+    label_smoothing: float = 0.08,
+    logit_penalty: float = 1e-4,
 ) -> Tuple[Dict[str, List[float]], Dict[str, float]]:
     """
     Full training loop with early stopping.
@@ -192,6 +203,8 @@ def run_training(
         min_delta: Minimum improvement for early stopping
         class_weights: Optional class weights
         verbose: Print progress
+        label_smoothing: CE smoothing (default 0.08 mitigates saturated softmax / tied logits)
+        logit_penalty: Weight on mean(logits^2) added to training loss
         
     Returns:
         history: Dict of training metrics per epoch
@@ -219,7 +232,15 @@ def run_training(
     
     for epoch in range(epochs):
         # Train
-        train_loss = train_epoch(model, train_loader, optimizer, device, class_weights)
+        train_loss = train_epoch(
+            model,
+            train_loader,
+            optimizer,
+            device,
+            class_weights,
+            label_smoothing=label_smoothing,
+            logit_penalty=logit_penalty,
+        )
         
         # Validate
         val_metrics = evaluate(model, val_loader, device)
@@ -275,7 +296,9 @@ def cross_validate(
     lr: float = 1e-3,
     patience: int = 15,
     class_weights: Optional[torch.Tensor] = None,
-    verbose: bool = True
+    verbose: bool = True,
+    label_smoothing: float = 0.08,
+    logit_penalty: float = 1e-4,
 ) -> Dict[str, List[float]]:
     """
     Perform cross-validation.
@@ -331,9 +354,11 @@ def cross_validate(
             lr=lr,
             patience=patience,
             class_weights=class_weights,
-            verbose=verbose
+            verbose=verbose,
+            label_smoothing=label_smoothing,
+            logit_penalty=logit_penalty,
         )
-        
+
         # Record results
         for metric in cv_results:
             cv_results[metric].append(best_metrics.get(metric, 0.0))

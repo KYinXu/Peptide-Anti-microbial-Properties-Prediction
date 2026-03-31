@@ -42,6 +42,18 @@ def parse_args():
     parser.add_argument('--pooling', type=str, default='mean_max')
     parser.add_argument('--use_geo_features', action='store_true', 
                         help='Set this flag if the model was trained with geometric features')
+    parser.add_argument(
+        '--geometric_feature_cols',
+        type=str,
+        default=None,
+        help='Comma-separated column names (must match training order, e.g. Geo+QSAR+ESM2).',
+    )
+    parser.add_argument(
+        '--tabular_scaler_path',
+        type=str,
+        default=None,
+        help='Joblib scaler from training (default: <model_stem>_tabular_scaler.joblib next to checkpoint).',
+    )
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--save_predictions', type=str, default=None,
                         help='Optional path to save a CSV of raw predictions (e.g., test_preds.csv)')
@@ -53,10 +65,21 @@ def main():
     print(f"Using device: {device}")
     
     print(f"\nLoading test dataset from {args.csv_path}...")
+    geo_cols = None
+    if args.geometric_feature_cols:
+        geo_cols = [c.strip() for c in args.geometric_feature_cols.split(",") if c.strip()]
+    scaler_path = args.tabular_scaler_path
+    if scaler_path is None and args.use_geo_features and args.model_path:
+        cand = Path(args.model_path).with_name(Path(args.model_path).stem + "_tabular_scaler.joblib")
+        if cand.is_file():
+            scaler_path = str(cand)
+            print(f"Using tabular scaler: {scaler_path}")
     dataset = PeptideGraphDataset(
         csv_path=args.csv_path,
         pdb_dir=args.pdb_dir,
-        use_geometric_features=args.use_geo_features
+        use_geometric_features=args.use_geo_features,
+        geometric_feature_cols=geo_cols,
+        tabular_scaler_path=scaler_path,
     )
     
     # Dynamically determine geometric feature dimension just like in the training script

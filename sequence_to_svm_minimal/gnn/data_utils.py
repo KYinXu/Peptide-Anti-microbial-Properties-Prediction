@@ -317,6 +317,7 @@ class PeptideGraphDataset(Dataset):
         distance_threshold: float = 8.0,
         use_geometric_features: bool = False,
         geometric_feature_cols: Optional[List[str]] = None,
+        tabular_scaler_path: Optional[str] = None,
         node_feature_keep_indices: Optional[List[int]] = None,
         transform=None,
         pre_transform=None
@@ -326,6 +327,11 @@ class PeptideGraphDataset(Dataset):
         self.distance_threshold = distance_threshold
         self.use_geometric_features = use_geometric_features
         self.node_feature_keep_indices = node_feature_keep_indices
+        self.tabular_scaler = None
+        if tabular_scaler_path:
+            from gnn.extra_feature_scaler import load_extra_feature_scaler
+
+            self.tabular_scaler = load_extra_feature_scaler(str(tabular_scaler_path))
         
         # Load metadata
         self.df = pd.read_csv(csv_path)
@@ -350,6 +356,12 @@ class PeptideGraphDataset(Dataset):
             if missing:
                 print(f"Warning: Missing geometric feature columns: {missing}")
                 self.geo_cols = [c for c in self.geo_cols if c in self.df.columns]
+            if self.tabular_scaler is not None and self.geo_cols != self.tabular_scaler.feature_cols:
+                raise ValueError(
+                    "tabular_scaler feature column order/names must match geometric_feature_cols "
+                    f"(scaler: {len(self.tabular_scaler.feature_cols)} cols, "
+                    f"dataset: {len(self.geo_cols)} cols)"
+                )
         
         super().__init__(None, transform, pre_transform)
     
@@ -380,7 +392,11 @@ class PeptideGraphDataset(Dataset):
         # Get geometric features if requested
         geo_feats = None
         if self.use_geometric_features and self.geo_cols:
-            geo_feats = row[self.geo_cols].values.astype(np.float32)
+            raw = row[self.geo_cols].values.astype(np.float64)
+            raw = np.nan_to_num(raw, nan=0.0)
+            if self.tabular_scaler is not None:
+                raw = self.tabular_scaler.transform_vector(raw)
+            geo_feats = raw.astype(np.float32)
         
         data = pdb_to_graph(
             str(pdb_path),
