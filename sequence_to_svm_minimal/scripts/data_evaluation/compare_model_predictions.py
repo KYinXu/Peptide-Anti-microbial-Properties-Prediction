@@ -42,6 +42,9 @@ CONFIG = {
     'output_csv': str(_ROOT / 'results/test_model_comparison.csv'),
 }
 
+# GNN: divide logits by this before softmax (temperature scaling; T>1 softens probabilities).
+GNN_SOFTMAX_TEMPERATURE = 5.0
+
 FEATURE_SETS = [
     ('ESM-only', 'esm_only_pt'),
     ('ESM+Geo20', 'esm_geo_pt'),
@@ -162,7 +165,7 @@ def _run_gnn_predictions(csv_path: str,
             logit_nonamp = out[:, 0].cpu().numpy()
             logit_amp = out[:, 1].cpu().numpy()
             logit_margin = (out[:, 1] - out[:, 0]).cpu().numpy()
-            probs = F.softmax(out, dim=1)[:, 1].cpu().numpy()
+            probs = F.softmax(out / GNN_SOFTMAX_TEMPERATURE, dim=1)[:, 1].cpu().numpy()
             all_probs.extend(probs)
             all_logit_amp.extend(logit_amp)
             all_logit_nonamp.extend(logit_nonamp)
