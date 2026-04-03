@@ -94,23 +94,70 @@ python nn_pipeline/prepare_clusters.py --run-cdhit --input data/geometric_featur
 
 ---
 
-## 5. SVM path (sequences → descriptors → predictions)
+## 5. SVM path (sequences → 12 descriptors → SVM predictions)
 
-- **FASTA → seqs:** Step 1 (convert_fasta_to_svm) if starting from FASTA.
-- **Seqs → descriptors + SVM:** `scripts/data_generation/run_sequence_svm.py` — `--seqs` (2-col: index, sequence), `--aaindex`, `--output-dir`, `--model-pkl`, `--scaler-csv`. Produces `descriptors.csv`, `descriptors_PREDICTIONS.csv` in `--output-dir`. Optional `--start`, `--stop`.
-- Use these CSVs in step 3 via `--svm-predictions` / `--qsar-descriptors` so geometric CSV has SVM/QSAR columns for NN pipeline.
+This step is **optional**. It feeds the **trained legacy SVM** (margin / class probabilities), not the standalone QSAR-12 table used by `run_gnn_train_final_models.py` (that is step 6).
+
+**What it does**
+
+1. Reads a sequence list and runs `descriptors/descripGen_12_py3.py` to compute the **same 12 sequence descriptors** used historically with AAindex (written as `descriptors.csv`).
+2. Runs `predictionsParameters/predictSVC.py` with your `--model-pkl` and `--scaler-csv` to produce **SVM outputs** (`descriptors_PREDICTIONS_unsorted.csv`, `descriptors_PREDICTIONS.csv`).
+3. Those files can be merged into the geometric table in **step 3** via `build_geometric_features.py --svm-predictions` and/or `--qsar-descriptors` so the NN / legacy GNN path sees SVM margin and descriptor columns (index alignment with `peptide_id` as documented for that script).
+
+**Script:** `scripts/data_generation/run_sequence_svm.py`
+
+- **FASTA → seqs:** step 1 if you start from FASTA.
+- **Args:** `--seqs` (each line: `index sequence`, or **one sequence per line** with auto 1…*n* index; `#` lines skipped), `--aaindex` (directory with `aaindex1` / `aaindex2` / `aaindex3`), `--output-dir`, `--model-pkl`, `--scaler-csv`. Optional `--start`, `--stop` (1-based row indices **after** skipping blanks/comments).
 
 **Example:**
 
 ```bash
-python scripts/data_generation/run_sequence_svm.py --seqs data/seqs/seqs_AMP.txt --aaindex data/aaindex.csv --output-dir data/svm_out --model-pkl models/svm_model.pkl --scaler-csv models/scaler.csv
+python scripts/data_generation/run_sequence_svm.py --seqs data/seqs/seqs_AMP.txt --aaindex descriptors/aaindex --output-dir data/svm_out --model-pkl models/svm_model.pkl --scaler-csv models/scaler.csv
 ```
 
 ---
 
-## 6. GNN Training
+## 6. QSAR-12 features (for final GNN / `run_gnn_train_final_models.py`)
 
-### 6a. Legacy / CV script (graph + optional Geo + QSAR only)
+**Script:** `scripts/data_generation/generate_qsar_features.py`
+
+- Computes the **twelve QSAR-style columns** (`netCharge`, `FC`, … — see script) with `peptide_id` + `sequence` for each row.
+- **Input (CSV, recommended):** e.g. `geometric_features.csv` from step 3 — must include `sequence` and an id column (`peptide_id`, or `name` / `id` / first column). That keeps IDs aligned with the GNN merge.
+- **Input (plain text):** one sequence per line (IDs default to `seq_1`, `seq_2`, …), **or** `id<TAB>sequence` per line. Space-separated `id sequence` text files (like `seqs_AMP.txt`) are **not** parsed as two columns; convert to TSV or use CSV.
+- **Output:** e.g. `qsar12_descriptors.csv`. **`peptide_id` in this file must match** `peptide_id` in `geometric_features.csv` so **step 8b** can merge.
+
+**Example:**
+
+```bash
+python scripts/data_generation/generate_qsar_features.py --input data/geometric_features.csv --output data/qsar12_descriptors.csv
+python scripts/data_generation/generate_qsar_features.py -i raw_sequences_one_per_line.txt -o data/qsar12_descriptors.csv
+```
+
+---
+
+## 7. ESM-2 embeddings (for final GNN)
+
+**Script:** `models/esm_sequence_processor.py`
+
+- **Mode:** `--mode embeddings` (add `--mode fold` or `both` only if you also want structures from this entry point; structures for the main pipeline usually come from step 2).
+- **Input:** SVM-style text (`index sequence` or one sequence per line), or FASTA (see script help).
+- **Output:** CSV with `seqIndex` (the index from the input file) and columns `esm2_dim_0`, `esm2_dim_1`, …  
+- **Alignment:** `run_gnn_train_final_models.py` can load **one merged CSV** (`peptide_id` or `seqIndex`) or **AMP + DECOY CSVs** whose `seqIndex` matches the first column of `seqs_AMP.txt` / `seqs_decoy.txt`. Use the **same** seq files (and order) as for ESMFold so rows line up with `results_log.csv` / geometric features.
+
+**Example:**
+
+```bash
+python models/esm_sequence_processor.py --input data/seqs/seqs_AMP.txt --output data/esm2_amp.csv --mode embeddings --device cuda
+python models/esm_sequence_processor.py --input data/seqs/seqs_decoy.txt --output data/esm2_decoy.csv --mode embeddings
+```
+
+More detail: `models/README.md`.
+
+---
+
+## 8. GNN Training
+
+### 8a. Legacy / CV script (graph + optional Geo + QSAR only)
 
 **Script:** `scripts/run_gnn_training.py`
 
@@ -123,13 +170,13 @@ python scripts/data_generation/run_sequence_svm.py --seqs data/seqs/seqs_AMP.txt
 python scripts/run_gnn_training.py --csv_path data/geometric_features_clustered.csv --pdb_dir data/ --architecture gcn --epochs 100
 ```
 
-### 6b. Final models with ESM2 + Geo + QSAR (recommended for compare/inference)
+### 8b. Final models with ESM2 + Geo + QSAR (recommended for compare/inference)
 
 **Script:** `scripts/run_gnn_train_final_models.py`
 
 - **Inputs (unchanged upstream):** same `geometric_features_clustered.csv` (or `geometric_features.csv`) from step 3, PDBs from step 2, plus:
-  - **QSAR-12:** e.g. `qsar12_descriptors.csv` (merged on `peptide_id` by the script).
-  - **ESM2:** embedding tables with columns `esm2_dim_*` — from `models/esm_sequence_processor.py --mode embeddings` (see `models/README.md`); AMP/DECOY split files or one merged CSV as configured in `run_gnn_train_final_models.py` `CONFIG`.
+  - **QSAR-12:** from **step 6** (`generate_qsar_features.py`), e.g. `qsar12_descriptors.csv` (merged on `peptide_id` by the script).
+  - **ESM2:** from **step 7** (`esm_sequence_processor.py --mode embeddings`); embedding tables with columns `esm2_dim_*` — AMP/DECOY split CSVs or one merged CSV as in `run_gnn_train_final_models.py` `CONFIG`.
 - **Tabular scaling:** By default, Geo / QSAR / ESM2 blocks are **RobustScaler**-normalized on the **training split only** and a sidecar file is saved next to each checkpoint: `{checkpoint_stem}_tabular_scaler.joblib`. Raw CSVs are **not** modified. Use `--no_tabular_robust_scaler` to match older checkpoints trained on raw values.
 - **Inference:** `scripts/data_evaluation/compare_model_predictions.py` and `scripts/data_evaluation/run_gnn_inference.py` load that sidecar automatically when it sits beside the `.pt` file; test CSV columns and order must match training.
 
@@ -163,7 +210,7 @@ SVM/descriptor columns are optional for the legacy GNN script; the final-models 
 | `geometric_features_clustered.csv` | `prepare_clusters.py`         | Same as `geometric_features.csv`, but adds a `cluster_id` column for fair cross-validation splitting.          |
 | `descriptors.csv`                  | `run_sequence_svm.py`         | 12 QSAR-like sequence descriptors derived from the AAindex database.                                           |
 | `descriptors_PREDICTIONS.csv`      | `run_sequence_svm.py`         | Predictions (like probability scores) from a baseline Support Vector Machine (SVM) model.                      |
-| `qsar12_descriptors.csv` (typical) | Project-specific / descriptor pipeline | Twelve QSAR-style columns merged into GNN training by `run_gnn_train_final_models.py`.        |
+| `qsar12_descriptors.csv` (typical) | `generate_qsar_features.py` | Twelve QSAR-style columns + `peptide_id` / `sequence`; merged in **step 8b** on `peptide_id`.        |
 | `esm2_*.csv` (AMP/DECOY or merged) | `models/esm_sequence_processor.py` (`--mode embeddings`; see `models/README.md`) | Per-sequence embedding columns `esm2_dim_0`, … for GNN concatenation. |
 | `*_tabular_scaler.joblib`         | `run_gnn_train_final_models.py` (default) | Fitted RobustScaler state for Geo/QSAR/ESM2 blocks; keep next to matching `.pt` for inference. |
 
@@ -178,7 +225,9 @@ FASTA → [clean_fasta_file] → Clean FASTA
   → run_esmfold_peptides → {output}/AMP|DECOY/*.pdb, results_log.csv
   → build_geometric_features → geometric_features.csv
   → [prepare_clusters] → geometric_features_clustered.csv
-  → [ESM2 embeddings: models/esm_sequence_processor.py] → esm2_amp.csv / esm2_decoy.csv (or merged)
+  → [run_sequence_svm] → descriptors.csv, descriptors_PREDICTIONS.csv (optional; SVM path for step 3 merge)
+  → [generate_qsar_features] → qsar12_descriptors.csv (optional; for final GNN, step 8b)
+  → [esm_sequence_processor --mode embeddings] → esm2_amp.csv / esm2_decoy.csv (optional; for final GNN, step 8b)
   → GNN (final): run_gnn_train_final_models.py merges geometric + QSAR12 + ESM2; saves .pt + optional _tabular_scaler.joblib
   → GNN (legacy) / PeptideGraphDataset: run_gnn_training.py; NN: FeaturePipeline(geometric_csv=…)
 ```

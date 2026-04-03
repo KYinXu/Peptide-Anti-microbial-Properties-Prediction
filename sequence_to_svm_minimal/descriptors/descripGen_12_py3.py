@@ -5,7 +5,10 @@ Generates descriptors using the vendored Python 3-converted propy located at
 `descriptors/propy3_src/`.
 
 IN:     aaindexDirPath   - directory containing aaindex1, aaindex2, aaindex3
-        filename        - 2-col text file: col1=seq index (int), col2=sequence
+        filename        - text file: each non-empty line is either
+                          "index sequence" (index int, rest = sequence) or
+                          "sequence" only (1-based line index assigned in file order).
+                          Lines starting with # are skipped.
         outputFolder    - directory where descriptors.csv will be written
         startIndex      - 1-based index of first row to process
         stopIndex       - 1-based index of last row to process (inclusive)
@@ -50,7 +53,7 @@ from propy.PyPro import GetProDes  # type: ignore
 def _usage() -> None:
     print(f"USAGE: {sys.argv[0]}  <aaindexDirPath> <filename> <outputFolder> <startIndex> <stopIndex>")
     print("       aaindexDirPath    = directory containing aaindex1, aaindex2, aaindex3")
-    print("       filename          = whitespace-delimited: col1=seq index (int), col2=sequence")
+    print("       filename          = per line: 'index sequence' (index int) OR one sequence only (auto index)")
     print("       outputFolder      = directory path to write descriptors.csv (must be writable)")
     print("       startIndex        = 1-based index of first row to process")
     print("       stopIndex         = 1-based index of last row to process (inclusive)")
@@ -154,9 +157,20 @@ if __name__ == "__main__":
     seqs: List[str] = []
     with open(inFile, 'r') as seqsFile:
         for line in seqsFile:
-            a, b = line.split()
-            a = int(a)
-            b = str(b)
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                try:
+                    a = int(parts[0])
+                except ValueError:
+                    print(f"ERROR: two-field line must start with integer index, got: {line[:80]!r}")
+                    sys.exit(1)
+                b = str(parts[1]).strip()
+            else:
+                a = len(indices) + 1
+                b = str(parts[0]).strip()
             indices.append(a)
             seqs.append(b)
 

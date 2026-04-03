@@ -3,14 +3,15 @@
 Compare model predictions on unlabeled test data (SVM, GCN, GAT, EGNN).
 
 Outputs: per-sample predictions and confidence per model, agreement statistics,
-optional raw scores / logits, and per-model z-scores of a benchmark score (computed
-on this run so SVM distance and GNN logit margins are on comparable scale). No
+SVM decision_function distance, GNN logits and logit margin, and per-model z-scores
+of logits (GNN: logit_AMP − logit_nonAMP; SVM: decision_function margin). No
 ground-truth metrics (data is unlabeled).
 """
 from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -24,10 +25,11 @@ _ROOT = Path(__file__).resolve().parents[2]
 # Default config: compare feature sets for a single architecture.
 # Checkpoints should come from run_gnn_train_final_models.py.
 CONFIG = {
-    'geo_csv': str(_ROOT / 'data/test/geometric_features.csv'),
-    'pdb_dir': str(_ROOT / 'data/test/structures/sequences'),
-    'qsar_csv': str(_ROOT / 'data/test/qsar12_descriptors.csv'),
-    'svm_descriptor_csv': str(_ROOT / 'data/test/qsar12_descriptors.csv'),
+    'geo_csv': str(_ROOT / 'data/test/CPPs/geometric_features.csv'),
+    'pdb_dir': str(_ROOT / 'data/test/CPPs/structures/sequences'),
+    'qsar_csv': str(_ROOT / 'data/test/CPPs/qsar12_descriptors.csv'),
+    'geometric_qsar_combined_csv': str(_ROOT / 'data/test/CPPs/geometric_qsar_combined.csv'),
+    'svm_descriptor_csv': str(_ROOT / 'data/test/CPPs/qsar12_descriptors.csv'),
     'svm_z_file': str(_ROOT / 'results/checkpoints/svm_alpha_beta_combined/svm_qsar12_zscores.txt'),
     'svm_pkl': str(_ROOT / 'results/checkpoints/svm_alpha_beta_combined/svm_qsar12_model.pkl'),
     'architecture': 'gat',  # 'gcn', 'gat', or 'egnn'
@@ -39,7 +41,11 @@ CONFIG = {
     'gnn_layers': 3,
     'gnn_pooling': 'mean_max',
     'batch_size': 32,
-    'output_csv': str(_ROOT / 'results/test_model_comparison.csv'),
+    'output_csv': str(
+        _ROOT
+        / 'results/comparisons'
+        / f'test_model_comparison_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+    ),
 }
 
 # GNN: divide logits by this before softmax (temperature scaling; T>1 softens probabilities).
@@ -186,10 +192,8 @@ def _confidence(prob_amp: np.ndarray) -> np.ndarray:
     return np.maximum(prob_amp, 1.0 - prob_amp)
 
 
-def _raw_for_benchmark_z(model_name: str, result: dict, use_prob: bool) -> np.ndarray:
-    """Raw score to z-score on this run: P(AMP), or SVM decision_function / GNN logit margin."""
-    if use_prob:
-        return np.asarray(result["prob_amp"], dtype=np.float64)
+def _raw_for_benchmark_z(model_name: str, result: dict) -> np.ndarray:
+    """Raw logit-line score for per-run z-scoring: SVM decision_function; GNN logit margin."""
     if model_name == "SVM":
         return np.asarray(result["distance"], dtype=np.float64)
     return np.asarray(result["logit_margin"], dtype=np.float64)
@@ -315,20 +319,15 @@ def _print_cli_report(architecture: str,
         print(f"\nCombined per-peptide predictions saved to: {output_csv}")
 
 
-def _print_benchmark_z_summary(
-    names: list[str], results: dict, canonical_ids: list[str], use_prob: bool
-) -> None:
+def _print_benchmark_z_summary(names: list[str], results: dict, canonical_ids: list[str]) -> None:
     print("\nBenchmark z-scores (per model: mean=0, std=1 over finite scores in this run)")
-    if use_prob:
-        print("- Raw metric: P(AMP) for every model")
-    else:
-        print("- Raw metric: SVM decision_function; GNN logit_AMP − logit_nonAMP")
+    print("- Raw metric: SVM decision_function; GNN logit_AMP − logit_nonAMP")
     hdr = f"{'Model':<22}{'n':>6}{'raw μ':>12}{'raw σ':>12}"
     print("-" * len(hdr))
     print(hdr)
     print("-" * len(hdr))
     for m in names:
-        raw = _raw_for_benchmark_z(m, results[m], use_prob)
+        raw = _raw_for_benchmark_z(m, results[m])
         _, mu, sig, n_fin = _zscore_aligned_to_ids(canonical_ids, results[m]["ids"], raw)
         print(f"{m:<22}{n_fin:>6}{mu:>12.4f}{sig:>12.4f}")
     print("-" * len(hdr))
@@ -339,6 +338,12 @@ def main():
     ap.add_argument('--geo_csv', type=str, default=CONFIG['geo_csv'], help='Test geometric_features.csv')
     ap.add_argument('--pdb_dir', type=str, default=CONFIG['pdb_dir'], help='Directory containing test PDB files')
     ap.add_argument('--qsar_csv', type=str, default=CONFIG['qsar_csv'], help='Optional QSAR-12 descriptors CSV for Combined32')
+    ap.add_argument(
+        '--geometric_qsar_combined_csv',
+        type=str,
+        default=CONFIG['geometric_qsar_combined_csv'],
+        help='Merged geometric+QSAR CSV written for combined32/qsar12 GNN feature modes',
+    )
     ap.add_argument('--svm_descriptor_csv', type=str, default=CONFIG['svm_descriptor_csv'], help='Descriptor CSV for SVM')
     ap.add_argument('--svm_z_file', type=str, default=CONFIG['svm_z_file'], help='Z-score file: names, means, stds')
     ap.add_argument('--svm_pkl', type=str, default=CONFIG['svm_pkl'], help='Trained SVM pickle')
@@ -357,24 +362,14 @@ def main():
     ap.add_argument('--gnn_layers', type=int, default=CONFIG['gnn_layers'])
     ap.add_argument('--gnn_pooling', type=str, default=CONFIG['gnn_pooling'])
     ap.add_argument('--batch_size', type=int, default=CONFIG['batch_size'])
-    ap.add_argument('--output_csv', type=str, default=CONFIG['output_csv'], help='Save combined predictions CSV')
+    ap.add_argument(
+        '--output_csv',
+        type=str,
+        default=CONFIG['output_csv'],
+        help='Save combined predictions CSV (default: results/comparisons/test_model_comparison_YYYYMMDD_HHMMSS.csv)',
+    )
     ap.add_argument('--only_amp', action='store_true',
                     help='If set, save only peptides predicted as AMP (1) by at least one model')
-    ap.add_argument('--store_svm_distance', action='store_true',
-                    help='If set, store SVM decision_function distance in output CSV')
-    ap.add_argument('--store_gnn_logits', action='store_true',
-                    help='If set, store GNN raw logits and logit margin in output CSV')
-    ap.add_argument(
-        '--score_z',
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help='Include per-model z-scores of benchmark score on this run (SVM: decision_function; GNN: logit margin). Use --no-score_z to omit.',
-    )
-    ap.add_argument(
-        '--score_z_prob',
-        action='store_true',
-        help='If set with --score_z, z-score P(AMP) per model instead of distance / logit margin.',
-    )
     args = ap.parse_args()
 
     geo_df = pd.read_csv(args.geo_csv)
@@ -439,7 +434,7 @@ def main():
         ]
         merged_df = geo_df.merge(qsar_df[["peptide_id"] + qsar_cols], on="peptide_id", how="left")
         combined_feature_cols = geo_cols + qsar_cols
-        combined_csv_path = _ROOT / "data/test/geometric_qsar_combined.csv"
+        combined_csv_path = Path(args.geometric_qsar_combined_csv)
         combined_csv_path.parent.mkdir(parents=True, exist_ok=True)
         merged_df.to_csv(combined_csv_path, index=False)
 
@@ -502,12 +497,11 @@ def main():
     _print_cli_report(args.architecture, results, canonical_ids, ids_common, pred_frames, args.output_csv)
 
     score_z_by_model: dict[str, np.ndarray] = {}
-    if args.score_z:
-        for m in names:
-            raw = _raw_for_benchmark_z(m, results[m], args.score_z_prob)
-            z, _, _, _ = _zscore_aligned_to_ids(canonical_ids, results[m]["ids"], raw)
-            score_z_by_model[m] = z
-        _print_benchmark_z_summary(names, results, canonical_ids, args.score_z_prob)
+    for m in names:
+        raw = _raw_for_benchmark_z(m, results[m])
+        z, _, _, _ = _zscore_aligned_to_ids(canonical_ids, results[m]["ids"], raw)
+        score_z_by_model[m] = z
+    _print_benchmark_z_summary(names, results, canonical_ids)
 
     out_rows = []
     for idx, pid in enumerate(canonical_ids):
@@ -519,12 +513,11 @@ def main():
                 row[f'{m}_pred'] = int(r['pred'][i])
                 row[f'{m}_confidence'] = float(r['confidence'][i])
                 row[f'{m}_prob_AMP'] = float(r['prob_amp'][i])
-                if args.score_z:
-                    zv = score_z_by_model[m][idx]
-                    row[f'{m}_score_z'] = float(zv) if np.isfinite(zv) else None
-                if args.store_svm_distance and m == 'SVM':
+                zv = score_z_by_model[m][idx]
+                row[f'{m}_score_z'] = float(zv) if np.isfinite(zv) else None
+                if m == 'SVM':
                     row[f'{m}_distance'] = float(r['distance'][i]) if np.isfinite(r['distance'][i]) else None
-                if args.store_gnn_logits and m != 'SVM':
+                else:
                     row[f'{m}_logit_AMP'] = float(r['logit_amp'][i])
                     row[f'{m}_logit_nonAMP'] = float(r['logit_nonamp'][i])
                     row[f'{m}_logit_margin'] = float(r['logit_margin'][i])
@@ -532,11 +525,10 @@ def main():
                 row[f'{m}_pred'] = None
                 row[f'{m}_confidence'] = None
                 row[f'{m}_prob_AMP'] = None
-                if args.score_z:
-                    row[f'{m}_score_z'] = None
-                if args.store_svm_distance and m == 'SVM':
+                row[f'{m}_score_z'] = None
+                if m == 'SVM':
                     row[f'{m}_distance'] = None
-                if args.store_gnn_logits and m != 'SVM':
+                else:
                     row[f'{m}_logit_AMP'] = None
                     row[f'{m}_logit_nonAMP'] = None
                     row[f'{m}_logit_margin'] = None

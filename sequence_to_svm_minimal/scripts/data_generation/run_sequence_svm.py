@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 All-in-one pipeline:
-- Input: sequences file (2-column: seqIndex, sequence), aaindex dir, model pkl, scaler csv
+- Input: sequences file: each line "seqIndex sequence" or sequence only (auto 1..n index), aaindex dir, model pkl, scaler csv
 - Steps: generate descriptors (Python 3 generator) -> run SVM predictions
 - Output: descriptors.csv, descriptors_PREDICTIONS_unsorted.csv, descriptors_PREDICTIONS.csv inside output dir
 """
@@ -15,6 +15,17 @@ DESC_PY = os.path.join(ROOT, "descriptors", "descripGen_12_py3.py")
 PRED_PY = os.path.join(ROOT, "predictionsParameters", "predictSVC.py")
 
 
+def _count_sequence_file_rows(path: str) -> int:
+    """Match descripGen_12_py3.py: non-empty lines, skip # comments."""
+    n = 0
+    with open(path, "r") as f:
+        for line in f:
+            s = line.strip()
+            if s and not s.startswith("#"):
+                n += 1
+    return n
+
+
 def run(cmd_list, cwd: str):
     """Run a command given as a list of arguments."""
     print(f"[RUN] {' '.join(cmd_list)}")
@@ -25,13 +36,27 @@ def run(cmd_list, cwd: str):
 
 def main():
     ap = argparse.ArgumentParser(description="All-in-one GenomeClassifier pipeline (descriptors + SVM)")
-    ap.add_argument("--seqs", required=True, help="Path to sequences file (2 columns: seqIndex sequence)")
+    ap.add_argument(
+        "--seqs",
+        required=True,
+        help="Path to sequences file: each line 'seqIndex sequence' or one sequence per line (auto index)",
+    )
     ap.add_argument("--aaindex", required=True, help="Path to aaindex directory (contains aaindex1/2/3)")
     ap.add_argument("--output-dir", required=True, help="Directory to write descriptors / predictions")
     ap.add_argument("--model-pkl", required=True, help="Path to svc.pkl (legacy pre-0.18 pickle)")
     ap.add_argument("--scaler-csv", required=True, help="Path to Z_score_mean_std__intersect_noflip.csv")
-    ap.add_argument("--start", type=int, default=1, help="1-based start index in seqs file (default: 1)")
-    ap.add_argument("--stop", type=int, default=None, help="1-based stop index in seqs file (default: all)")
+    ap.add_argument(
+        "--start",
+        type=int,
+        default=1,
+        help="1-based index into loaded sequences (after skipping blanks/#), first row = 1 (default: 1)",
+    )
+    ap.add_argument(
+        "--stop",
+        type=int,
+        default=None,
+        help="1-based inclusive end index into loaded sequences (default: last loaded row)",
+    )
     args = ap.parse_args()
 
     # Resolve absolute paths
@@ -43,11 +68,8 @@ def main():
 
     os.makedirs(outdir, exist_ok=True)
 
-    # Determine stop index
     if args.stop is None:
-        with open(seqs, 'r') as f:
-            n_lines = sum(1 for _ in f)
-        stop = n_lines
+        stop = _count_sequence_file_rows(seqs)
     else:
         stop = args.stop
 

@@ -86,7 +86,7 @@ def _print_metric_legend(models: list[str], df: pd.DataFrame, metric_mode: str) 
     if metric_mode == "distance_like":
         print("- Side-by-side mapping: SVM uses decision_function distance; GNN models use logit_margin")
     if metric_mode == "score_z":
-        print("- Z-score columns from compare_model_predictions.py (--score_z); comparable scale across models on this run")
+        print("- Z-score columns from compare_model_predictions.py; comparable scale across models on this run")
     for m in models:
         col = _metric_col_for_model(df, m, metric_mode)
         label = col if col is not None else "N/A for this model"
