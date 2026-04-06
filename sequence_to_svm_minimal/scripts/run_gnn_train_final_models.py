@@ -356,6 +356,24 @@ def parse_args():
     ap.add_argument("--csv_path", type=str, default=CONFIG["csv_path"])
     ap.add_argument("--pdb_dir", type=str, default=CONFIG["pdb_dir"])
     ap.add_argument("--qsar_csv", type=str, default=CONFIG["qsar_csv"])
+    ap.add_argument(
+        "--esm2_csv",
+        type=str,
+        default=None,
+        help="Single merged ESM2 CSV (seqIndex or peptide_id + esm2_dim_*). Overrides CONFIG esm2 paths when set.",
+    )
+    ap.add_argument(
+        "--esm2_amp_csv",
+        type=str,
+        default=None,
+        help="Optional override for CONFIG esm2_amp_csv when not using --esm2_csv.",
+    )
+    ap.add_argument(
+        "--esm2_decoy_csv",
+        type=str,
+        default=None,
+        help="Optional override for CONFIG esm2_decoy_csv when not using --esm2_csv.",
+    )
     ap.add_argument("--architectures", type=str, nargs="+", default=ARCHITECTURES, choices=ARCHITECTURES)
     ap.add_argument("--feature_sets", type=str, nargs="+", default=list(FEATURE_CONFIGS.keys()), choices=list(FEATURE_CONFIGS.keys()))
     ap.add_argument(
@@ -418,12 +436,20 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     out_dir = Path(args.output_dir)
 
+    if args.esm2_csv is not None:
+        esm2_csv_path = args.esm2_csv
+        esm2_amp_path = None
+        esm2_decoy_path = None
+    else:
+        esm2_csv_path = CONFIG.get("esm2_csv")
+        esm2_amp_path = args.esm2_amp_csv if args.esm2_amp_csv is not None else CONFIG.get("esm2_amp_csv")
+        esm2_decoy_path = args.esm2_decoy_csv if args.esm2_decoy_csv is not None else CONFIG.get("esm2_decoy_csv")
     merged_df, qsar_cols, esm2_cols = load_data_with_features(
         args.csv_path,
         args.qsar_csv,
-        CONFIG.get("esm2_csv"),
-        CONFIG.get("esm2_amp_csv"),
-        CONFIG.get("esm2_decoy_csv"),
+        esm2_csv_path,
+        esm2_amp_path,
+        esm2_decoy_path,
     )
     if not esm2_cols:
         raise ValueError(

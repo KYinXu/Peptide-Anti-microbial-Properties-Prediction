@@ -4,6 +4,26 @@ Compact pipeline from sequence files to GNN/NN trainable data. All paths below a
 
 ---
 
+## Single entry: `scripts/run_data_pipeline.py`
+
+Orchestrates the default **unlabeled** path in one command: normalize input → ESMFold → geometric features → **QSAR-12** → **ESM-2 embeddings**, writing outputs under **`generated/`** next to the input file (same directory as `--input`), unless you override with `--work-dir`, plus `pipeline_manifest.json` there.
+
+- **Input:** `--input` path to a **txt** (one sequence per line, or `index sequence` / `id sequence` per line; `#` lines skipped) or **FASTA** (`.fa`/`.fasta`).
+- **Defaults:** clustering is **off** (use `--with-cluster` for `prepare_clusters`). QSAR and ESM2 run unless `--skip-qsar` / `--skip-esm2`.
+- **Outputs (typical):** `inputs/canonical_seqs.txt`, `structures/` (PDBs + `results_log.csv`), `geometric_features.csv`, `qsar12_descriptors.csv`, `esm2_embeddings.csv` (with `peptide_id` added for merges). With `--with-cluster`: `geometric_features_clustered.csv` and QSAR built from that file.
+- **Optional:** `--with-svm` (+ `--svm-aaindex`, `--svm-model-pkl`, `--svm-scaler-csv`), `--train-legacy-gnn`, `--train-final-gnn` (passes `--csv_path`, `--pdb_dir`, `--qsar_csv`, `--esm2_csv` into `run_gnn_train_final_models.py`). See `python scripts/run_data_pipeline.py --help`.
+- **Run from** the `sequence_to_svm_minimal` directory.
+
+```bash
+python scripts/run_data_pipeline.py --input data/test/Figshare/test_seqs.txt
+# Writes to data/test/Figshare/generated/ by default
+python scripts/run_data_pipeline.py --input seqs.fasta --work-dir data/my_run --dry-run
+```
+
+The sections below document each underlying script if you need to run steps individually.
+
+---
+
 ## Input formats
 
 - **AMP + decoy:** Two files (one sequence per line).
