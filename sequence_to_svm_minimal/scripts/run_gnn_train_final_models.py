@@ -22,6 +22,9 @@ import pandas as pd
 import torch
 from sklearn.model_selection import StratifiedShuffleSplit
 
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from gnn.models import PeptideGNN
@@ -351,11 +354,38 @@ def train_single_model(arch: str,
     return str(ckpt_path), best_metrics
 
 
+def resolve_final_train_paths(args: argparse.Namespace) -> None:
+    from peptide_pipeline.manifest_paths import gnn_final_training_paths_from_work_dir
+
+    bundle = None
+    if getattr(args, "pipeline_work_dir", None):
+        bundle = gnn_final_training_paths_from_work_dir(Path(args.pipeline_work_dir))
+    if getattr(args, "csv_path", None) is None:
+        args.csv_path = bundle["csv_path"] if bundle else CONFIG["csv_path"]
+    if getattr(args, "pdb_dir", None) is None:
+        args.pdb_dir = bundle["pdb_dir"] if bundle else CONFIG["pdb_dir"]
+    if getattr(args, "qsar_csv", None) is None:
+        args.qsar_csv = bundle["qsar_csv"] if bundle else CONFIG["qsar_csv"]
+    if (
+        args.esm2_csv is None
+        and getattr(args, "esm2_amp_csv", None) is None
+        and getattr(args, "esm2_decoy_csv", None) is None
+    ):
+        if bundle:
+            args.esm2_csv = bundle["esm2_csv"]
+
+
 def parse_args():
     ap = argparse.ArgumentParser(description="Train single GNN models (no CV) for test-time inference.")
-    ap.add_argument("--csv_path", type=str, default=CONFIG["csv_path"])
-    ap.add_argument("--pdb_dir", type=str, default=CONFIG["pdb_dir"])
-    ap.add_argument("--qsar_csv", type=str, default=CONFIG["qsar_csv"])
+    ap.add_argument(
+        "--pipeline-work-dir",
+        type=str,
+        default=None,
+        help="Pipeline workspace containing pipeline_manifest.json; sets csv_path, pdb_dir, qsar_csv, esm2_csv unless overridden.",
+    )
+    ap.add_argument("--csv_path", type=str, default=argparse.SUPPRESS)
+    ap.add_argument("--pdb_dir", type=str, default=argparse.SUPPRESS)
+    ap.add_argument("--qsar_csv", type=str, default=argparse.SUPPRESS)
     ap.add_argument(
         "--esm2_csv",
         type=str,
@@ -428,6 +458,7 @@ def get_device(name: str) -> torch.device:
 
 def main():
     args = parse_args()
+    resolve_final_train_paths(args)
     set_seed(args.seed)
     device = get_device(args.device)
 

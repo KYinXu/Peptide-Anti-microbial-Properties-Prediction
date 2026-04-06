@@ -18,6 +18,17 @@ import torch
 import pandas as pd
 from tqdm import tqdm
 
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from peptide_pipeline.aa_sanitize import sanitize_for_esm2
+
+
+def _sanitize_for_esm_alphabet(seq: str, valid_single: set[str]) -> str:
+    u = seq.upper()
+    return "".join(c if c in valid_single else "X" for c in u)
+
 
 def _parse_svm_style_file(input_file):
     """Parse plain text sequence file: 'index sequence' or 'sequence' per line."""
@@ -111,6 +122,7 @@ def extract_esm2_embeddings(sequences, model_name="esm2_t33_650M_UR50D", device=
     # Load model
     model, alphabet = esm.pretrained.__dict__[model_name]()
     batch_converter = alphabet.get_batch_converter()
+    valid_single = {t for t in alphabet.all_toks if len(t) == 1}
     model = model.to(device)
     model.eval()
     
@@ -126,6 +138,7 @@ def extract_esm2_embeddings(sequences, model_name="esm2_t33_650M_UR50D", device=
     print(f"{'='*60}")
     
     for idx, seq in tqdm(sequences, desc="Processing sequences"):
+        seq = _sanitize_for_esm_alphabet(seq, valid_single)
         # Prepare data
         data = [(idx, seq)]
         batch_labels, batch_strs, batch_tokens = batch_converter(data)
@@ -219,6 +232,7 @@ def predict_structures_esmfold(sequences, output_dir, device="cuda", max_length=
     results = []
     
     for idx, seq in tqdm(sequences, desc="Folding sequences"):
+        seq = sanitize_for_esm2(seq)
         # Check sequence length
         if len(seq) > max_length:
             print(f"⚠️  Sequence {idx} too long ({len(seq)} aa), skipping (max: {max_length})")

@@ -24,23 +24,45 @@ import torch
 from sklearn.model_selection import GroupKFold, StratifiedShuffleSplit
 import joblib
 
-# Add parent directory to path
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from gnn.data_utils import PeptideGraphDataset, create_dataloaders
 from gnn.models import PeptideGNN
 from gnn.train import run_training, evaluate, cross_validate, print_cv_summary
 
+_LEGACY_DEFAULT_CSV = "data/training_dataset/geometric_features_clustered.csv"
+_LEGACY_DEFAULT_PDB = "data/training_dataset"
+
+
+def resolve_legacy_train_paths(args: argparse.Namespace) -> None:
+    from peptide_pipeline.manifest_paths import gnn_legacy_training_paths_from_work_dir
+
+    bundle = None
+    if getattr(args, "pipeline_work_dir", None):
+        bundle = gnn_legacy_training_paths_from_work_dir(Path(args.pipeline_work_dir))
+    if getattr(args, "csv_path", None) is None:
+        args.csv_path = bundle["csv_path"] if bundle else _LEGACY_DEFAULT_CSV
+    if getattr(args, "pdb_dir", None) is None:
+        args.pdb_dir = bundle["pdb_dir"] if bundle else _LEGACY_DEFAULT_PDB
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train GNN for peptide classification')
     
     # Data arguments
-    parser.add_argument('--csv_path', type=str, 
-                        default='data/training_dataset/geometric_features_clustered.csv',
+    parser.add_argument(
+        "--pipeline-work-dir",
+        type=str,
+        default=None,
+        help="Pipeline workspace with pipeline_manifest.json; sets csv_path and pdb_dir unless overridden.",
+    )
+    parser.add_argument('--csv_path', type=str, default=argparse.SUPPRESS,
                         help='Path to CSV with peptide data')
     parser.add_argument('--pdb_dir', type=str,
-                        default='data/training_dataset',
+                        default=argparse.SUPPRESS,
                         help='Directory containing PDB files')
     
     # Model arguments
@@ -368,7 +390,8 @@ def run_pnas_evaluation(args, dataset, df, labels, device, class_weights):
 
 def main():
     args = parse_args()
-    
+    resolve_legacy_train_paths(args)
+
     # Setup
     set_seed(args.seed)
     device = get_device(args.device)

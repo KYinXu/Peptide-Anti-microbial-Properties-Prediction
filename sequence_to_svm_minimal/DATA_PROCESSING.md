@@ -20,6 +20,21 @@ python scripts/run_data_pipeline.py --input data/test/Figshare/test_seqs.txt
 python scripts/run_data_pipeline.py --input seqs.fasta --work-dir data/my_run --dry-run
 ```
 
+### Programmatic API (`peptide_pipeline` package)
+
+The same pipeline is available as a library under **`peptide_pipeline/`**: **`RunConfig`** (dataclass), **`run_pipeline(cfg) -> int`**, and **`REPO_ROOT`**. Steps live in `peptide_pipeline/steps/` (normalize, ESMFold, geometry, QSAR, ESM2, clustering, SVM, training subprocess wrappers).
+
+- **Import path:** run Python with `sequence_to_svm_minimal` on `sys.path` (as the CLI does), or install in editable mode: `pip install -e .` from `sequence_to_svm_minimal` using **`pyproject.toml`** at that directory.
+- **Tests:** `python tests/test_pipeline_modular.py`
+
+```python
+from pathlib import Path
+from peptide_pipeline import RunConfig, run_pipeline
+
+cfg = RunConfig(input_path=Path("data/seqs.txt"), dry_run=True)
+exit_code = run_pipeline(cfg)
+```
+
 The sections below document each underlying script if you need to run steps individually.
 
 ---
