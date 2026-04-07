@@ -8,6 +8,25 @@ from pathlib import Path
 MANIFEST_NAME = "pipeline_manifest.json"
 
 
+def resolve_generated_workspace(path: Path | str) -> Path:
+    """
+    Resolve the pipeline workspace directory that contains ``pipeline_manifest.json``.
+
+    Accepts either the ``generated/`` folder itself, or a parent directory that
+    contains ``generated/`` (as produced by ``run_data_pipeline`` defaults).
+    """
+    p = Path(path).expanduser().resolve()
+    if (p / MANIFEST_NAME).is_file():
+        return p
+    nested = p / "generated"
+    if (nested / MANIFEST_NAME).is_file():
+        return nested
+    raise FileNotFoundError(
+        f"Could not find {MANIFEST_NAME} in {p} or {nested}. "
+        "Pass the pipeline generated/ directory (or its parent containing generated/)."
+    )
+
+
 def load_pipeline_manifest(work_dir: Path) -> dict:
     work_dir = Path(work_dir).resolve()
     path = work_dir / MANIFEST_NAME

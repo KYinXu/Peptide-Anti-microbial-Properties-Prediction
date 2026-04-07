@@ -3,6 +3,13 @@
 Train single GNN models (no CV) for each architecture/feature config,
 and save checkpoints ready for use with `data_evaluation/compare_model_predictions.py`.
 
+Typical usage after ``run_data_pipeline`` (writes ``<input_dir>/generated/``):
+
+  python scripts/run_gnn_train_final_models.py path/to/generated
+
+You may also pass the parent of ``generated/``; the script resolves ``generated/``
+when the manifest lives there. Omit the path to use CONFIG / explicit CSV flags.
+
 Configs mirror `run_gnn_comparison.py`:
 - ESM (graph + ESM2)
 - Geo (graph + Geo20 + ESM2)
@@ -27,6 +34,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).parent))
 
+from gnn.data_utils import resolve_peptide_pdb_path
 from gnn.models import PeptideGNN
 from gnn.train import run_training, evaluate
 from gnn.extra_feature_scaler import ExtraFeatureRobustScaler, save_extra_feature_scaler
@@ -214,16 +222,12 @@ class CustomPeptideDataset:
 
         row = self.df.iloc[idx]
 
-        pdb_file = row.get("pdb_file", f"{row['peptide_id']}.pdb")
-        pdb_path = None
-        for subdir in ["structures/AMP", "structures/DECOY", "structures", ""]:
-            candidate = self.pdb_dir / subdir / pdb_file
-            if candidate.exists():
-                pdb_path = candidate
-                break
-
+        pdb_file = row.get("pdb_file", None)
+        pdb_path = resolve_peptide_pdb_path(self.pdb_dir, pdb_file, row["peptide_id"])
         if pdb_path is None:
-            raise FileNotFoundError(f"PDB not found: {pdb_file}")
+            raise FileNotFoundError(
+                f"PDB not found for peptide_id={row['peptide_id']!r} pdb_file={pdb_file!r} under {self.pdb_dir}"
+            )
 
         aa_sequence, ca_coords, plddt_values = parse_pdb(str(pdb_path))
         n_residues = len(aa_sequence)
@@ -355,11 +359,21 @@ def train_single_model(arch: str,
 
 
 def resolve_final_train_paths(args: argparse.Namespace) -> None:
-    from peptide_pipeline.manifest_paths import gnn_final_training_paths_from_work_dir
+    from peptide_pipeline.manifest_paths import (
+        gnn_final_training_paths_from_work_dir,
+        resolve_generated_workspace,
+    )
 
+    pos = getattr(args, "generated", None)
+    legacy = getattr(args, "pipeline_work_dir", None)
+    if pos and legacy and Path(pos).resolve() != Path(legacy).resolve():
+        raise SystemExit("Use only one of: GENERATED (positional) or --pipeline-work-dir.")
+    chosen = pos or legacy
     bundle = None
-    if getattr(args, "pipeline_work_dir", None):
-        bundle = gnn_final_training_paths_from_work_dir(Path(args.pipeline_work_dir))
+    if chosen:
+        workspace = resolve_generated_workspace(chosen)
+        bundle = gnn_final_training_paths_from_work_dir(workspace)
+        print("Pipeline workspace:", workspace, flush=True)
     if getattr(args, "csv_path", None) is None:
         args.csv_path = bundle["csv_path"] if bundle else CONFIG["csv_path"]
     if getattr(args, "pdb_dir", None) is None:
@@ -376,12 +390,29 @@ def resolve_final_train_paths(args: argparse.Namespace) -> None:
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Train single GNN models (no CV) for test-time inference.")
+    ap = argparse.ArgumentParser(
+        description="Train single GNN models (no CV) for test-time inference.",
+        epilog=(
+            "Primary input: the pipeline generated/ folder (or parent containing generated/) "
+            "with pipeline_manifest.json from run_data_pipeline."
+        ),
+    )
     ap.add_argument(
-        "--pipeline-work-dir",
+        "generated",
+        nargs="?",
+        default=None,
+        metavar="GENERATED",
+        help=(
+            "Pipeline generated/ directory (pipeline_manifest.json inside), or a parent folder "
+            "that contains generated/. Sets geometric CSV, PDB dir, QSAR12, ESM2 paths. "
+            "Omit for CONFIG defaults or use --csv_path / overrides."
+        ),
+    )
+    ap.add_argument(
+        "--input-dir",
         type=str,
         default=None,
-        help="Pipeline workspace containing pipeline_manifest.json; sets csv_path, pdb_dir, qsar_csv, esm2_csv unless overridden.",
+        help="Same as positional GENERATED (kept for scripts and backward compatibility).",
     )
     ap.add_argument("--csv_path", type=str, default=argparse.SUPPRESS)
     ap.add_argument("--pdb_dir", type=str, default=argparse.SUPPRESS)

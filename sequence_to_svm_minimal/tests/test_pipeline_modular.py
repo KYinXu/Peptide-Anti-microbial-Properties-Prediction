@@ -14,7 +14,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from peptide_pipeline.config import RunConfig, default_work_dir
-from peptide_pipeline.manifest_paths import gnn_final_training_paths_from_work_dir
+from peptide_pipeline.manifest_paths import (
+    gnn_final_training_paths_from_work_dir,
+    resolve_generated_workspace,
+)
 from peptide_pipeline.runner import run_pipeline
 
 
@@ -40,6 +43,15 @@ class TestPipelineModular(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             cfg = RunConfig(input_path=Path(td) / "missing.txt", dry_run=True)
             self.assertEqual(run_pipeline(cfg), 1)
+
+    def test_resolve_generated_workspace_parent_or_nested(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            gen = root / "generated"
+            gen.mkdir()
+            (gen / "pipeline_manifest.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(resolve_generated_workspace(gen), gen.resolve())
+            self.assertEqual(resolve_generated_workspace(root), gen.resolve())
 
     def test_gnn_final_paths_from_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as td:

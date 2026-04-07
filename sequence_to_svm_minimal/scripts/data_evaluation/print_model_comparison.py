@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pretty-print the contents of results/test_model_comparison.csv (or a given CSV)
+Pretty-print the contents of results/comparisons/model_comparison_latest.csv (or a given CSV)
 as a readable CLI table, showing every peptide and every model's prediction.
 
 Usage:
@@ -45,14 +45,18 @@ def _metric_col_for_model(df: pd.DataFrame, model: str, metric_mode: str) -> str
 
     if metric_mode == "svm_distance":
         if model == "SVM":
-            col = "SVM_distance"
-            return col if col in df.columns else None
+            for col in ("SVM_hyperplane_distance", "SVM_distance"):
+                if col in df.columns:
+                    return col
+            return None
         return None
 
     if metric_mode == "distance_like":
         if model == "SVM":
-            col = "SVM_distance"
-            return col if col in df.columns else None
+            for col in ("SVM_hyperplane_distance", "SVM_distance"):
+                if col in df.columns:
+                    return col
+            return None
         col = f"{model}_logit_margin"
         return col if col in df.columns else None
 
@@ -154,7 +158,7 @@ def _pairwise_agreement(df: pd.DataFrame, models: list[str]) -> None:
 
 def main():
     base_dir = Path(__file__).resolve().parents[2]
-    default_csv = base_dir / "results" / "test_model_comparison.csv"
+    default_csv = base_dir / "results" / "comparisons" / "model_comparison_latest.csv"
 
     ap = argparse.ArgumentParser(description="Pretty-print model comparison CSV as a CLI table.")
     ap.add_argument(

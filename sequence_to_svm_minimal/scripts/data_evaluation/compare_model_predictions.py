@@ -2,14 +2,42 @@
 """
 Compare model predictions on unlabeled test data (SVM, GCN, GAT, EGNN).
 
-Outputs: per-sample predictions and confidence per model, agreement statistics,
-SVM decision_function distance, GNN logits and logit margin, and per-model z-scores
-of logits (GNN: logit_AMP − logit_nonAMP; SVM: decision_function margin). No
-ground-truth metrics (data is unlabeled).
+Outputs: per-sample predictions, P(AMP), confidence, raw classifier scores (SVM
+``decision_function`` as ``SVM_hyperplane_distance`` / ``SVM_distance``; GNN
+``logit_AMP``, ``logit_nonAMP``, ``logit_margin``), and per-model z-scores of those
+raw scores within the run (GNN margin = logit_AMP − logit_nonAMP). Writes a
+timestamped CSV plus ``model_comparison_latest.csv`` (under GENERATED, or under
+``results/comparisons/`` when not using a workspace). No ground-truth metrics (data is unlabeled).
+
+Typical usage after ``run_data_pipeline`` + ``run_gnn_train_final_models`` (checkpoints in
+``generated/gnn_ready_models/``)::
+
+  python scripts/data_evaluation/compare_model_predictions.py path/to/generated
+
+If weights live elsewhere (e.g. ``checkpoints/``)::
+
+  python scripts/data_evaluation/compare_model_predictions.py path/to/generated \\
+      --gnn-checkpoints-dir path/to/checkpoints
+
+One tree for both GNN and QSAR-SVM artifacts::
+
+  python scripts/data_evaluation/compare_model_predictions.py path/to/generated \\
+      --checkpoints-base path/to/my_checkpoints
+
+Expected under ``my_checkpoints``: GNN weights in ``gnn/``, ``gnn_ready_models/``, or flat;
+SVM as ``svm_qsar12_model.pkl`` and ``svm_qsar12_zscores.txt`` (optionally under ``svm/``).
+Descriptors for SVM default to the pipeline ``--qsar_csv`` when present.
+
+You may pass the parent directory that contains ``generated/``. This mode reads
+``pipeline_manifest.json`` (including ``esm2_embeddings``) and skips the legacy QSAR-SVM block
+unless you omit the positional and pass ``--svm_pkl`` / ``--svm_z_file`` / ``--svm_descriptor_csv``
+explicitly, or use ``--checkpoints-base``. GNN checkpoints from ``run_gnn_train_final_models``
+use graph + ESM2 tabular dimensions; without ESM2, pass ``--esm2-csv`` or use a full pipeline run.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -41,15 +69,40 @@ CONFIG = {
     'gnn_layers': 3,
     'gnn_pooling': 'mean_max',
     'batch_size': 32,
-    'output_csv': str(
-        _ROOT
-        / 'results/comparisons'
-        / f'test_model_comparison_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
-    ),
+    # Runtime default is set in main() with a fresh timestamp (do not use datetime at import).
+    'output_csv': str(_ROOT / 'results' / 'comparisons' / 'model_comparison_latest.csv'),
 }
 
 # GNN: divide logits by this before softmax (temperature scaling; T>1 softens probabilities).
 GNN_SOFTMAX_TEMPERATURE = 5.0
+
+
+def _comparison_snapshot_csv_path(ws: Path | None) -> Path:
+    """Stable path overwritten each run so tools can open a fixed filename."""
+    if ws is not None:
+        return ws / "model_comparison_latest.csv"
+    comp = _ROOT / "results" / "comparisons"
+    comp.mkdir(parents=True, exist_ok=True)
+    return comp / "model_comparison_latest.csv"
+
+
+def _ordered_result_column_names(model_names: list[str]) -> list[str]:
+    """CSV column order: pred / prob / confidence, raw classifier scores, then per-run z-scores."""
+    cols: list[str] = []
+    for m in model_names:
+        cols.extend([f"{m}_pred", f"{m}_prob_AMP", f"{m}_confidence"])
+        if m == "SVM":
+            cols.extend([f"{m}_hyperplane_distance", f"{m}_distance", f"{m}_score_z"])
+        else:
+            cols.extend(
+                [
+                    f"{m}_logit_AMP",
+                    f"{m}_logit_nonAMP",
+                    f"{m}_logit_margin",
+                    f"{m}_score_z",
+                ]
+            )
+    return cols
 
 FEATURE_SETS = [
     ('ESM-only', 'esm_only_pt'),
@@ -57,6 +110,305 @@ FEATURE_SETS = [
     ('ESM+QSAR12', 'esm_qsar_pt'),
     ('ESM+Combined32', 'esm_combined_pt'),
 ]
+
+# Checkpoint stem suffixes from run_gnn_train_final_models.py (FEATURE_CONFIGS keys)
+_GNN_FEATURE_STEMS = ("ESM", "Geo", "QSAR", "Combined")
+
+_FEATURE_SET_TO_ARG = {
+    "ESM": "esm_only_pt",
+    "Geo": "esm_geo_pt",
+    "QSAR": "esm_qsar_pt",
+    "Combined": "esm_combined_pt",
+}
+
+# Must match run_gnn_train_final_models.create_feature_cols / load_data_with_features.
+GNN_GEO_COLS = [
+    "radius_gyration",
+    "end_to_end_distance",
+    "max_pairwise_distance",
+    "centroid_distance_mean",
+    "centroid_distance_std",
+    "fraction_helix",
+    "fraction_sheet",
+    "fraction_coil",
+    "total_sasa",
+    "hydrophobic_sasa",
+    "fraction_hydrophobic_sasa",
+    "length",
+    "net_charge",
+    "mean_hydrophobicity",
+    "hydrophobic_moment",
+    "curvature_mean",
+    "curvature_std",
+    "curvature_max",
+    "torsion_mean",
+    "torsion_std",
+]
+GNN_QSAR_COLS = [
+    "netCharge",
+    "FC",
+    "LW",
+    "DP",
+    "NK",
+    "AE",
+    "pcMK",
+    "_SolventAccessibilityD1025",
+    "tau2_GRAR740104",
+    "tau4_GRAR740104",
+    "QSO50_GRAR740104",
+    "QSO29_GRAR740104",
+]
+
+
+def _normalize_core_id(series: pd.Series) -> pd.Series:
+    s = series.astype(str)
+    return s.str.replace(r"^(AMP_|DECOY_)", "", regex=True)
+
+
+def _load_esm2_subtable(esm2_path: str) -> tuple[pd.DataFrame, list[str]]:
+    df = pd.read_csv(esm2_path)
+    if "peptide_id" in df.columns:
+        id_col = "peptide_id"
+    elif "seqIndex" in df.columns:
+        id_col = "seqIndex"
+    else:
+        raise SystemExit("ESM2 CSV must contain 'peptide_id' or 'seqIndex'")
+    emb_cols = [c for c in df.columns if c.startswith("esm2_dim_")]
+    if not emb_cols:
+        raise SystemExit("ESM2 CSV has no esm2_dim_* columns")
+    sub = df[[id_col] + emb_cols].copy()
+    sub["core_id"] = _normalize_core_id(sub[id_col])
+    return sub[["core_id"] + emb_cols], emb_cols
+
+
+def _build_gnn_feature_master(
+    args: argparse.Namespace, ws: Path | None
+) -> tuple[Path | None, dict[str, list[str]], bool]:
+    """Merge geo + optional QSAR + ESM2; write one CSV; column lists per training feature mode."""
+    esm2_path = getattr(args, "esm2_csv", None)
+    if not esm2_path or not Path(esm2_path).is_file():
+        return None, {}, bool(args.qsar_csv and Path(args.qsar_csv).is_file())
+
+    geo_df = pd.read_csv(args.geo_csv)
+    if "peptide_id" not in geo_df.columns:
+        raise SystemExit("geo_csv must contain peptide_id for GNN tabular features")
+
+    df = geo_df.copy()
+    has_qsar = bool(args.qsar_csv and Path(args.qsar_csv).is_file())
+    if has_qsar:
+        qsar_df = pd.read_csv(args.qsar_csv)
+        miss = [c for c in GNN_QSAR_COLS if c not in qsar_df.columns]
+        if miss:
+            raise SystemExit(f"QSAR CSV missing columns: {miss}")
+        df = df.merge(qsar_df[["peptide_id"] + GNN_QSAR_COLS], on="peptide_id", how="left")
+
+    df["core_id"] = _normalize_core_id(df["peptide_id"])
+    esm_sub, esm_cols = _load_esm2_subtable(esm2_path)
+    df = df.merge(esm_sub, on="core_id", how="left")
+    df = df.drop(columns=["core_id"])
+
+    out_path = Path(args.geometric_qsar_combined_csv)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out_path, index=False)
+
+    geo_present = [c for c in GNN_GEO_COLS if c in df.columns]
+    qsar_present = [c for c in GNN_QSAR_COLS if c in df.columns]
+    esm_present = [c for c in esm_cols if c in df.columns]
+
+    modes: dict[str, list[str]] = {
+        "esm": esm_present,
+        "geo20": geo_present + esm_present,
+        "qsar12": (qsar_present + esm_present) if has_qsar else [],
+        "combined32": (geo_present + qsar_present + esm_present) if has_qsar else [],
+    }
+    return out_path, modes, has_qsar
+
+
+def _set_gnn_paths_from_dir(args: argparse.Namespace, gdir: Path) -> None:
+    """Default .pt names from run_gnn_train_final_models.py."""
+    arch = args.architecture
+    args.esm_only_pt = str(gdir / f"{arch}_ready_{_GNN_FEATURE_STEMS[0]}.pt")
+    args.esm_geo_pt = str(gdir / f"{arch}_ready_{_GNN_FEATURE_STEMS[1]}.pt")
+    args.esm_qsar_pt = str(gdir / f"{arch}_ready_{_GNN_FEATURE_STEMS[2]}.pt")
+    args.esm_combined_pt = str(gdir / f"{arch}_ready_{_GNN_FEATURE_STEMS[3]}.pt")
+
+
+def _pick_gnn_dir_under_base(base: Path, arch: str) -> Path:
+    """Prefer gnn/, gnn_ready_models/, ready_models/ with weights; else flat base/."""
+    subdirs = [base / "gnn", base / "gnn_ready_models", base / "ready_models"]
+    for cand in subdirs:
+        if cand.is_dir() and list(cand.glob(f"{arch}_ready_*.pt")):
+            return cand
+    for cand in subdirs:
+        if cand.is_dir() and (cand / "ready_models_summary.json").is_file():
+            return cand
+    if list(base.glob(f"{arch}_ready_*.pt")):
+        return base
+    for cand in subdirs:
+        if cand.is_dir():
+            return cand
+    return base
+
+
+def apply_checkpoints_base(args: argparse.Namespace) -> Path:
+    """
+    Single root for GNN .pt tree and QSAR-SVM bundle.
+
+    GNN: ``<base>/gnn/``, ``<base>/gnn_ready_models/``, or ``<base>/*.pt`` (standard names).
+
+    SVM: first existing of
+    ``svm_qsar12_model.pkl``, ``svm/svm_qsar12_model.pkl``, ``svm_model.pkl``;
+    ``svm_qsar12_zscores.txt``, ``svm/svm_qsar12_zscores.txt``.
+    Descriptors: ``--qsar_csv`` if that file exists, else ``<base>/qsar12_descriptors.csv``
+    or ``<base>/svm/qsar12_descriptors.csv``.
+    """
+    base = Path(getattr(args, "checkpoints_base")).expanduser().resolve()
+    if not base.is_dir():
+        raise SystemExit(f"--checkpoints-base is not a directory: {base}")
+
+    arch = args.architecture
+    gdir = _pick_gnn_dir_under_base(base, arch)
+    _set_gnn_paths_from_dir(args, gdir)
+    print(f"Checkpoints base: {base}  (GNN: {gdir})", flush=True)
+
+    svm_pkl_cands = [
+        base / "svm_qsar12_model.pkl",
+        base / "svm" / "svm_qsar12_model.pkl",
+        base / "svm_model.pkl",
+    ]
+    svm_z_cands = [
+        base / "svm_qsar12_zscores.txt",
+        base / "svm" / "svm_qsar12_zscores.txt",
+    ]
+    pkl = next((p for p in svm_pkl_cands if p.is_file()), None)
+    zf = next((p for p in svm_z_cands if p.is_file()), None)
+    if pkl and zf:
+        desc_path: Path | None = None
+        if Path(args.qsar_csv).is_file():
+            desc_path = Path(args.qsar_csv).resolve()
+        else:
+            desc_cands = [
+                base / "qsar12_descriptors.csv",
+                base / "svm" / "qsar12_descriptors.csv",
+            ]
+            desc_path = next((p.resolve() for p in desc_cands if p.is_file()), None)
+        if desc_path is not None:
+            args.svm_pkl = str(pkl.resolve())
+            args.svm_z_file = str(zf.resolve())
+            args.svm_descriptor_csv = str(desc_path)
+            print(
+                f"SVM from base: {args.svm_pkl} + {args.svm_z_file} "
+                f"(descriptors: {args.svm_descriptor_csv})",
+                flush=True,
+            )
+        else:
+            print(
+                "Checkpoints base: found SVM pkl + z-scores but no descriptor CSV "
+                "(--qsar_csv missing or not a file, and no qsar12_descriptors.csv under base); "
+                "SVM skipped.",
+                flush=True,
+            )
+    else:
+        print(
+            "Checkpoints base: no svm_qsar12_model.pkl + svm_qsar12_zscores.txt found; SVM step skipped.",
+            flush=True,
+        )
+
+    return base
+
+
+def _try_apply_ready_models_summary(arch: str, args: argparse.Namespace, *roots: Path) -> Path | None:
+    """
+    First usable ready_models_summary.json under any root wins (earlier roots preferred).
+    Sets checkpoint paths when entries exist on disk.
+    """
+    candidates: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        if root is None or not root.is_dir():
+            continue
+        for p in (
+            root / "gnn_ready_models" / "ready_models_summary.json",
+            root / "ready_models_summary.json",
+        ):
+            if p.is_file():
+                k = str(p.resolve())
+                if k not in seen:
+                    seen.add(k)
+                    candidates.append(p)
+        for p in sorted(root.glob("**/ready_models_summary.json"), key=lambda x: len(str(x))):
+            k = str(p.resolve())
+            if k not in seen:
+                seen.add(k)
+                candidates.append(p)
+
+    for summary_path in candidates:
+        try:
+            data = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        models = data.get("models") or []
+        arch_l = arch.strip().lower()
+        n = 0
+        for m in models:
+            if str(m.get("architecture", "")).lower() != arch_l:
+                continue
+            fs = m.get("feature_set")
+            ck = m.get("checkpoint")
+            attr = _FEATURE_SET_TO_ARG.get(fs)
+            if attr and ck and Path(ck).is_file():
+                setattr(args, attr, str(Path(ck).resolve()))
+                n += 1
+        if n > 0:
+            print(f"Using {n} checkpoint path(s) from {summary_path}", flush=True)
+            return summary_path
+    return None
+
+
+def apply_pipeline_generated_workspace(
+    args: argparse.Namespace,
+    *,
+    skip_svm_clear: bool,
+) -> Path | None:
+    """
+    If GENERATED or --input-dir is set, fill paths from pipeline_manifest.json and
+    default GNN checkpoints under <workspace>/gnn_ready_models/{arch}_ready_*.pt.
+    Unless skip_svm_clear, clears this script's QSAR-SVM paths (use --svm_pkl etc. to keep).
+    """
+    from peptide_pipeline.manifest_paths import load_pipeline_manifest, resolve_generated_workspace
+
+    pos = getattr(args, "generated", None)
+    alt = getattr(args, "input_dir", None)
+    if pos and alt and Path(pos).resolve() != Path(alt).resolve():
+        raise SystemExit("Use only one of GENERATED (positional) or --input-dir / --pipeline-work-dir.")
+    chosen = pos or alt
+    if not chosen:
+        return None
+
+    ws = resolve_generated_workspace(chosen)
+    m = load_pipeline_manifest(ws)
+    for key in ("geometric_features", "structures_dir", "qsar12_descriptors", "esm2_embeddings"):
+        if not m.get(key):
+            raise SystemExit(
+                f"Manifest missing {key!r}; run the full pipeline (QSAR + ESM2 required for GNN checkpoints)."
+            )
+
+    args.geo_csv = str(Path(m["geometric_features"]).resolve())
+    args.pdb_dir = str(Path(m["structures_dir"]).resolve())
+    args.qsar_csv = str(Path(m["qsar12_descriptors"]).resolve())
+    args.geometric_qsar_combined_csv = str(ws / "compare_geo_qsar_merged.csv")
+    if getattr(args, "esm2_csv", None) is None:
+        args.esm2_csv = str(Path(m["esm2_embeddings"]).resolve())
+
+    _set_gnn_paths_from_dir(args, ws / "gnn_ready_models")
+
+    if not skip_svm_clear:
+        args.svm_descriptor_csv = ""
+        args.svm_z_file = ""
+        args.svm_pkl = ""
+
+    print(f"Pipeline workspace: {ws}", flush=True)
+    return ws
 
 
 def _load_svm_predictions(descriptor_csv: str, z_file: str, pkl_path: str):
@@ -256,8 +608,7 @@ def _print_cli_report(architecture: str,
                       results: dict,
                       canonical_ids: list,
                       ids_common: list,
-                      pred_frames: dict,
-                      output_csv: str | None) -> None:
+                      pred_frames: dict) -> None:
     """Pretty CLI report summarizing model behavior and agreement."""
     names = list(results.keys())
     n_samples = len(canonical_ids)
@@ -315,10 +666,6 @@ def _print_cli_report(architecture: str,
         agree = _agreement_matrix(names, [pred_frames[m] for m in names], ids_common)
         _print_agreement(names, agree, len(ids_common))
 
-    if output_csv:
-        print(f"\nCombined per-peptide predictions saved to: {output_csv}")
-
-
 def _print_benchmark_z_summary(names: list[str], results: dict, canonical_ids: list[str]) -> None:
     print("\nBenchmark z-scores (per model: mean=0, std=1 over finite scores in this run)")
     print("- Raw metric: SVM decision_function; GNN logit_AMP − logit_nonAMP")
@@ -331,22 +678,93 @@ def _print_benchmark_z_summary(names: list[str], results: dict, canonical_ids: l
         _, mu, sig, n_fin = _zscore_aligned_to_ids(canonical_ids, results[m]["ids"], raw)
         print(f"{m:<22}{n_fin:>6}{mu:>12.4f}{sig:>12.4f}")
     print("-" * len(hdr))
+    print("Same z-scores are written per peptide as <model>_score_z in the CSV.")
 
 
 def main():
-    ap = argparse.ArgumentParser(description='Compare SVM and GNN predictions on unlabeled test data')
+    ap = argparse.ArgumentParser(
+        description='Compare SVM and GNN predictions on unlabeled test data',
+        epilog=(
+            "GENERATED: reads pipeline_manifest.json; GNN defaults under <generated>/gnn_ready_models/. "
+            "--checkpoints-base sets one tree for GNN + QSAR-SVM; --gnn-checkpoints-dir overrides GNN only."
+        ),
+    )
+    ap.add_argument(
+        "generated",
+        nargs="?",
+        default=None,
+        metavar="GENERATED",
+        help="Pipeline generated/ directory or parent containing generated/; reads manifest and gnn_ready_models/.",
+    )
+    ap.add_argument(
+        "--input-dir",
+        "--pipeline-work-dir",
+        type=str,
+        default=None,
+        dest="input_dir",
+        help="Same as positional GENERATED.",
+    )
+    ap.add_argument(
+        "--checkpoints-base",
+        "--models-base",
+        type=str,
+        default=None,
+        dest="checkpoints_base",
+        help=(
+            "One directory for GNN weights (subfolder gnn/, gnn_ready_models/, or flat *.pt) "
+            "and QSAR-SVM (svm_qsar12_model.pkl + svm_qsar12_zscores.txt at base or base/svm/). "
+            "Descriptor CSV defaults to --qsar_csv when that file exists. "
+            "Runs after GENERATED; use --gnn-checkpoints-dir to override only the GNN folder."
+        ),
+    )
+    ap.add_argument(
+        "--gnn-checkpoints-dir",
+        type=str,
+        default=None,
+        help=(
+            "Folder with GNN .pt files ({arch}_ready_ESM.pt, …_Geo.pt, …_QSAR.pt, …_Combined.pt) "
+            "and optional ready_models_summary.json. Use with GENERATED to override "
+            "<generated>/gnn_ready_models/, or without GENERATED if you pass --geo_csv / --pdb_dir / --qsar_csv. "
+            "Overrides the GNN location chosen by --checkpoints-base."
+        ),
+    )
     ap.add_argument('--geo_csv', type=str, default=CONFIG['geo_csv'], help='Test geometric_features.csv')
     ap.add_argument('--pdb_dir', type=str, default=CONFIG['pdb_dir'], help='Directory containing test PDB files')
     ap.add_argument('--qsar_csv', type=str, default=CONFIG['qsar_csv'], help='Optional QSAR-12 descriptors CSV for Combined32')
     ap.add_argument(
+        '--esm2-csv',
+        type=str,
+        default=None,
+        dest='esm2_csv',
+        help=(
+            'ESM2 embeddings (peptide_id or seqIndex + esm2_dim_*). Required for GNN unless using GENERATED '
+            '(manifest esm2_embeddings). Checkpoints from run_gnn_train_final_models always use ESM2 tabular dims.'
+        ),
+    )
+    ap.add_argument(
         '--geometric_qsar_combined_csv',
         type=str,
         default=CONFIG['geometric_qsar_combined_csv'],
-        help='Merged geometric+QSAR CSV written for combined32/qsar12 GNN feature modes',
+        help='Merged geo+QSAR+ESM2 CSV written for all GNN tabular modes (matches training merges)',
     )
-    ap.add_argument('--svm_descriptor_csv', type=str, default=CONFIG['svm_descriptor_csv'], help='Descriptor CSV for SVM')
-    ap.add_argument('--svm_z_file', type=str, default=CONFIG['svm_z_file'], help='Z-score file: names, means, stds')
-    ap.add_argument('--svm_pkl', type=str, default=CONFIG['svm_pkl'], help='Trained SVM pickle')
+    ap.add_argument(
+        '--svm_descriptor_csv',
+        type=str,
+        default=argparse.SUPPRESS,
+        help='Descriptor CSV for QSAR SVM (default: CONFIG; cleared when using GENERATED unless --svm_pkl is set)',
+    )
+    ap.add_argument(
+        '--svm_z_file',
+        type=str,
+        default=argparse.SUPPRESS,
+        help='Z-score file: names, means, stds',
+    )
+    ap.add_argument(
+        '--svm_pkl',
+        type=str,
+        default=argparse.SUPPRESS,
+        help='Trained SVM pickle',
+    )
     ap.add_argument('--architecture', type=str, default=CONFIG['architecture'],
                     choices=['gcn', 'gat', 'egnn'],
                     help='GNN architecture to compare across feature sets')
@@ -365,12 +783,61 @@ def main():
     ap.add_argument(
         '--output_csv',
         type=str,
-        default=CONFIG['output_csv'],
-        help='Save combined predictions CSV (default: results/comparisons/test_model_comparison_YYYYMMDD_HHMMSS.csv)',
+        default=argparse.SUPPRESS,
+        help=(
+            'Primary CSV path (default: timestamped under GENERATED or results/comparisons/). '
+            'Also writes model_comparison_latest.csv under GENERATED or results/comparisons/.'
+        ),
+    )
+    ap.add_argument(
+        '--no-save',
+        action='store_true',
+        help='Do not write CSV files (stdout report only)',
     )
     ap.add_argument('--only_amp', action='store_true',
                     help='If set, save only peptides predicted as AMP (1) by at least one model')
     args = ap.parse_args()
+
+    user_passed_svm_pkl = hasattr(args, "svm_pkl")
+    if not hasattr(args, "svm_descriptor_csv"):
+        args.svm_descriptor_csv = CONFIG["svm_descriptor_csv"]
+    if not hasattr(args, "svm_z_file"):
+        args.svm_z_file = CONFIG["svm_z_file"]
+    if not hasattr(args, "svm_pkl"):
+        args.svm_pkl = CONFIG["svm_pkl"]
+
+    ws = apply_pipeline_generated_workspace(args, skip_svm_clear=user_passed_svm_pkl)
+
+    base_for_summary: Path | None = None
+    if getattr(args, "checkpoints_base", None):
+        base_for_summary = apply_checkpoints_base(args)
+
+    ckpt_root = getattr(args, "gnn_checkpoints_dir", None)
+    summary_roots: list[Path] = []
+    if base_for_summary is not None:
+        summary_roots.append(base_for_summary)
+    if ckpt_root:
+        gdir = Path(ckpt_root).expanduser().resolve()
+        if not gdir.is_dir():
+            raise SystemExit(f"--gnn-checkpoints-dir is not a directory: {gdir}")
+        _set_gnn_paths_from_dir(args, gdir)
+        summary_roots.append(gdir)
+        print(f"GNN checkpoints directory (override): {gdir}", flush=True)
+    if ws is not None:
+        summary_roots.append(ws)
+    if summary_roots:
+        _try_apply_ready_models_summary(args.architecture, args, *summary_roots)
+
+    if getattr(args, "no_save", False):
+        args.output_csv = ""
+    elif not hasattr(args, "output_csv"):
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if ws is not None:
+            args.output_csv = str(ws / f"model_comparison_{ts}.csv")
+        else:
+            comp_dir = _ROOT / "results" / "comparisons"
+            comp_dir.mkdir(parents=True, exist_ok=True)
+            args.output_csv = str(comp_dir / f"model_comparison_{ts}.csv")
 
     geo_df = pd.read_csv(args.geo_csv)
     id_col = 'peptide_id' if 'peptide_id' in geo_df.columns else ('name' if 'name' in geo_df.columns else geo_df.columns[0])
@@ -395,83 +862,38 @@ def main():
         pred_frames['SVM'] = pd.DataFrame({'pred': preds, 'prob_amp': prob_amp, 'confidence': results['SVM']['confidence']}, index=ids)
 
     feature_models = [
-        # (name, checkpoint_path, use_geometric_features_flag, feature_mode)
-        # feature_mode: 'graph', 'geo20', 'qsar12', or 'combined32'
-        ('ESM-only', args.esm_only_pt, False, 'esm'),
-        ('ESM+Geo20', args.esm_geo_pt, True, 'geo20'),
-        ('ESM+QSAR12', args.esm_qsar_pt, True, 'qsar12'),
-        ('ESM+Combined32', args.esm_combined_pt, True, 'combined32'),
+        # (display_name, checkpoint_path, feature_mode) — modes match run_gnn_train_final_models.FEATURE_CONFIGS
+        ('ESM-only', args.esm_only_pt, 'esm'),
+        ('ESM+Geo20', args.esm_geo_pt, 'geo20'),
+        ('ESM+QSAR12', args.esm_qsar_pt, 'qsar12'),
+        ('ESM+Combined32', args.esm_combined_pt, 'combined32'),
     ]
 
-    # Precompute merged CSV for Combined32 if requested
-    combined_csv_path = None
-    combined_feature_cols = None
-    if args.qsar_csv and Path(args.qsar_csv).exists():
-        geo_df = pd.read_csv(args.geo_csv)
-        qsar_df = pd.read_csv(args.qsar_csv)
-        qsar_cols = [
-            "netCharge",
-            "FC",
-            "LW",
-            "DP",
-            "NK",
-            "AE",
-            "pcMK",
-            "_SolventAccessibilityD1025",
-            "tau2_GRAR740104",
-            "tau4_GRAR740104",
-            "QSO50_GRAR740104",
-            "QSO29_GRAR740104",
-        ]
-        geo_cols = [
-            'radius_gyration', 'end_to_end_distance', 'max_pairwise_distance',
-            'centroid_distance_mean', 'centroid_distance_std',
-            'fraction_helix', 'fraction_sheet', 'fraction_coil',
-            'total_sasa', 'hydrophobic_sasa', 'fraction_hydrophobic_sasa',
-            'length', 'net_charge', 'mean_hydrophobicity', 'hydrophobic_moment',
-            'curvature_mean', 'curvature_std', 'curvature_max',
-            'torsion_mean', 'torsion_std'
-        ]
-        merged_df = geo_df.merge(qsar_df[["peptide_id"] + qsar_cols], on="peptide_id", how="left")
-        combined_feature_cols = geo_cols + qsar_cols
-        combined_csv_path = Path(args.geometric_qsar_combined_csv)
-        combined_csv_path.parent.mkdir(parents=True, exist_ok=True)
-        merged_df.to_csv(combined_csv_path, index=False)
+    gnn_master_path, mode_cols, _has_qsar_merge = _build_gnn_feature_master(args, ws)
+    if gnn_master_path is None:
+        print(
+            "GNN: no ESM2 embeddings CSV (--esm2-csv or GENERATED manifest). "
+            "Skipping GNN models; checkpoints expect esm2_dim_* tabular features.",
+            flush=True,
+        )
 
-    for name, path, use_geo, feat_mode in feature_models:
+    for name, path, feat_mode in feature_models:
         if not path or not Path(path).exists():
             continue
-        print(f"Running {args.architecture.upper()} ({name})...")
-        # Select CSV and feature columns depending on feature set
-        run_csv = args.geo_csv
-        geom_cols = None
-        if feat_mode == 'combined32' and combined_csv_path is not None and combined_feature_cols is not None:
-            run_csv = str(combined_csv_path)
-            geom_cols = combined_feature_cols
-        elif feat_mode == 'qsar12' and combined_csv_path is not None:
-            run_csv = str(combined_csv_path)
-            geom_cols = [
-                "netCharge",
-                "FC",
-                "LW",
-                "DP",
-                "NK",
-                "AE",
-                "pcMK",
-                "_SolventAccessibilityD1025",
-                "tau2_GRAR740104",
-                "tau4_GRAR740104",
-                "QSO50_GRAR740104",
-                "QSO29_GRAR740104",
-            ]
-        elif feat_mode in ('combined32', 'qsar12'):
-            print(f"Skipping {name}: requires --qsar_csv with QSAR-12 descriptors")
+        if gnn_master_path is None or not mode_cols:
             continue
-
+        geom_cols = mode_cols.get(feat_mode, [])
+        if not geom_cols:
+            if feat_mode == 'esm':
+                print(f"Skipping {name}: no ESM2 columns after merge", flush=True)
+            elif feat_mode in ('qsar12', 'combined32'):
+                print(f"Skipping {name}: need merged QSAR-12 + ESM2 (check --qsar_csv)", flush=True)
+            continue
+        print(f"Running {args.architecture.upper()} ({name})...")
         ids, preds, prob_amp, logit_amp, logit_nonamp, logit_margin = _run_gnn_predictions(
-            run_csv, args.pdb_dir, path, args.architecture,
+            str(gnn_master_path), args.pdb_dir, path, args.architecture,
             args.gnn_hidden, args.gnn_layers, args.gnn_pooling,
-            args.batch_size, use_geometric_features=use_geo,
+            args.batch_size, use_geometric_features=True,
             geometric_feature_cols=geom_cols
         )
         results[name] = {
@@ -486,7 +908,30 @@ def main():
         pred_frames[name] = pd.DataFrame({'pred': preds, 'prob_amp': prob_amp, 'confidence': results[name]['confidence']}, index=ids)
 
     if not results:
-        print("No models run. Provide at least: SVM inputs and/or one or more feature-set checkpoints for the chosen architecture.")
+        print(
+            "No models run: no SVM (expected with GENERATED unless you pass --svm_pkl / --svm_z_file / "
+            "--svm_descriptor_csv) and no GNN checkpoints found on disk.",
+            flush=True,
+        )
+        print(
+            f"Expected GNN weights for --architecture {args.architecture} (default gat), e.g.:",
+            flush=True,
+        )
+        for label, path in (
+            ("ESM-only", args.esm_only_pt),
+            ("ESM+Geo20", args.esm_geo_pt),
+            ("ESM+QSAR12", args.esm_qsar_pt),
+            ("ESM+Combined32", args.esm_combined_pt),
+        ):
+            ex = Path(path).is_file()
+            print(f"  {label}: {path}  {'OK' if ex else 'missing'}", flush=True)
+        print(
+            "Train with: python scripts/run_gnn_train_final_models.py <GENERATED> "
+            "(writes gnn_ready_models/ and ready_models_summary.json), or pass "
+            "--esm_only_pt / --esm_geo_pt / ... pointing to your .pt files. "
+            "Match --architecture to the backbone you trained (gat vs egnn vs gcn).",
+            flush=True,
+        )
         return 1
 
     names = list(results.keys())
@@ -494,7 +939,7 @@ def main():
     for m in names:
         ids_set &= set(results[m]['ids'])
     ids_common = [i for i in canonical_ids if i in ids_set]
-    _print_cli_report(args.architecture, results, canonical_ids, ids_common, pred_frames, args.output_csv)
+    _print_cli_report(args.architecture, results, canonical_ids, ids_common, pred_frames)
 
     score_z_by_model: dict[str, np.ndarray] = {}
     for m in names:
@@ -516,7 +961,9 @@ def main():
                 zv = score_z_by_model[m][idx]
                 row[f'{m}_score_z'] = float(zv) if np.isfinite(zv) else None
                 if m == 'SVM':
-                    row[f'{m}_distance'] = float(r['distance'][i]) if np.isfinite(r['distance'][i]) else None
+                    d = float(r['distance'][i]) if np.isfinite(r['distance'][i]) else None
+                    row[f'{m}_hyperplane_distance'] = d
+                    row[f'{m}_distance'] = d
                 else:
                     row[f'{m}_logit_AMP'] = float(r['logit_amp'][i])
                     row[f'{m}_logit_nonAMP'] = float(r['logit_nonamp'][i])
@@ -527,6 +974,7 @@ def main():
                 row[f'{m}_prob_AMP'] = None
                 row[f'{m}_score_z'] = None
                 if m == 'SVM':
+                    row[f'{m}_hyperplane_distance'] = None
                     row[f'{m}_distance'] = None
                 else:
                     row[f'{m}_logit_AMP'] = None
@@ -535,6 +983,10 @@ def main():
         out_rows.append(row)
 
     out_df = pd.DataFrame(out_rows)
+    preferred = ["peptide_id"] + _ordered_result_column_names(names)
+    ordered = [c for c in preferred if c in out_df.columns]
+    trailing = [c for c in out_df.columns if c not in ordered]
+    out_df = out_df[ordered + trailing]
 
     # Optional: keep only peptides predicted as AMP (1) by at least one model.
     if args.only_amp and not out_df.empty:
@@ -545,8 +997,16 @@ def main():
                 amp_mask = amp_mask | (out_df[col] == 1)
         out_df = out_df[amp_mask].reset_index(drop=True)
     if args.output_csv:
-        Path(args.output_csv).parent.mkdir(parents=True, exist_ok=True)
-        out_df.to_csv(args.output_csv, index=False)
+        primary = Path(args.output_csv)
+        primary.parent.mkdir(parents=True, exist_ok=True)
+        out_df.to_csv(primary, index=False)
+        snap = _comparison_snapshot_csv_path(ws)
+        snap.parent.mkdir(parents=True, exist_ok=True)
+        out_df.to_csv(snap, index=False)
+        print(f"\nSaved comparison CSV: {primary.resolve()}", flush=True)
+        print(f"Latest snapshot CSV:   {snap.resolve()}", flush=True)
+    elif getattr(args, "no_save", False):
+        print("\nNo CSV written (--no-save).", flush=True)
 
     return 0
 

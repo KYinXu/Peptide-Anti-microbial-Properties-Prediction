@@ -299,6 +299,64 @@ def pdb_to_graph(
     return data
 
 
+def _is_missing_pdb_file_value(pdb_file: object) -> bool:
+    if pdb_file is None:
+        return True
+    if isinstance(pdb_file, float) and pd.isna(pdb_file):
+        return True
+    s = str(pdb_file).strip()
+    return not s or s.lower() == "nan"
+
+
+def resolve_peptide_pdb_path(
+    pdb_dir: Path | str,
+    pdb_file: str | float | None,
+    peptide_id: str | int | float,
+) -> Optional[Path]:
+    """Locate a peptide PDB under ``pdb_dir``.
+
+    Layouts supported:
+
+    - **Pipeline / unlabeled ESMFold** (``run_esmfold_peptides --unlabeled``): PDBs under
+      ``<structures_dir>/sequences/<id>.pdb`` while ``geometric_features.csv`` often stores
+      only ``<id>.pdb``.
+    - **Labeled ESMFold**: ``<structures_dir>/AMP/`` and ``.../DECOY/``.
+    - **Flat**: PDBs directly in ``pdb_dir`` (e.g. ``pdb_dir`` already ``.../structures/sequences``).
+    - **Legacy**: ``pdb_dir/structures/{AMP,DECOY,sequences}/`` when ``pdb_dir`` is a parent
+      of a ``structures/`` tree.
+
+    If ``pdb_file`` is a relative path (e.g. from ``results_log``), it is resolved under
+    ``pdb_dir`` first.
+    """
+    pdb_dir = Path(pdb_dir)
+    pid = str(peptide_id).strip()
+
+    name: str
+    if not _is_missing_pdb_file_value(pdb_file):
+        pf = str(pdb_file).strip().replace("\\", "/")
+        direct = pdb_dir / pf
+        if direct.is_file():
+            return direct
+        name = Path(pf).name
+    else:
+        name = pid if pid.endswith(".pdb") else f"{pid}.pdb"
+
+    candidates: List[Path] = [
+        pdb_dir / name,
+        pdb_dir / "sequences" / name,
+        pdb_dir / "AMP" / name,
+        pdb_dir / "DECOY" / name,
+        pdb_dir / "structures" / "sequences" / name,
+        pdb_dir / "structures" / "AMP" / name,
+        pdb_dir / "structures" / "DECOY" / name,
+        pdb_dir / "structures" / name,
+    ]
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
 # =============================================================================
 # DATASET CLASS
 # =============================================================================
@@ -371,19 +429,13 @@ class PeptideGraphDataset(Dataset):
     def get(self, idx: int) -> Data:
         row = self.df.iloc[idx]
         
-        # Get PDB path
-        pdb_file = row.get('pdb_file', f"{row['peptide_id']}.pdb")
-        
-        # Check multiple possible locations
-        pdb_path = None
-        for subdir in ['structures/AMP', 'structures/DECOY', 'structures/sequences', 'structures', '']:
-            candidate = self.pdb_dir / subdir / pdb_file
-            if candidate.exists():
-                pdb_path = candidate
-                break
-        
+        pdb_file = row.get("pdb_file", None)
+        pdb_path = resolve_peptide_pdb_path(self.pdb_dir, pdb_file, row["peptide_id"])
         if pdb_path is None:
-            raise FileNotFoundError(f"PDB file not found: {pdb_file}")
+            hint = row.get("pdb_file", f"{row['peptide_id']}.pdb")
+            raise FileNotFoundError(
+                f"PDB not found for peptide_id={row['peptide_id']!r} pdb_file={hint!r} under {self.pdb_dir}"
+            )
         
         # Get label and convert to 0/1 (handle -1/1 or 0/1 formats)
         raw_label = int(row['label'])

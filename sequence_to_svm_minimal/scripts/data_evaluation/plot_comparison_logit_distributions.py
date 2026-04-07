@@ -39,8 +39,10 @@ def _models_from_df(df: pd.DataFrame) -> list[str]:
 
 def _signed_score_column(df: pd.DataFrame, model: str) -> str | None:
     if model == "SVM":
-        col = "SVM_distance"
-        return col if col in df.columns else None
+        for col in ("SVM_hyperplane_distance", "SVM_distance"):
+            if col in df.columns:
+                return col
+        return None
     col = f"{model}_logit_margin"
     return col if col in df.columns else None
 
@@ -138,7 +140,7 @@ def _plot_combined(
 
 
 def main() -> None:
-    default_csv = ROOT / "results" / "test_model_comparison.csv"
+    default_csv = ROOT / "results" / "comparisons" / "model_comparison_latest.csv"
     default_out = ROOT / "results" / "comparison_plots" / "signed_score_distributions.png"
 
     ap = argparse.ArgumentParser(

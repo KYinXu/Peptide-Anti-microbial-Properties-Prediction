@@ -30,7 +30,7 @@ os.environ['PYTHONWARNINGS'] = 'ignore'
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from gnn.data_utils import PeptideGraphDataset
+from gnn.data_utils import PeptideGraphDataset, resolve_peptide_pdb_path
 from gnn.models import PeptideGNN
 from gnn.train import run_training, cross_validate, evaluate, evaluate_probs
 from torch_geometric.loader import DataLoader
@@ -145,17 +145,12 @@ class CustomPeptideDataset:
         
         row = self.df.iloc[idx]
         
-        # Find PDB file
-        pdb_file = row.get('pdb_file', f"{row['peptide_id']}.pdb")
-        pdb_path = None
-        for subdir in ['structures/AMP', 'structures/DECOY', 'structures', '']:
-            candidate = self.pdb_dir / subdir / pdb_file
-            if candidate.exists():
-                pdb_path = candidate
-                break
-        
+        pdb_file = row.get("pdb_file", None)
+        pdb_path = resolve_peptide_pdb_path(self.pdb_dir, pdb_file, row["peptide_id"])
         if pdb_path is None:
-            raise FileNotFoundError(f"PDB not found: {pdb_file}")
+            raise FileNotFoundError(
+                f"PDB not found for peptide_id={row['peptide_id']!r} pdb_file={pdb_file!r} under {self.pdb_dir}"
+            )
         
         # Parse PDB
         aa_sequence, ca_coords, plddt_values = parse_pdb(str(pdb_path))

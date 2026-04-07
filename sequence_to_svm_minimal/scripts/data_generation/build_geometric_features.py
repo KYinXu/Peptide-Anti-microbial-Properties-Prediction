@@ -102,7 +102,8 @@ def process_single_pdb(
     pdb_path: Path,
     results_lookup: pd.DataFrame = None,
     svm_lookup: pd.DataFrame = None,
-    qsar_lookup: pd.DataFrame = None
+    qsar_lookup: pd.DataFrame = None,
+    pdb_anchor_dir: Path | None = None,
 ) -> dict:
     """
     Process a single PDB file and extract all features.
@@ -168,8 +169,13 @@ def process_single_pdb(
         if label is not None:
             features['label'] = label
         
-        # Add source info
-        features['pdb_file'] = str(pdb_path.name)
+        if pdb_anchor_dir is not None:
+            try:
+                features["pdb_file"] = str(pdb_path.resolve().relative_to(pdb_anchor_dir.resolve()))
+            except ValueError:
+                features["pdb_file"] = str(pdb_path.name)
+        else:
+            features["pdb_file"] = str(pdb_path.name)
         
         return features
         
@@ -234,6 +240,7 @@ Examples:
         print(f"❌ PDB directory not found: {pdb_dir}")
         sys.exit(1)
     
+    pdb_anchor = pdb_dir.resolve()
     pdb_files = find_pdb_files(pdb_dir)
     print(f"📂 Found {len(pdb_files)} PDB files")
     
@@ -290,7 +297,8 @@ Examples:
             pdb_path=pdb_path,
             results_lookup=results_lookup,
             svm_lookup=svm_lookup,
-            qsar_lookup=qsar_lookup
+            qsar_lookup=qsar_lookup,
+            pdb_anchor_dir=pdb_anchor,
         )
         
         if features is not None:
