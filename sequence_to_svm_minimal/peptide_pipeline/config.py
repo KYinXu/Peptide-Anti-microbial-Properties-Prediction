@@ -42,6 +42,9 @@ class RunConfig:
     train_final_gnn: bool = False
     final_gnn_output_dir: str | None = None
     final_gnn_epochs: int | None = None
+    skip_model_comparison: bool = False
+    no_gnn_platt: bool = False
+    compare_gnn_architecture: str = "gat"
 
     @classmethod
     def from_args(cls, args: Namespace) -> RunConfig:
@@ -75,4 +78,7 @@ class RunConfig:
             train_final_gnn=args.train_final_gnn,
             final_gnn_output_dir=args.final_gnn_output_dir,
             final_gnn_epochs=args.final_gnn_epochs,
+            skip_model_comparison=args.skip_model_comparison,
+            no_gnn_platt=args.no_gnn_platt,
+            compare_gnn_architecture=args.compare_gnn_architecture,
         )

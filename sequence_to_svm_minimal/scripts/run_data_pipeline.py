@@ -72,6 +72,26 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--train-final-gnn", action="store_true")
     ap.add_argument("--final-gnn-output-dir", type=str, default=None)
     ap.add_argument("--final-gnn-epochs", type=int, default=None)
+    ap.add_argument(
+        "--skip-model-comparison",
+        action="store_true",
+        help=(
+            "With --train-final-gnn, skip compare_model_predictions.py at the end "
+            "(default: run comparison on the workspace using Platt when *_platt.json exists)."
+        ),
+    )
+    ap.add_argument(
+        "--no-gnn-platt",
+        action="store_true",
+        help="Forwarded to compare_model_predictions: use GNN softmax instead of Platt scaling.",
+    )
+    ap.add_argument(
+        "--compare-gnn-architecture",
+        type=str,
+        default="gat",
+        choices=["gcn", "gat", "egnn"],
+        help="GNN backbone for the post-training model comparison step (default: gat).",
+    )
     return ap
 
 

@@ -31,6 +31,7 @@ class RunContext:
     run_svm_script: Path
     legacy_train_script: Path
     final_train_script: Path
+    compare_script: Path
     manifest: dict = field(default_factory=dict)
 
     @classmethod
@@ -67,5 +68,6 @@ class RunContext:
             run_svm_script=root / "scripts" / "data_generation" / "run_sequence_svm.py",
             legacy_train_script=root / "scripts" / "run_gnn_training.py",
             final_train_script=root / "scripts" / "run_gnn_train_final_models.py",
+            compare_script=root / "scripts" / "data_evaluation" / "compare_model_predictions.py",
             manifest=manifest,
         )

@@ -36,6 +36,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from gnn.data_utils import resolve_peptide_pdb_path
 from gnn.models import PeptideGNN
+from gnn.platt import (
+    collect_margins_and_labels,
+    default_platt_path,
+    fit_platt,
+    save_platt_json,
+)
 from gnn.train import run_training, evaluate
 from gnn.extra_feature_scaler import ExtraFeatureRobustScaler, save_extra_feature_scaler
 
@@ -268,7 +274,7 @@ def train_single_model(arch: str,
                        args,
                        device: torch.device,
                        out_dir: Path):
-    """Train a single model with a train/val split and save checkpoint."""
+    """Train a single model with a train/val split; save checkpoint and Platt JSON on val."""
     feature_cols = create_feature_cols(
         feature_cfg["use_geo"],
         feature_cfg["use_qsar"],
@@ -306,13 +312,22 @@ def train_single_model(arch: str,
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_data, batch_size=args.batch_size, shuffle=False)
 
-    n_samples = len(labels)
-    n_classes = len(np.unique(labels))
-    class_weights = torch.tensor(
-        [n_samples / (n_classes * np.sum(labels == c)) for c in range(n_classes)],
-        dtype=torch.float32,
-        device=device,
-    )
+    num_model_classes = 2
+    train_y = labels[train_idx]
+    counts = np.bincount(train_y, minlength=num_model_classes)
+    if int(counts.min()) > 0:
+        n_tr = int(train_y.shape[0])
+        w = np.array(
+            [n_tr / (num_model_classes * int(counts[c])) for c in range(num_model_classes)],
+            dtype=np.float32,
+        )
+        class_weights = torch.tensor(w, dtype=torch.float32, device=device)
+    else:
+        print(
+            "Warning: training split has only one class; using unweighted cross-entropy.",
+            flush=True,
+        )
+        class_weights = None
 
     geo_dim = len(feature_cols)
     model = PeptideGNN(
@@ -355,7 +370,22 @@ def train_single_model(arch: str,
         save_extra_feature_scaler(tabular_scaler, str(scaler_path))
         print(f"Saved tabular scaler: {scaler_path}")
 
-    return str(ckpt_path), best_metrics
+    platt_path = default_platt_path(ckpt_path)
+    margins, y_val = collect_margins_and_labels(model, val_loader, device)
+    platt_payload = fit_platt(margins, y_val)
+    if platt_payload is not None:
+        save_platt_json(platt_path, platt_payload)
+        print(
+            f"Saved Platt calibration ({platt_payload['n_calib']} val samples): {platt_path}",
+            flush=True,
+        )
+    else:
+        print(
+            "Platt calibration skipped (need both classes on the validation split).",
+            flush=True,
+        )
+
+    return str(ckpt_path), best_metrics, str(platt_path) if platt_payload is not None else None
 
 
 def resolve_final_train_paths(args: argparse.Namespace) -> None:
@@ -366,9 +396,13 @@ def resolve_final_train_paths(args: argparse.Namespace) -> None:
 
     pos = getattr(args, "generated", None)
     legacy = getattr(args, "pipeline_work_dir", None)
-    if pos and legacy and Path(pos).resolve() != Path(legacy).resolve():
-        raise SystemExit("Use only one of: GENERATED (positional) or --pipeline-work-dir.")
-    chosen = pos or legacy
+    input_dir = getattr(args, "input_dir", None)
+    paths = [p for p in (pos, legacy, input_dir) if p]
+    if len(paths) > 1 and len({Path(p).resolve() for p in paths}) > 1:
+        raise SystemExit(
+            "Use only one of: GENERATED (positional), --pipeline-work-dir, or --input-dir."
+        )
+    chosen = pos or legacy or input_dir
     bundle = None
     if chosen:
         workspace = resolve_generated_workspace(chosen)
@@ -413,6 +447,13 @@ def parse_args():
         type=str,
         default=None,
         help="Same as positional GENERATED (kept for scripts and backward compatibility).",
+    )
+    ap.add_argument(
+        "--pipeline-work-dir",
+        type=str,
+        default=None,
+        dest="pipeline_work_dir",
+        help="Same as positional GENERATED (alias used by other pipeline scripts).",
     )
     ap.add_argument("--csv_path", type=str, default=argparse.SUPPRESS)
     ap.add_argument("--pdb_dir", type=str, default=argparse.SUPPRESS)
@@ -562,7 +603,7 @@ def main():
 
     for arch, feature_name in unique_pairs:
         f_cfg = FEATURE_CONFIGS[feature_name]
-        ckpt_path, metrics = train_single_model(
+        ckpt_path, metrics, platt_path = train_single_model(
             arch=arch,
             feature_name=feature_name,
             feature_cfg=f_cfg,
@@ -573,14 +614,15 @@ def main():
             device=device,
             out_dir=out_dir,
         )
-        summary["models"].append(
-            {
-                "architecture": arch,
-                "feature_set": feature_name,
-                "checkpoint": ckpt_path,
-                "metrics": {k: float(v) for k, v in metrics.items()},
-            }
-        )
+        entry = {
+            "architecture": arch,
+            "feature_set": feature_name,
+            "checkpoint": ckpt_path,
+            "metrics": {k: float(v) for k, v in metrics.items()},
+        }
+        if platt_path:
+            entry["platt_calibration"] = platt_path
+        summary["models"].append(entry)
 
     summary_path = out_dir / "ready_models_summary.json"
     with open(summary_path, "w") as f:

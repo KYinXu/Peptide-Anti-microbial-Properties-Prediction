@@ -16,6 +16,7 @@ Run from sequence_to_svm_minimal:
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -68,12 +69,59 @@ def _gnn_shared_x_range(df: pd.DataFrame, models: list[str], pad_frac: float = 0
     return (lo - pad, hi + pad)
 
 
+def _dataset_name_from_csv_path(csv_path: Path) -> str:
+    """
+    Best-effort dataset label for plot titles/filenames.
+
+    If the CSV lives under a pipeline `generated/` workspace, use the directory name
+    immediately above `generated/` (e.g. `.../Figshare/generated/...` -> `Figshare`).
+    Otherwise, fall back to the CSV stem.
+    """
+    parts_l = [p.lower() for p in csv_path.parts]
+    if "generated" in parts_l:
+        i = parts_l.index("generated")
+        if i - 1 >= 0:
+            return csv_path.parts[i - 1]
+    return csv_path.stem
+
+
+def _sanitize_for_filename(s: str) -> str:
+    return "".join(ch if (ch.isalnum() or ch in ("-", "_")) else "_" for ch in s).strip("_")
+
+
+def _write_plot_metadata_json(
+    *,
+    json_path: Path,
+    csv_path: Path,
+    out_path: Path,
+    dataset_name: str,
+    models: list[str],
+    bins: int,
+    layout: str,
+) -> None:
+    meta = {
+        "created_utc": datetime.utcnow().isoformat() + "Z",
+        "dataset_name": dataset_name,
+        "csv_path": str(csv_path.resolve()),
+        "output_png": str(out_path.resolve()),
+        "models": models,
+        "bins": int(bins),
+        "layout": layout,
+    }
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    import json
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, sort_keys=True)
+
+
 def _plot_combined(
     df: pd.DataFrame,
     models: list[str],
     bins: int,
     layout: str,
     out_path: Path,
+    dataset_name: str,
 ) -> None:
     n = len(models)
     if n == 0:
@@ -133,7 +181,12 @@ def _plot_combined(
         ax.set_title(f"{model}\n({subtitle})")
 
     ax_flat[n - 1].set_xlabel("Class Margin (logit_AMP - logit_nonAMP)")
-    fig.suptitle("AMP vs non-AMP score distribution", y=1.01, fontsize=12, fontweight="bold")
+    fig.suptitle(
+        f"AMP vs non-AMP score distribution — {dataset_name}",
+        y=1.01,
+        fontsize=12,
+        fontweight="bold",
+    )
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -141,7 +194,7 @@ def _plot_combined(
 
 def main() -> None:
     default_csv = ROOT / "results" / "comparisons" / "model_comparison_latest.csv"
-    default_out = ROOT / "results" / "comparison_plots" / "signed_score_distributions.png"
+    default_out = ""
 
     ap = argparse.ArgumentParser(
         description="One figure: histogram of signed score per model (comparison CSV).",
@@ -150,8 +203,17 @@ def main() -> None:
     ap.add_argument(
         "--output",
         type=str,
-        default=str(default_out),
-        help="Output PNG path",
+        default=default_out,
+        help=(
+            "Output PNG path. If omitted, writes a timestamped PNG under results/comparison_plots/ "
+            "so old plots are not overwritten."
+        ),
+    )
+    ap.add_argument(
+        "--dataset-name",
+        type=str,
+        default=None,
+        help="Optional dataset label to display in the plot title (auto-derived from CSV path).",
     )
     ap.add_argument(
         "--layout",
@@ -175,9 +237,28 @@ def main() -> None:
     if not models:
         raise ValueError("No *_pred columns found; is this a comparison CSV?")
 
-    out_path = Path(args.output)
+    dataset_name = args.dataset_name or _dataset_name_from_csv_path(csv_path)
+    dataset_slug = _sanitize_for_filename(dataset_name)
+
+    if args.output:
+        out_path = Path(args.output)
+    else:
+        out_dir = ROOT / "results" / "comparison_plots"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = out_dir / f"signed_score_distributions_{dataset_slug}_{ts}.png"
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    _plot_combined(df, models, args.bins, args.layout, out_path)
+    _plot_combined(df, models, args.bins, args.layout, out_path, dataset_name)
+    _write_plot_metadata_json(
+        json_path=out_path.with_suffix("").with_name(out_path.stem + "_meta.json"),
+        csv_path=csv_path,
+        out_path=out_path,
+        dataset_name=dataset_name,
+        models=models,
+        bins=args.bins,
+        layout=args.layout,
+    )
     print(f"Wrote {out_path}")
 
 

@@ -15,6 +15,7 @@ from peptide_pipeline.steps.geometric_step import step_geometric
 from peptide_pipeline.steps.normalize import normalize_to_canonical
 from peptide_pipeline.steps.qsar_step import step_qsar
 from peptide_pipeline.steps.svm_step import step_svm
+from peptide_pipeline.steps.comparison_step import step_compare_model_predictions
 from peptide_pipeline.steps.train_step import step_final_gnn, step_legacy_gnn
 
 
@@ -81,6 +82,8 @@ def run_pipeline(cfg: RunConfig) -> int:
             )
             return 1
         step_final_gnn(ctx, cfg, geo_train)
+        if not cfg.skip_model_comparison:
+            step_compare_model_predictions(ctx, cfg)
 
     if not cfg.dry_run:
         with open(manifest_path, "w", encoding="utf-8") as f:

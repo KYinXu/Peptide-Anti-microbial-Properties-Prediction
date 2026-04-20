@@ -5,7 +5,10 @@ Compare model predictions on unlabeled test data (SVM, GCN, GAT, EGNN).
 Outputs: per-sample predictions, P(AMP), confidence, raw classifier scores (SVM
 ``decision_function`` as ``SVM_hyperplane_distance`` / ``SVM_distance``; GNN
 ``logit_AMP``, ``logit_nonAMP``, ``logit_margin``), and per-model z-scores of those
-raw scores within the run (GNN margin = logit_AMP − logit_nonAMP). Writes a
+raw scores within the run (GNN margin = logit_AMP − logit_nonAMP). GNN P(AMP) uses Platt scaling by default when ``<checkpoint_stem>_platt.json`` sits
+next to the ``.pt`` file (written by ``run_gnn_train_final_models`` on the validation
+split); otherwise plain softmax. Pass ``--no-gnn-platt`` to force softmax even if a
+Platt file exists. Writes a
 timestamped CSV plus ``model_comparison_latest.csv`` (under GENERATED, or under
 ``results/comparisons/`` when not using a workspace). No ground-truth metrics (data is unlabeled).
 
@@ -73,10 +76,6 @@ CONFIG = {
     'output_csv': str(_ROOT / 'results' / 'comparisons' / 'model_comparison_latest.csv'),
 }
 
-# GNN: divide logits by this before softmax (temperature scaling; T>1 softens probabilities).
-GNN_SOFTMAX_TEMPERATURE = 5.0
-
-
 def _comparison_snapshot_csv_path(ws: Path | None) -> Path:
     """Stable path overwritten each run so tools can open a fixed filename."""
     if ws is not None:
@@ -103,6 +102,60 @@ def _ordered_result_column_names(model_names: list[str]) -> list[str]:
                 ]
             )
     return cols
+
+
+def _write_comparison_metadata_json(
+    *,
+    json_path: Path,
+    args: argparse.Namespace,
+    ws: Path | None,
+    results: dict,
+    mode_cols: dict[str, list[str]] | None,
+    gnn_master_path: Path | None,
+    canonical_count: int,
+) -> None:
+    """Write a compact metadata JSON next to the comparison outputs."""
+    def _p(v: object) -> str | None:
+        if v is None:
+            return None
+        try:
+            s = str(v)
+        except Exception:
+            return None
+        if not s:
+            return None
+        return s
+
+    names = list(results.keys())
+    meta = {
+        "created_utc": datetime.utcnow().isoformat() + "Z",
+        "workspace_generated": _p(ws.resolve()) if ws is not None else None,
+        "architecture": getattr(args, "architecture", None),
+        "inputs": {
+            "geo_csv": _p(getattr(args, "geo_csv", None)),
+            "pdb_dir": _p(getattr(args, "pdb_dir", None)),
+            "qsar_csv": _p(getattr(args, "qsar_csv", None)),
+            "esm2_csv": _p(getattr(args, "esm2_csv", None)),
+            "gnn_feature_master_csv": _p(gnn_master_path.resolve()) if gnn_master_path is not None else None,
+            "canonical_peptide_count": int(canonical_count),
+        },
+        "checkpoints": {
+            "svm_pkl": _p(getattr(args, "svm_pkl", None)),
+            "svm_z_file": _p(getattr(args, "svm_z_file", None)),
+            "svm_descriptor_csv": _p(getattr(args, "svm_descriptor_csv", None)),
+            "esm_only_pt": _p(getattr(args, "esm_only_pt", None)),
+            "esm_geo_pt": _p(getattr(args, "esm_geo_pt", None)),
+            "esm_qsar_pt": _p(getattr(args, "esm_qsar_pt", None)),
+            "esm_combined_pt": _p(getattr(args, "esm_combined_pt", None)),
+        },
+        "models_run": names,
+        "feature_columns_by_mode": mode_cols or {},
+        "cli_args": {k: _p(v) if isinstance(v, (Path,)) else v for k, v in vars(args).items()},
+    }
+
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, sort_keys=True)
 
 FEATURE_SETS = [
     ('ESM-only', 'esm_only_pt'),
@@ -469,16 +522,30 @@ def _run_gnn_predictions(csv_path: str,
                          batch_size: int,
                          use_geometric_features: bool,
                          geometric_feature_cols=None,
-                         tabular_scaler_path: str | None = None):
+                         tabular_scaler_path: str | None = None,
+                         *,
+                         use_gnn_platt: bool = True):
     """Run one GNN checkpoint and return ids/preds/prob/logits/margin."""
     import torch
-    import torch.nn.functional as F
     from torch_geometric.loader import DataLoader
 
     from gnn.data_utils import PeptideGraphDataset
     from gnn.models import PeptideGNN
+    from gnn.platt import default_platt_path, load_platt_json, platt_prob_amp, softmax_prob_amp
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    platt_json = default_platt_path(model_path)
+    platt = load_platt_json(platt_json) if use_gnn_platt else None
+    if not use_gnn_platt:
+        print("  GNN probabilities: softmax (--no-gnn-platt)", flush=True)
+    elif platt is not None:
+        print(f"  GNN probabilities: Platt scaling ({platt_json.name})", flush=True)
+    else:
+        print(
+            f"  GNN probabilities: softmax (no {platt_json.name}; retrain with "
+            "run_gnn_train_final_models.py for Platt)",
+            flush=True,
+        )
     scaler_path = tabular_scaler_path
     if scaler_path is None and use_geometric_features:
         scaler_path = _default_tabular_scaler_path(model_path)
@@ -523,7 +590,10 @@ def _run_gnn_predictions(csv_path: str,
             logit_nonamp = out[:, 0].cpu().numpy()
             logit_amp = out[:, 1].cpu().numpy()
             logit_margin = (out[:, 1] - out[:, 0]).cpu().numpy()
-            probs = F.softmax(out / GNN_SOFTMAX_TEMPERATURE, dim=1)[:, 1].cpu().numpy()
+            if platt is not None:
+                probs = platt_prob_amp(logit_margin, platt["coef"], platt["intercept"])
+            else:
+                probs = softmax_prob_amp(out)
             all_probs.extend(probs)
             all_logit_amp.extend(logit_amp)
             all_logit_nonamp.extend(logit_nonamp)
@@ -796,6 +866,11 @@ def main():
     )
     ap.add_argument('--only_amp', action='store_true',
                     help='If set, save only peptides predicted as AMP (1) by at least one model')
+    ap.add_argument(
+        '--no-gnn-platt',
+        action='store_true',
+        help='Use softmax on GNN logits for P(AMP) even when *_platt.json exists next to checkpoints',
+    )
     args = ap.parse_args()
 
     user_passed_svm_pkl = hasattr(args, "svm_pkl")
@@ -894,7 +969,8 @@ def main():
             str(gnn_master_path), args.pdb_dir, path, args.architecture,
             args.gnn_hidden, args.gnn_layers, args.gnn_pooling,
             args.batch_size, use_geometric_features=True,
-            geometric_feature_cols=geom_cols
+            geometric_feature_cols=geom_cols,
+            use_gnn_platt=not args.no_gnn_platt,
         )
         results[name] = {
             'ids': ids,
@@ -1003,6 +1079,25 @@ def main():
         snap = _comparison_snapshot_csv_path(ws)
         snap.parent.mkdir(parents=True, exist_ok=True)
         out_df.to_csv(snap, index=False)
+        # Metadata JSON alongside each output.
+        _write_comparison_metadata_json(
+            json_path=primary.with_suffix("").with_name(primary.stem + "_meta.json"),
+            args=args,
+            ws=ws,
+            results=results,
+            mode_cols=mode_cols,
+            gnn_master_path=gnn_master_path,
+            canonical_count=len(canonical_ids),
+        )
+        _write_comparison_metadata_json(
+            json_path=snap.with_suffix("").with_name(snap.stem + "_meta.json"),
+            args=args,
+            ws=ws,
+            results=results,
+            mode_cols=mode_cols,
+            gnn_master_path=gnn_master_path,
+            canonical_count=len(canonical_ids),
+        )
         print(f"\nSaved comparison CSV: {primary.resolve()}", flush=True)
         print(f"Latest snapshot CSV:   {snap.resolve()}", flush=True)
     elif getattr(args, "no_save", False):
