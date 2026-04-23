@@ -17,6 +17,7 @@ SAFEGUARDS:
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta
@@ -48,13 +49,20 @@ def save_checkpoint(checkpoint_file, checkpoint_data):
         json.dump(checkpoint_data, f, indent=2)
 
 
+# First column like 1, 2, 10 (not 02264, not Q6FI13) → unlabeled PDB SEQ_<n>
+_PLAIN_POS_INT = re.compile(r"^[1-9]\d*$")
+
+
 def parse_sequence_file(input_file, label, prefix):
     """
     Parse sequence file in SVM format:
     1 MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPN
     2 GVVDSDDLPLVVAASNAGKSTVVQLLAAAG
     
-    Returns list of (unique_id, original_idx, sequence, label) tuples
+    Returns list of (unique_id, original_idx, sequence, label) tuples.
+
+    Unlabeled (prefix SEQ): bare lines → SEQ_1, SEQ_2, …; two-field lines with a
+    numeric first token → SEQ_<n>; non-numeric first token (e.g. Q6FI13, 02264) → <id>.pdb.
     """
     sequences = []
     
@@ -69,7 +77,14 @@ def parse_sequence_file(input_file, label, prefix):
                 idx, seq = parts
                 idx = idx.strip()
                 seq = seq.strip()
-                unique_id = f"{prefix}_{idx}"
+                if prefix == "SEQ":
+                    unique_id = (
+                        f"{prefix}_{idx}"
+                        if _PLAIN_POS_INT.fullmatch(idx)
+                        else idx
+                    )
+                else:
+                    unique_id = f"{prefix}_{idx}"
                 sequences.append((unique_id, idx, seq, label))
             elif len(parts) == 1:
                 seq = parts[0].strip()
@@ -162,7 +177,7 @@ Examples:
   # Reset and start fresh
   python run_esmfold_peptides.py --output structures/ --reset
 
-  # Unlabeled dataset (single file; PDBs in sequences/, IDs SEQ_1, SEQ_2, ..., label=0)
+  # Unlabeled: bare lines → SEQ_n; two-field with numeric id → SEQ_n; accession-style id → <id>.pdb
   python run_esmfold_peptides.py --amp-file data/test_seqs.txt --output structures/ --unlabeled
         """
     )
@@ -191,7 +206,7 @@ Examples:
     parser.add_argument('--decoy-only', action='store_true',
                         help='Only process decoy sequences')
     parser.add_argument('--unlabeled', action='store_true',
-                        help='Unlabeled dataset: single sequence file, no AMP/decoy; PDBs in sequences/, IDs SEQ_N, label=0 in results_log')
+                        help='Unlabeled dataset: single sequence file, no AMP/decoy; PDBs in sequences/; bare lines → SEQ_n; numeric id + seq → SEQ_n; non-numeric id → <id>.pdb; label=0 in results_log')
     
     args = parser.parse_args()
     

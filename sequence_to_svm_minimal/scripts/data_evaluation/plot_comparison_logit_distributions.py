@@ -150,6 +150,13 @@ def _plot_combined(
             ax.set_visible(False)
             continue
         x = pd.to_numeric(df[col], errors="coerce").dropna().to_numpy()
+        if x.size:
+            mu = float(np.mean(x))
+            var = float(np.var(x))
+            stat_text = f"μ={mu:.3f}  var={var:.3f}  (n={int(x.size)})"
+        else:
+            stat_text = "No finite scores"
+            
         color = cmap[i % len(cmap)]
         if model == "SVM":
             ax.hist(
@@ -160,6 +167,7 @@ def _plot_combined(
                 edgecolor="black",
                 linewidth=0.6,
                 alpha=0.9,
+                label=stat_text,
             )
             subtitle = "SVM decision function"
         else:
@@ -172,13 +180,17 @@ def _plot_combined(
                 edgecolor="black",
                 linewidth=0.6,
                 alpha=0.9,
+                label=stat_text,
             )
             if gnn_xlim is not None:
                 ax.set_xlim(gnn_xlim)
             subtitle = "Raw logit outputs"
+        
         ax.axvline(0.0, color="black", linestyle="--", linewidth=1, alpha=0.75)
         ax.set_ylabel("Density")
         ax.set_title(f"{model}\n({subtitle})")
+        # Add legend to the subplot itself
+        ax.legend(loc="upper right", fontsize=9, framealpha=0.8)
 
     ax_flat[n - 1].set_xlabel("Class Margin (logit_AMP - logit_nonAMP)")
     fig.suptitle(

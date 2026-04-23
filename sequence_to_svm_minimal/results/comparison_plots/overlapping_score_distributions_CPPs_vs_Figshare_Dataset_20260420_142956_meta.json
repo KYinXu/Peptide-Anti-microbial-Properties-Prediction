@@ -1,0 +1,17 @@
+{
+  "bins": 50,
+  "created_utc": "2026-04-20T21:29:56.743767Z",
+  "csv1_path": "/mnt/c/Users/bioin/Documents/Peptide-Anti-microbial-Properties-Prediction/sequence_to_svm_minimal/results/comparisons/test_model_comparison_20260403_111225.csv",
+  "csv2_path": "/mnt/c/Users/bioin/Documents/Peptide-Anti-microbial-Properties-Prediction/sequence_to_svm_minimal/results/comparisons/model_comparison_20260406_170807.csv",
+  "dataset_name1": "CPPs",
+  "dataset_name2": "Figshare Dataset",
+  "layout": "rows",
+  "models": [
+    "SVM",
+    "ESM-only",
+    "ESM+Geo20",
+    "ESM+QSAR12",
+    "ESM+Combined32"
+  ],
+  "output_png": "/mnt/c/Users/bioin/Documents/Peptide-Anti-microbial-Properties-Prediction/sequence_to_svm_minimal/results/comparison_plots/overlapping_score_distributions_CPPs_vs_Figshare_Dataset_20260420_142956.png"
+}

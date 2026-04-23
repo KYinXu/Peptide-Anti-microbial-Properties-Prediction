@@ -45,6 +45,12 @@ class RunConfig:
     skip_model_comparison: bool = False
     no_gnn_platt: bool = False
     compare_gnn_architecture: str = "gat"
+    window_min_len: int | None = None
+    window_max_len: int | None = None
+    window_stride: int = 1
+
+    def uses_windowing(self) -> bool:
+        return self.window_min_len is not None and self.window_max_len is not None
 
     @classmethod
     def from_args(cls, args: Namespace) -> RunConfig:
@@ -81,4 +87,7 @@ class RunConfig:
             skip_model_comparison=args.skip_model_comparison,
             no_gnn_platt=args.no_gnn_platt,
             compare_gnn_architecture=args.compare_gnn_architecture,
+            window_min_len=getattr(args, "window_min_len", None),
+            window_max_len=getattr(args, "window_max_len", None),
+            window_stride=getattr(args, "window_stride", 1),
         )

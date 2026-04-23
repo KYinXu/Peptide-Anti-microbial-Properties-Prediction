@@ -10,7 +10,8 @@ next to the ``.pt`` file (written by ``run_gnn_train_final_models`` on the valid
 split); otherwise plain softmax. Pass ``--no-gnn-platt`` to force softmax even if a
 Platt file exists. Writes a
 timestamped CSV plus ``model_comparison_latest.csv`` (under GENERATED, or under
-``results/comparisons/`` when not using a workspace). No ground-truth metrics (data is unlabeled).
+``results/comparisons/`` when not using a workspace). Includes ``sequence`` from
+``--geo_csv`` when that file has a ``sequence`` column. No ground-truth metrics (data is unlabeled).
 
 Typical usage after ``run_data_pipeline`` + ``run_gnn_train_final_models`` (checkpoints in
 ``generated/gnn_ready_models/``)::
@@ -64,10 +65,10 @@ CONFIG = {
     'svm_z_file': str(_ROOT / 'results/checkpoints/svm_alpha_beta_combined/svm_qsar12_zscores.txt'),
     'svm_pkl': str(_ROOT / 'results/checkpoints/svm_alpha_beta_combined/svm_qsar12_model.pkl'),
     'architecture': 'gat',  # 'gcn', 'gat', or 'egnn'
-    'esm_only_pt': str(_ROOT / 'results/gnn/alpha_and_beta_combined/ready_models/gat_ready_Graph-only.pt'),
-    'esm_geo_pt': str(_ROOT / 'results/gnn/alpha_and_beta_combined/ready_models/gat_ready_Graph_plus_Geo20.pt'),
-    'esm_qsar_pt': str(_ROOT / 'results/gnn/alpha_and_beta_combined/ready_models/gat_ready_Graph_plus_QSAR12.pt'),
-    'esm_combined_pt': str(_ROOT / 'results/gnn/alpha_and_beta_combined/ready_models/gat_ready_Graph_plus_Combined32.pt'),
+    'esm_only_pt': str(_ROOT / 'checkpoints/gat_ready_ESM.pt'),
+    'esm_geo_pt': str(_ROOT / 'checkpoints/gat_ready_Geo.pt'),
+    'esm_qsar_pt': str(_ROOT / 'checkpoints/gat_ready_QSAR.pt'),
+    'esm_combined_pt': str(_ROOT / 'checkpoints/gat_ready_Combined.pt'),
     'gnn_hidden': 64,
     'gnn_layers': 3,
     'gnn_pooling': 'mean_max',
@@ -422,11 +423,23 @@ def apply_pipeline_generated_workspace(
     args: argparse.Namespace,
     *,
     skip_svm_clear: bool,
-) -> Path | None:
+) -> tuple[Path | None, bool]:
     """
-    If GENERATED or --input-dir is set, fill paths from pipeline_manifest.json and
-    default GNN checkpoints under <workspace>/gnn_ready_models/{arch}_ready_*.pt.
+    If GENERATED or --input-dir is set, fill paths from pipeline_manifest.json.
+
+    When the path is given as the positional GENERATED argument, also default GNN
+    checkpoints to ``<workspace>/gnn_ready_models/{arch}_ready_*.pt`` (unless later
+    overridden by ``--checkpoints-base`` / ``--gnn-checkpoints-dir`` / summary JSON).
+
+    When only ``--input-dir`` / ``--pipeline-work-dir`` is used (no positional), only
+    manifest-driven inputs are updated; checkpoint paths are left to CONFIG and other
+    CLI flags.
+
     Unless skip_svm_clear, clears this script's QSAR-SVM paths (use --svm_pkl etc. to keep).
+
+    Returns ``(workspace_or_none, skip_workspace_checkpoint_roots)``. The second value
+    is True for flag-only workspace selection so callers do not resolve checkpoints under
+    that workspace.
     """
     from peptide_pipeline.manifest_paths import load_pipeline_manifest, resolve_generated_workspace
 
@@ -436,7 +449,9 @@ def apply_pipeline_generated_workspace(
         raise SystemExit("Use only one of GENERATED (positional) or --input-dir / --pipeline-work-dir.")
     chosen = pos or alt
     if not chosen:
-        return None
+        return None, False
+
+    skip_workspace_checkpoint_roots = pos is None and alt is not None
 
     ws = resolve_generated_workspace(chosen)
     m = load_pipeline_manifest(ws)
@@ -453,7 +468,8 @@ def apply_pipeline_generated_workspace(
     if getattr(args, "esm2_csv", None) is None:
         args.esm2_csv = str(Path(m["esm2_embeddings"]).resolve())
 
-    _set_gnn_paths_from_dir(args, ws / "gnn_ready_models")
+    if not skip_workspace_checkpoint_roots:
+        _set_gnn_paths_from_dir(args, ws / "gnn_ready_models")
 
     if not skip_svm_clear:
         args.svm_descriptor_csv = ""
@@ -461,7 +477,7 @@ def apply_pipeline_generated_workspace(
         args.svm_pkl = ""
 
     print(f"Pipeline workspace: {ws}", flush=True)
-    return ws
+    return ws, skip_workspace_checkpoint_roots
 
 
 def _load_svm_predictions(descriptor_csv: str, z_file: str, pkl_path: str):
@@ -512,6 +528,40 @@ def _default_tabular_scaler_path(model_path: str) -> str | None:
     return str(p) if p.is_file() else None
 
 
+def _pool_dim_for_gnn_classifier(hidden_channels: int, pooling: str) -> int:
+    """Matches GCN/GAT/EGNN pooling branch in gnn/models.py (mean_max → 2× hidden)."""
+    return int(hidden_channels * 2) if pooling == "mean_max" else int(hidden_channels)
+
+
+def _classifier_input_dim_from_state_dict(sd: dict) -> int:
+    for key in ("model.classifier.0.weight", "classifier.0.weight"):
+        t = sd.get(key)
+        if t is not None:
+            return int(t.shape[1])
+    keys = list(sd.keys())[:12]
+    raise SystemExit(
+        "Cannot infer tabular width from checkpoint (missing model.classifier.0.weight). "
+        f"Sample keys: {keys}"
+    )
+
+
+def _geo_feature_dim_from_gnn_checkpoint(model_path: str, hidden: int, pooling: str) -> int:
+    """Extra vector width concatenated after graph pooling (0 = graph-only)."""
+    import torch
+
+    sd = torch.load(model_path, map_location="cpu", weights_only=True)
+    cin = _classifier_input_dim_from_state_dict(sd)
+    pool = _pool_dim_for_gnn_classifier(hidden, pooling)
+    extra = cin - pool
+    if extra < 0:
+        raise SystemExit(
+            f"Checkpoint {model_path!r} has classifier input {cin} but pool_dim is {pool} "
+            f"for --gnn_hidden {hidden} and --gnn_pooling {pooling!r}. "
+            "These must match how the model was trained."
+        )
+    return extra
+
+
 def _run_gnn_predictions(csv_path: str,
                          pdb_dir: str,
                          model_path: str,
@@ -520,8 +570,7 @@ def _run_gnn_predictions(csv_path: str,
                          num_layers: int,
                          pooling: str,
                          batch_size: int,
-                         use_geometric_features: bool,
-                         geometric_feature_cols=None,
+                         geometric_feature_cols: list[str] | None = None,
                          tabular_scaler_path: str | None = None,
                          *,
                          use_gnn_platt: bool = True):
@@ -534,6 +583,22 @@ def _run_gnn_predictions(csv_path: str,
     from gnn.platt import default_platt_path, load_platt_json, platt_prob_amp, softmax_prob_amp
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    geo_dim_ckpt = _geo_feature_dim_from_gnn_checkpoint(model_path, hidden, pooling)
+    cols = list(geometric_feature_cols or [])
+    use_geo = geo_dim_ckpt > 0
+    if not use_geo and cols:
+        print(
+            f"  Note: {Path(model_path).name} is graph-only; "
+            f"not using {len(cols)} merged tabular column(s) for this checkpoint.",
+            flush=True,
+        )
+    if use_geo and len(cols) != geo_dim_ckpt:
+        raise SystemExit(
+            f"Checkpoint {model_path!r} was trained with {geo_dim_ckpt} tabular columns "
+            f"after graph pooling, but this run supplies {len(cols)}. "
+            "Use the .pt that matches your merged CSV feature mode (ESM / Geo+ESM / …), "
+            "or fix --esm_*_pt / --checkpoints-base."
+        )
     platt_json = default_platt_path(model_path)
     platt = load_platt_json(platt_json) if use_gnn_platt else None
     if not use_gnn_platt:
@@ -547,23 +612,23 @@ def _run_gnn_predictions(csv_path: str,
             flush=True,
         )
     scaler_path = tabular_scaler_path
-    if scaler_path is None and use_geometric_features:
+    if scaler_path is None and use_geo:
         scaler_path = _default_tabular_scaler_path(model_path)
     dataset = PeptideGraphDataset(
         csv_path=csv_path,
         pdb_dir=pdb_dir,
-        use_geometric_features=use_geometric_features,
-        geometric_feature_cols=geometric_feature_cols,
+        use_geometric_features=use_geo,
+        geometric_feature_cols=cols if use_geo else None,
         tabular_scaler_path=scaler_path,
     )
 
-    # Match geo_feature_dim to how the checkpoint was trained:
-    # - Graph-only models: no geometric features (geo_dim = 0)
-    # - Graph+Geo / Graph+Combined models: use whatever geo_features are present.
-    if use_geometric_features and len(dataset) > 0 and hasattr(dataset[0], 'geo_features'):
-        geo_dim = int(dataset[0].geo_features.shape[1])
-    else:
-        geo_dim = 0
+    if use_geo and len(dataset) > 0 and hasattr(dataset[0], "geo_features"):
+        geo_dim_data = int(dataset[0].geo_features.shape[1])
+        if geo_dim_data != geo_dim_ckpt:
+            raise SystemExit(
+                f"Tabular width mismatch: checkpoint expects {geo_dim_ckpt}, "
+                f"dataset rows produce {geo_dim_data}."
+            )
 
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     model = PeptideGNN(
@@ -573,7 +638,7 @@ def _run_gnn_predictions(csv_path: str,
         num_layers=num_layers,
         num_classes=2,
         pooling=pooling,
-        geo_feature_dim=geo_dim
+        geo_feature_dim=geo_dim_ckpt,
     )
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     model = model.to(device)
@@ -755,7 +820,9 @@ def main():
     ap = argparse.ArgumentParser(
         description='Compare SVM and GNN predictions on unlabeled test data',
         epilog=(
-            "GENERATED: reads pipeline_manifest.json; GNN defaults under <generated>/gnn_ready_models/. "
+            "GENERATED (positional): manifest inputs + GNN defaults under <generated>/gnn_ready_models/. "
+            "--input-dir / --pipeline-work-dir: manifest inputs only; checkpoints unchanged unless you pass "
+            "--checkpoints-base / --gnn-checkpoints-dir / explicit .pt paths. "
             "--checkpoints-base sets one tree for GNN + QSAR-SVM; --gnn-checkpoints-dir overrides GNN only."
         ),
     )
@@ -772,7 +839,11 @@ def main():
         type=str,
         default=None,
         dest="input_dir",
-        help="Same as positional GENERATED.",
+        help=(
+            "Same manifest-driven inputs as positional GENERATED, but does not set GNN "
+            "checkpoint paths from <workspace>/gnn_ready_models/ (use CONFIG, "
+            "--checkpoints-base, --gnn-checkpoints-dir, or explicit --esm_*_pt)."
+        ),
     )
     ap.add_argument(
         "--checkpoints-base",
@@ -881,7 +952,9 @@ def main():
     if not hasattr(args, "svm_pkl"):
         args.svm_pkl = CONFIG["svm_pkl"]
 
-    ws = apply_pipeline_generated_workspace(args, skip_svm_clear=user_passed_svm_pkl)
+    ws, skip_workspace_checkpoint_roots = apply_pipeline_generated_workspace(
+        args, skip_svm_clear=user_passed_svm_pkl
+    )
 
     base_for_summary: Path | None = None
     if getattr(args, "checkpoints_base", None):
@@ -898,7 +971,7 @@ def main():
         _set_gnn_paths_from_dir(args, gdir)
         summary_roots.append(gdir)
         print(f"GNN checkpoints directory (override): {gdir}", flush=True)
-    if ws is not None:
+    if ws is not None and not skip_workspace_checkpoint_roots:
         summary_roots.append(ws)
     if summary_roots:
         _try_apply_ready_models_summary(args.architecture, args, *summary_roots)
@@ -918,6 +991,11 @@ def main():
     id_col = 'peptide_id' if 'peptide_id' in geo_df.columns else ('name' if 'name' in geo_df.columns else geo_df.columns[0])
     canonical_ids = geo_df[id_col].astype(str).tolist()
     n_samples = len(canonical_ids)
+    has_sequence = "sequence" in geo_df.columns
+    seq_by_id: dict[str, object] = {}
+    if has_sequence:
+        g = geo_df[[id_col, "sequence"]].drop_duplicates(subset=[id_col], keep="first")
+        seq_by_id = dict(zip(g[id_col].astype(str).str.strip(), g["sequence"]))
 
     results = {}
     pred_frames = {}
@@ -968,7 +1046,7 @@ def main():
         ids, preds, prob_amp, logit_amp, logit_nonamp, logit_margin = _run_gnn_predictions(
             str(gnn_master_path), args.pdb_dir, path, args.architecture,
             args.gnn_hidden, args.gnn_layers, args.gnn_pooling,
-            args.batch_size, use_geometric_features=True,
+            args.batch_size,
             geometric_feature_cols=geom_cols,
             use_gnn_platt=not args.no_gnn_platt,
         )
@@ -1027,6 +1105,8 @@ def main():
     out_rows = []
     for idx, pid in enumerate(canonical_ids):
         row = {'peptide_id': pid}
+        if has_sequence:
+            row["sequence"] = seq_by_id.get(str(pid).strip(), pd.NA)
         for m in names:
             r = results[m]
             if pid in r['ids']:
@@ -1059,7 +1139,7 @@ def main():
         out_rows.append(row)
 
     out_df = pd.DataFrame(out_rows)
-    preferred = ["peptide_id"] + _ordered_result_column_names(names)
+    preferred = ["peptide_id"] + (["sequence"] if has_sequence else []) + _ordered_result_column_names(names)
     ordered = [c for c in preferred if c in out_df.columns]
     trailing = [c for c in out_df.columns if c not in ordered]
     out_df = out_df[ordered + trailing]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import sys
 from pathlib import Path
@@ -12,11 +13,14 @@ from peptide_pipeline.steps.cluster_step import step_cluster
 from peptide_pipeline.steps.esm2_step import step_esm2
 from peptide_pipeline.steps.esmfold_step import step_esmfold
 from peptide_pipeline.steps.geometric_step import step_geometric
+from peptide_pipeline.sequence_io import read_sequence_records, write_canonical
 from peptide_pipeline.steps.normalize import normalize_to_canonical
 from peptide_pipeline.steps.qsar_step import step_qsar
 from peptide_pipeline.steps.svm_step import step_svm
 from peptide_pipeline.steps.comparison_step import step_compare_model_predictions
 from peptide_pipeline.steps.train_step import step_final_gnn, step_legacy_gnn
+from peptide_pipeline.steps.window_aggregate_step import step_window_aggregate
+from peptide_pipeline.windowing import expand_records_to_windows
 
 
 def run_pipeline(cfg: RunConfig) -> int:
@@ -31,15 +35,78 @@ def run_pipeline(cfg: RunConfig) -> int:
     print("Workspace:", ctx.work_dir, flush=True)
 
     if not cfg.dry_run:
-        st = normalize_to_canonical(inp, ctx.canonical, min_len=cfg.min_len, max_len=cfg.max_len)
-        ctx.manifest["normalization"] = st
-        ctx.manifest["canonical_seqs"] = str(ctx.canonical)
-        if st["n_written"] == 0:
-            print("No sequences after normalization.", file=sys.stderr)
-            return 1
+        if cfg.uses_windowing():
+            records = [(pid, seq) for pid, seq in read_sequence_records(inp) if seq]
+            assert cfg.window_min_len is not None and cfg.window_max_len is not None
+            expanded, windows = expand_records_to_windows(
+                records,
+                min_len=cfg.window_min_len,
+                max_len=cfg.window_max_len,
+                stride=cfg.window_stride,
+            )
+            if not expanded:
+                print(
+                    "No sliding windows produced (check parent lengths vs --window-min-len).",
+                    file=sys.stderr,
+                )
+                return 1
+            write_canonical(ctx.canonical, expanded)
+            wpath = ctx.inputs_dir / "window_map.csv"
+            with open(wpath, "w", newline="", encoding="utf-8") as wf:
+                writer = csv.DictWriter(
+                    wf,
+                    fieldnames=[
+                        "seqIndex",
+                        "peptide_id",
+                        "window_id",
+                        "parent_id",
+                        "start",
+                        "length",
+                        "sequence",
+                    ],
+                )
+                writer.writeheader()
+                for w in windows:
+                    writer.writerow(
+                        {
+                            "seqIndex": w.seq_index,
+                            "peptide_id": w.peptide_id,
+                            "window_id": w.window_id,
+                            "parent_id": w.parent_id,
+                            "start": w.start,
+                            "length": w.length,
+                            "sequence": w.window_seq,
+                        }
+                    )
+            ctx.manifest["canonical_seqs"] = str(ctx.canonical)
+            ctx.manifest["normalization"] = {
+                "format": "windowed_txt",
+                "n_written": len(expanded),
+                "n_parents": len({w.parent_id for w in windows}),
+            }
+            ctx.manifest["windowing"] = {
+                "window_map": str(wpath),
+                "n_windows": len(windows),
+                "min_len": cfg.window_min_len,
+                "max_len": cfg.window_max_len,
+                "stride": cfg.window_stride,
+            }
+        else:
+            st = normalize_to_canonical(inp, ctx.canonical, min_len=cfg.min_len, max_len=cfg.max_len)
+            ctx.manifest["normalization"] = st
+            ctx.manifest["canonical_seqs"] = str(ctx.canonical)
+            if st["n_written"] == 0:
+                print("No sequences after normalization.", file=sys.stderr)
+                return 1
     else:
         ctx.manifest["canonical_seqs"] = str(ctx.canonical)
-        ctx.manifest["normalization"] = {"dry_run": True, "note": "normalize skipped; commands show intended paths"}
+        if cfg.uses_windowing():
+            ctx.manifest["normalization"] = {
+                "dry_run": True,
+                "note": "windowed canonical skipped; commands show intended paths",
+            }
+        else:
+            ctx.manifest["normalization"] = {"dry_run": True, "note": "normalize skipped; commands show intended paths"}
 
     skip_esmfold = cfg.skip_if_exists and (ctx.structures_dir / "results_log.csv").is_file()
     if not skip_esmfold:
@@ -86,6 +153,7 @@ def run_pipeline(cfg: RunConfig) -> int:
             step_compare_model_predictions(ctx, cfg)
 
     if not cfg.dry_run:
+        step_window_aggregate(ctx, cfg, svm_preds)
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(ctx.manifest, f, indent=2)
         print(f"Wrote manifest: {manifest_path}")

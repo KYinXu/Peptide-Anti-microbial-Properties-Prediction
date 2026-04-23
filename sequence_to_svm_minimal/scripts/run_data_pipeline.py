@@ -92,6 +92,27 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["gcn", "gat", "egnn"],
         help="GNN backbone for the post-training model comparison step (default: gat).",
     )
+    ap.add_argument(
+        "--window-min-len",
+        type=int,
+        default=None,
+        dest="window_min_len",
+        help="With --window-max-len: sliding window minimum length (aa) per parent sequence.",
+    )
+    ap.add_argument(
+        "--window-max-len",
+        type=int,
+        default=None,
+        dest="window_max_len",
+        help="With --window-min-len: sliding window maximum length (aa) per parent sequence.",
+    )
+    ap.add_argument(
+        "--window-stride",
+        type=int,
+        default=1,
+        dest="window_stride",
+        help="Sliding window stride (default: 1). Requires --window-min-len and --window-max-len.",
+    )
     return ap
 
 
@@ -121,6 +142,23 @@ def main() -> int:
         help="JSON object with defaults for pipeline flags (use input_path or input, work_dir, booleans, etc.). CLI overrides the file.",
     )
     args = parser.parse_args(rest)
+    wm, wx = args.window_min_len, args.window_max_len
+    if (wm is None) != (wx is None):
+        print(
+            "Use both --window-min-len and --window-max-len together (or omit both).",
+            file=sys.stderr,
+        )
+        return 2
+    if wm is not None:
+        if args.window_stride <= 0 or wm <= 0 or wx <= 0:
+            print(
+                "--window-min-len, --window-max-len, and --window-stride must be positive.",
+                file=sys.stderr,
+            )
+            return 2
+        if wm > wx:
+            print("--window-min-len cannot be greater than --window-max-len.", file=sys.stderr)
+            return 2
     cfg = RunConfig.from_args(args)
     return run_pipeline(cfg)
 
