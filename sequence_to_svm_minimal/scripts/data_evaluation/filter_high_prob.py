@@ -5,15 +5,23 @@ import sys
 SUFFIX_PROB = "_prob_AMP"
 
 
-def _summary_columns(columns):
-    out = [c for c in ("peptide_id", "seqIndex", "sequence") if c in columns]
-    prob_cols = sorted(c for c in columns if c.endswith(SUFFIX_PROB))
-    for pc in prob_cols:
-        out.append(pc)
-        prefix = pc[: -len(SUFFIX_PROB)]
-        conf = f"{prefix}_confidence"
-        if conf in columns:
-            out.append(conf)
+def _pick_id_columns(columns):
+    return [c for c in ("peptide_id", "seqIndex") if c in columns]
+
+
+def _pick_prob_columns(columns, *, contains=None):
+    cols = [c for c in columns if c.endswith(SUFFIX_PROB)]
+    if contains:
+        cols = [c for c in cols if contains in c]
+    return sorted(cols)
+
+
+def _summary_columns(columns, *, prob_cols, include_sequence):
+    out = []
+    out.extend(_pick_id_columns(columns))
+    if include_sequence and "sequence" in columns:
+        out.append("sequence")
+    out.extend(prob_cols)
     return out
 
 
@@ -61,9 +69,8 @@ def _sep_line(widths):
     return "+" + "+".join(segs) + "+"
 
 
-def _format_table(filtered_df, summary_cols, *, seq_max_len, decimals):
+def _format_table(filtered_df, summary_cols, *, prob_cols, seq_max_len, decimals):
     id_cols = [c for c in ("peptide_id", "seqIndex", "sequence") if c in summary_cols]
-    prob_cols = sorted(c for c in summary_cols if c.endswith(SUFFIX_PROB))
 
     header_labels = []
     for c in id_cols:
@@ -77,9 +84,6 @@ def _format_table(filtered_df, summary_cols, *, seq_max_len, decimals):
     for pc in prob_cols:
         model = pc[: -len(SUFFIX_PROB)]
         header_labels.append(f"{model}  P(AMP)")
-        conf_col = f"{model}_confidence"
-        if conf_col in summary_cols:
-            header_labels.append(f"{model}  confidence")
 
     rows = []
     for _, row in filtered_df.iterrows():
@@ -92,9 +96,6 @@ def _format_table(filtered_df, summary_cols, *, seq_max_len, decimals):
                 cells.append("" if pd.isna(val) else str(val).strip())
         for pc in prob_cols:
             cells.append(_fmt_num(row[pc], decimals))
-            conf_col = f"{pc[: -len(SUFFIX_PROB)]}_confidence"
-            if conf_col in summary_cols:
-                cells.append(_fmt_num(row[conf_col], decimals))
         rows.append(cells)
 
     widths = _col_widths(header_labels, rows)
@@ -109,11 +110,30 @@ def _format_table(filtered_df, summary_cols, *, seq_max_len, decimals):
     print(_sep_line(widths))
 
 
+def _filter_any_p_amp_over_threshold(df, prob_cols, threshold):
+    if not prob_cols:
+        return df.iloc[0:0]
+    # Row kept if any selected P(AMP) column exceeds threshold; NaNs do not pass.
+    mx = df[prob_cols].max(axis=1, skipna=True)
+    return df[mx > threshold]
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Filter comparison CSV data for entries with probability > 0.9")
+    parser = argparse.ArgumentParser(
+        description="Print a compact summary of candidates above a probability threshold."
+    )
     parser.add_argument("input_csv", help="Path to the comparison CSV file")
     parser.add_argument("--threshold", type=float, default=0.9, help="Probability threshold (default: 0.9)")
-    parser.add_argument("--prob-column", default="SVM_prob_AMP", help="Name of the probability column (default: SVM_prob_AMP)")
+    parser.add_argument(
+        "--model-contains",
+        default="",
+        help="Only include *_prob_AMP columns whose name contains this substring (default: empty = all models). Example: Geo for GNN/geo models only.",
+    )
+    parser.add_argument(
+        "--include-sequence",
+        action="store_true",
+        help="Include the sequence column (default: off, to reduce clutter).",
+    )
     parser.add_argument("--seq-max-len", type=int, default=36, help="Max characters for sequence column (default: 36)")
     parser.add_argument("--decimals", type=int, default=3, help="Decimal places for probabilities (default: 3)")
 
@@ -128,18 +148,30 @@ def main():
         print(f"Error reading file: {e}", file=sys.stderr)
         sys.exit(1)
 
-    if args.prob_column not in df.columns:
-        print(f"Error: Column '{args.prob_column}' not found in the CSV. Available columns: {', '.join(df.columns)}", file=sys.stderr)
+    contains = args.model_contains if args.model_contains else None
+    prob_cols = _pick_prob_columns(df.columns, contains=contains)
+    if not prob_cols:
+        hint = f" containing '{args.model_contains}'" if args.model_contains else ""
+        print(
+            f"Error: No model probability columns (*{SUFFIX_PROB}) found{hint}.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    filtered_df = df[df[args.prob_column] > args.threshold]
-    summary_cols = _summary_columns(filtered_df.columns)
+    filtered_df = _filter_any_p_amp_over_threshold(df, prob_cols, args.threshold)
+    summary_cols = _summary_columns(
+        filtered_df.columns, prob_cols=prob_cols, include_sequence=args.include_sequence
+    )
     if not summary_cols:
         print(f"Error: No identifier/sequence columns or model columns (*{SUFFIX_PROB}) found.", file=sys.stderr)
         sys.exit(1)
 
     print()
-    print(f"  Filter:  {args.prob_column}  >  {args.threshold}")
+    if args.model_contains:
+        print(f"  Models:  *{args.model_contains}*  (columns ending with {SUFFIX_PROB})")
+    else:
+        print(f"  Models:  all  (columns ending with {SUFFIX_PROB})")
+    print(f"  Filter:  any model P(AMP) (*{SUFFIX_PROB})  >  {args.threshold}")
     print(f"  Rows:    {len(filtered_df)}")
     print()
 
@@ -148,7 +180,13 @@ def main():
         print()
         return
 
-    _format_table(filtered_df, summary_cols, seq_max_len=args.seq_max_len, decimals=args.decimals)
+    _format_table(
+        filtered_df,
+        summary_cols,
+        prob_cols=prob_cols,
+        seq_max_len=args.seq_max_len,
+        decimals=args.decimals,
+    )
     print()
 
 

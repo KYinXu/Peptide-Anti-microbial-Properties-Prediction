@@ -1,0 +1,6 @@
+{
+  "window_min_len": 20,
+  "window_max_len": 35,
+  "window_stride": 1
+}
+
