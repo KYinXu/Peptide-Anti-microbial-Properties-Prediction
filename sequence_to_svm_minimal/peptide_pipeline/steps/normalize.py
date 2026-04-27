@@ -33,10 +33,13 @@ def normalize_to_canonical(
         "n_written": 0,
         "n_skipped_len": 0,
         "n_skipped_empty": 0,
+        "n_skipped_invalid": 0,
         "format": "fasta" if suffix in (".fa", ".fasta", ".faa") else "txt",
     }
 
-    records = read_sequence_records(input_path)
+    inv: dict = {}
+    records = read_sequence_records(input_path, invalid_stats=inv)
+    stats["n_skipped_invalid"] = inv.get("n_skipped_invalid", 0)
 
     if stats["format"] == "txt":
         with open(input_path, "r", encoding="utf-8", errors="replace") as f:

@@ -26,8 +26,20 @@ class TestSequenceWindowing(unittest.TestCase):
             )
             rec = read_sequence_records(p)
             self.assertEqual(len(rec), 2)
-            self.assertEqual(rec[0][0], "1")
-            self.assertEqual(rec[1][0], "2")
+            self.assertEqual(rec[0], ("1", "ACDF"))
+            self.assertEqual(rec[1], ("2", "EFGH"))
+
+    def test_read_txt_skips_nonstandard_and_x(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "s.txt"
+            p.write_text(
+                "1 ACDF\n2 ACX\n3 EFGH\n4 JJJ\n",
+                encoding="utf-8",
+            )
+            inv = {}
+            rec = read_sequence_records(p, invalid_stats=inv)
+            self.assertEqual(rec, [("1", "ACDF"), ("3", "EFGH")])
+            self.assertEqual(inv.get("n_skipped_invalid"), 2)
 
     def test_expand_windows_count_and_ids(self) -> None:
         rec = [("p1", "ABCDEF")]
@@ -55,6 +67,18 @@ class TestSequenceWindowing(unittest.TestCase):
             st = normalize_to_canonical(inp, out, min_len=3, max_len=None)
             self.assertEqual(st["n_written"], 1)
             self.assertEqual(st["n_skipped_len"], 0)
+            self.assertEqual(st.get("n_skipped_invalid", 0), 0)
+
+    def test_normalize_skips_invalid_aa(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            t = Path(td)
+            inp = t / "in.txt"
+            out = t / "out.txt"
+            inp.write_text("1 WWW\n2 ACX\n", encoding="utf-8")
+            st = normalize_to_canonical(inp, out, min_len=3, max_len=None)
+            self.assertEqual(st["n_written"], 1)
+            self.assertEqual(st["n_skipped_invalid"], 1)
+            self.assertEqual(out.read_text(encoding="utf-8").strip(), "1 WWW")
 
 
 if __name__ == "__main__":

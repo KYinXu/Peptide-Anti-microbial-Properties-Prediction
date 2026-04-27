@@ -26,6 +26,12 @@ from pathlib import Path
 import torch
 from tqdm import tqdm
 
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from peptide_pipeline.aa_sanitize import canonical_standard_aa_sequence
+
 
 def load_checkpoint(checkpoint_file):
     """Load progress checkpoint if it exists"""
@@ -58,25 +64,40 @@ def parse_sequence_file(input_file, label, prefix):
     Parse sequence file in SVM format:
     1 MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPN
     2 GVVDSDDLPLVVAASNAGKSTVVQLLAAAG
-    
-    Returns list of (unique_id, original_idx, sequence, label) tuples.
+
+    Lines whose sequence is not entirely standard 20 amino acids (after uppercasing) are skipped.
+
+    Returns (list of (unique_id, original_idx, sequence, label) tuples, n_skipped_invalid).
 
     Unlabeled (prefix SEQ): bare lines → SEQ_1, SEQ_2, …; two-field lines with a
     numeric first token → SEQ_<n>; non-numeric first token (e.g. Q6FI13, 02264) → <id>.pdb.
     """
     sequences = []
-    
+    n_skipped_invalid = 0
+
     with open(input_file, 'r') as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith('#'):
                 continue
-            
+
             parts = line.split(None, 1)
             if len(parts) == 2:
                 idx, seq = parts
                 idx = idx.strip()
                 seq = seq.strip()
+            elif len(parts) == 1:
+                seq = parts[0].strip()
+                idx = str(len(sequences) + 1)
+            else:
+                continue
+
+            canon = canonical_standard_aa_sequence(seq)
+            if canon is None:
+                n_skipped_invalid += 1
+                continue
+
+            if len(parts) == 2:
                 if prefix == "SEQ":
                     unique_id = (
                         f"{prefix}_{idx}"
@@ -85,14 +106,12 @@ def parse_sequence_file(input_file, label, prefix):
                     )
                 else:
                     unique_id = f"{prefix}_{idx}"
-                sequences.append((unique_id, idx, seq, label))
-            elif len(parts) == 1:
-                seq = parts[0].strip()
-                idx = str(len(sequences) + 1)
+            else:
                 unique_id = f"{prefix}_{idx}"
-                sequences.append((unique_id, idx, seq, label))
-    
-    return sequences
+
+            sequences.append((unique_id, idx, canon, label))
+
+    return sequences, n_skipped_invalid
 
 
 def load_esmfold_model(device="cuda"):
@@ -251,10 +270,12 @@ Examples:
     print(f"{'='*60}")
     
     all_sequences = []
-    
+    n_skipped_invalid_total = 0
+
     if args.unlabeled:
         if os.path.exists(args.amp_file):
-            seqs = parse_sequence_file(args.amp_file, label=0, prefix="SEQ")
+            seqs, n_skip = parse_sequence_file(args.amp_file, label=0, prefix="SEQ")
+            n_skipped_invalid_total += n_skip
             all_sequences.extend(seqs)
             print(f"✅ Unlabeled sequences loaded: {len(seqs)} (no class distinction)")
         else:
@@ -263,24 +284,34 @@ Examples:
     else:
         if not args.decoy_only:
             if os.path.exists(args.amp_file):
-                amp_seqs = parse_sequence_file(args.amp_file, label=1, prefix="AMP")
+                amp_seqs, n_skip = parse_sequence_file(args.amp_file, label=1, prefix="AMP")
+                n_skipped_invalid_total += n_skip
                 all_sequences.extend(amp_seqs)
                 print(f"✅ AMP sequences loaded: {len(amp_seqs)}")
             else:
                 print(f"❌ AMP file not found: {args.amp_file}")
                 if not args.decoy_only:
                     sys.exit(1)
-        
+
         if not args.amp_only:
             if os.path.exists(args.decoy_file):
-                decoy_seqs = parse_sequence_file(args.decoy_file, label=-1, prefix="DECOY")
+                decoy_seqs, n_skip = parse_sequence_file(
+                    args.decoy_file, label=-1, prefix="DECOY"
+                )
+                n_skipped_invalid_total += n_skip
                 all_sequences.extend(decoy_seqs)
                 print(f"✅ Decoy sequences loaded: {len(decoy_seqs)}")
             else:
                 print(f"❌ Decoy file not found: {args.decoy_file}")
                 if not args.amp_only:
                     sys.exit(1)
-    
+
+    if n_skipped_invalid_total:
+        print(
+            f"   Skipped {n_skipped_invalid_total} lines (non-standard letters or X; "
+            "only standard 20 amino acids accepted)"
+        )
+
     print(f"   Total sequences: {len(all_sequences)}")
     
     sequences_to_process = [

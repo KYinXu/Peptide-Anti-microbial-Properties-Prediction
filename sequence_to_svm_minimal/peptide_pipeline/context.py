@@ -14,9 +14,14 @@ from peptide_pipeline.config import RunConfig, default_work_dir
 class RunContext:
     root: Path
     input_path: Path
+    mode: str
+    amp_input_path: Path | None
+    decoy_input_path: Path | None
     work_dir: Path
     inputs_dir: Path
     canonical: Path
+    canonical_amp: Path | None
+    canonical_decoy: Path | None
     structures_dir: Path
     geo_csv: Path
     geo_clustered: Path
@@ -41,19 +46,29 @@ class RunContext:
         work = Path(work).resolve()
         inputs_dir = work / "inputs"
         canonical = inputs_dir / "canonical_seqs.txt"
+        canonical_amp = inputs_dir / "canonical_amp_seqs.txt" if cfg.is_train_mode() else None
+        canonical_decoy = inputs_dir / "canonical_decoy_seqs.txt" if cfg.is_train_mode() else None
         root = REPO_ROOT
         manifest: dict = {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "mode": cfg.mode,
             "input": str(inp),
+            "amp_input": str(cfg.amp_input_path.resolve()) if cfg.amp_input_path else None,
+            "decoy_input": str(cfg.decoy_input_path.resolve()) if cfg.decoy_input_path else None,
             "work_dir": str(work),
             "steps": [],
         }
         return cls(
             root=root,
             input_path=inp,
+            mode=cfg.mode,
+            amp_input_path=cfg.amp_input_path.resolve() if cfg.amp_input_path else None,
+            decoy_input_path=cfg.decoy_input_path.resolve() if cfg.decoy_input_path else None,
             work_dir=work,
             inputs_dir=inputs_dir,
             canonical=canonical,
+            canonical_amp=canonical_amp,
+            canonical_decoy=canonical_decoy,
             structures_dir=work / "structures",
             geo_csv=work / "geometric_features.csv",
             geo_clustered=work / "geometric_features_clustered.csv",

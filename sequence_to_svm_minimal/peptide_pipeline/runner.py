@@ -35,7 +35,31 @@ def run_pipeline(cfg: RunConfig) -> int:
     print("Workspace:", ctx.work_dir, flush=True)
 
     if not cfg.dry_run:
-        if cfg.uses_windowing():
+        if cfg.is_train_mode() and cfg.uses_windowing():
+            print("--mode train does not support --window-min-len/--window-max-len.", file=sys.stderr)
+            return 2
+
+        if cfg.is_train_mode():
+            assert ctx.canonical_amp is not None and ctx.canonical_decoy is not None
+            assert ctx.amp_input_path is not None and ctx.decoy_input_path is not None
+
+            st_amp = normalize_to_canonical(
+                ctx.amp_input_path, ctx.canonical_amp, min_len=cfg.min_len, max_len=cfg.max_len
+            )
+            st_decoy = normalize_to_canonical(
+                ctx.decoy_input_path, ctx.canonical_decoy, min_len=cfg.min_len, max_len=cfg.max_len
+            )
+            ctx.manifest["canonical_amp_seqs"] = str(ctx.canonical_amp)
+            ctx.manifest["canonical_decoy_seqs"] = str(ctx.canonical_decoy)
+            ctx.manifest["normalization"] = {
+                "mode": "train",
+                "amp": st_amp,
+                "decoy": st_decoy,
+            }
+            if st_amp["n_written"] == 0 or st_decoy["n_written"] == 0:
+                print("No sequences after normalization (amp or decoy).", file=sys.stderr)
+                return 1
+        elif cfg.uses_windowing():
             records = [(pid, seq) for pid, seq in read_sequence_records(inp) if seq]
             assert cfg.window_min_len is not None and cfg.window_max_len is not None
             expanded, windows = expand_records_to_windows(
@@ -99,14 +123,24 @@ def run_pipeline(cfg: RunConfig) -> int:
                 print("No sequences after normalization.", file=sys.stderr)
                 return 1
     else:
-        ctx.manifest["canonical_seqs"] = str(ctx.canonical)
-        if cfg.uses_windowing():
+        if cfg.is_train_mode():
+            assert ctx.canonical_amp is not None and ctx.canonical_decoy is not None
+            ctx.manifest["canonical_amp_seqs"] = str(ctx.canonical_amp)
+            ctx.manifest["canonical_decoy_seqs"] = str(ctx.canonical_decoy)
             ctx.manifest["normalization"] = {
                 "dry_run": True,
-                "note": "windowed canonical skipped; commands show intended paths",
+                "mode": "train",
+                "note": "normalize skipped; commands show intended paths",
             }
         else:
-            ctx.manifest["normalization"] = {"dry_run": True, "note": "normalize skipped; commands show intended paths"}
+            ctx.manifest["canonical_seqs"] = str(ctx.canonical)
+            if cfg.uses_windowing():
+                ctx.manifest["normalization"] = {
+                    "dry_run": True,
+                    "note": "windowed canonical skipped; commands show intended paths",
+                }
+            else:
+                ctx.manifest["normalization"] = {"dry_run": True, "note": "normalize skipped; commands show intended paths"}
 
     skip_esmfold = cfg.skip_if_exists and (ctx.structures_dir / "results_log.csv").is_file()
     if not skip_esmfold:

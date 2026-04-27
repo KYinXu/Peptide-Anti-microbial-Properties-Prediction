@@ -22,7 +22,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from peptide_pipeline.aa_sanitize import sanitize_for_esm2
+from peptide_pipeline.aa_sanitize import canonical_standard_aa_sequence
 
 
 def _sanitize_for_esm_alphabet(seq: str, valid_single: set[str]) -> str:
@@ -138,7 +138,13 @@ def extract_esm2_embeddings(sequences, model_name="esm2_t33_650M_UR50D", device=
     print(f"{'='*60}")
     
     for idx, seq in tqdm(sequences, desc="Processing sequences"):
-        seq = _sanitize_for_esm_alphabet(seq, valid_single)
+        canon = canonical_standard_aa_sequence(seq)
+        if canon is None:
+            raise ValueError(
+                f"Sequence {idx!r} is not standard 20 AA only; "
+                "filter with canonical_standard_aa_sequence before embeddings"
+            )
+        seq = _sanitize_for_esm_alphabet(canon, valid_single)
         # Prepare data
         data = [(idx, seq)]
         batch_labels, batch_strs, batch_tokens = batch_converter(data)
@@ -232,7 +238,17 @@ def predict_structures_esmfold(sequences, output_dir, device="cuda", max_length=
     results = []
     
     for idx, seq in tqdm(sequences, desc="Folding sequences"):
-        seq = sanitize_for_esm2(seq)
+        canon = canonical_standard_aa_sequence(seq)
+        if canon is None:
+            print(f"⚠️  Skipping {idx}: sequence must be standard 20 amino acids (no X / invalid letters)")
+            results.append({
+                'seqIndex': idx,
+                'length': len(seq),
+                'status': 'skipped_invalid_sequence',
+                'pdb_file': None
+            })
+            continue
+        seq = canon
         # Check sequence length
         if len(seq) > max_length:
             print(f"⚠️  Sequence {idx} too long ({len(seq)} aa), skipping (max: {max_length})")
@@ -360,7 +376,23 @@ Input formats:
         print(f"❌ Input file not found: {args.input}")
         sys.exit(1)
     
-    sequences = parse_sequence_file(args.input)
+    raw_sequences = parse_sequence_file(args.input)
+    sequences = []
+    n_skipped_invalid = 0
+    for idx, seq in raw_sequences:
+        canon = canonical_standard_aa_sequence(seq)
+        if canon is None:
+            n_skipped_invalid += 1
+            continue
+        sequences.append((idx, canon))
+    if n_skipped_invalid:
+        print(
+            f"   Skipped {n_skipped_invalid} sequences (non-standard letters or X; "
+            "only standard 20 amino acids accepted)"
+        )
+    if not sequences:
+        print("❌ No valid sequences after filtering.", file=sys.stderr)
+        sys.exit(1)
     print(f"✅ Loaded {len(sequences)} sequences")
     print(f"   Length range: {min(len(s[1]) for s in sequences)} - {max(len(s[1]) for s in sequences)} aa")
     

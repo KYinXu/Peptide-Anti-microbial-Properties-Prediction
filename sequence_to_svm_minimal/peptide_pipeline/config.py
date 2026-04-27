@@ -13,7 +13,10 @@ def default_work_dir(input_path: Path) -> Path:
 
 @dataclass
 class RunConfig:
+    mode: str  # "blind" (unlabeled) or "train" (labeled AMP/DECOY)
     input_path: Path
+    amp_input_path: Path | None = None
+    decoy_input_path: Path | None = None
     work_dir: Path | None = None
     dry_run: bool = False
     skip_if_exists: bool = False
@@ -52,10 +55,57 @@ class RunConfig:
     def uses_windowing(self) -> bool:
         return self.window_min_len is not None and self.window_max_len is not None
 
+    def is_train_mode(self) -> bool:
+        return self.mode == "train"
+
+    def is_blind_mode(self) -> bool:
+        return self.mode == "blind"
+
     @classmethod
     def from_args(cls, args: Namespace) -> RunConfig:
+        # Mode inference / backwards compatibility:
+        # - Old usage: --input <file> (no --mode) => blind
+        # - New usage: --mode train --amp-input --decoy-input
+        # - Convenience: if amp/decoy provided and --mode omitted => train
+        raw_mode = getattr(args, "mode", None)
+        amp_in = getattr(args, "amp_input", None)
+        decoy_in = getattr(args, "decoy_input", None)
+        inp = getattr(args, "input", None)
+
+        if raw_mode is None:
+            if amp_in or decoy_in:
+                mode = "train"
+            else:
+                mode = "blind"
+        else:
+            mode = str(raw_mode).strip().lower()
+
+        if mode not in ("blind", "train"):
+            raise ValueError("--mode must be one of: blind, train")
+
+        if mode == "blind":
+            if not inp:
+                raise ValueError("--mode blind requires --input")
+            if amp_in or decoy_in:
+                raise ValueError("--mode blind cannot be used with --amp-input/--decoy-input")
+            input_path = Path(inp)
+            amp_input_path = None
+            decoy_input_path = None
+        else:
+            if inp:
+                raise ValueError("--mode train cannot be used with --input (use --amp-input/--decoy-input)")
+            if not amp_in or not decoy_in:
+                raise ValueError("--mode train requires both --amp-input and --decoy-input")
+            amp_input_path = Path(amp_in)
+            decoy_input_path = Path(decoy_in)
+            # Use AMP input as the "primary" path for default work_dir behavior.
+            input_path = amp_input_path
+
         return cls(
-            input_path=Path(args.input),
+            mode=mode,
+            input_path=input_path,
+            amp_input_path=amp_input_path,
+            decoy_input_path=decoy_input_path,
             work_dir=Path(args.work_dir).resolve() if args.work_dir else None,
             dry_run=args.dry_run,
             skip_if_exists=args.skip_if_exists,

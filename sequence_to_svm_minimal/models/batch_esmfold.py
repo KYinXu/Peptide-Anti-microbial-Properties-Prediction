@@ -22,6 +22,12 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from peptide_pipeline.aa_sanitize import canonical_standard_aa_sequence
+
 
 def load_checkpoint(checkpoint_file):
     """Load progress checkpoint if it exists"""
@@ -48,26 +54,34 @@ def parse_sequence_file(input_file):
     Parse sequence file in SVM format:
     1 MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPN
     2 GVVDSDDLPLVVAASNAGKSTVVQLLAAAG
-    
-    Returns list of (index, sequence) tuples
+
+    Lines whose sequence is not entirely standard 20 amino acids are skipped.
+
+    Returns list of (index, sequence) tuples (uppercase canonical letters).
     """
     sequences = []
-    
+
     with open(input_file, 'r') as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith('#'):
                 continue
-            
-            parts = line.split(None, 1)  # Split on whitespace, max 2 parts
+
+            parts = line.split(None, 1)
             if len(parts) == 2:
-                idx, seq = parts
-                sequences.append((idx, seq.strip()))
+                idx, seq = parts[0].strip(), parts[1].strip()
             elif len(parts) == 1:
-                seq = parts[0]
-                idx = len(sequences) + 1
-                sequences.append((str(idx), seq.strip()))
-    
+                seq = parts[0].strip()
+                idx = str(len(sequences) + 1)
+            else:
+                continue
+
+            canon = canonical_standard_aa_sequence(seq)
+            if canon is None:
+                continue
+
+            sequences.append((idx, canon))
+
     return sequences
 
 

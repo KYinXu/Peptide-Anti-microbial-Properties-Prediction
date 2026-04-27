@@ -294,8 +294,13 @@ def pdb_to_graph(
     # Add metadata
     if peptide_id:
         data.peptide_id = peptide_id
-    data.sequence = ''.join(aa_sequence)
-    
+    seq_joined = ''.join(aa_sequence)
+    if any(c not in AA_TO_IDX for c in seq_joined):
+        raise ValueError(
+            f"PDB {pdb_path!r} contains non-standard residue letters in parsed sequence"
+        )
+    data.sequence = seq_joined
+
     return data
 
 

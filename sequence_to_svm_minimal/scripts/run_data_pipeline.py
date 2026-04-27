@@ -22,8 +22,21 @@ from peptide_pipeline.runner import run_pipeline
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(description="Run sequence → structure → features pipeline (see DATA_PROCESSING.md).")
-    ap.add_argument("--input", "-i", type=str, required=True, help="Txt-like sequences or FASTA")
+    ap = argparse.ArgumentParser(description="Run sequence -> structure -> features pipeline (see DATA_PROCESSING.md).")
+    ap.add_argument(
+        "--mode",
+        type=str,
+        default=None,
+        choices=["blind", "train"],
+        help=(
+            "Pipeline mode. blind: single unlabeled input (--input). "
+            "train: labeled AMP+DECOY inputs (--amp-input/--decoy-input). "
+            "If omitted, inferred from provided inputs."
+        ),
+    )
+    ap.add_argument("--input", "-i", type=str, default=None, help="(blind) Txt-like sequences or FASTA")
+    ap.add_argument("--amp-input", type=str, default=None, help="(train) AMP sequences (txt-like or FASTA)")
+    ap.add_argument("--decoy-input", type=str, default=None, help="(train) Decoy sequences (txt-like or FASTA)")
     ap.add_argument(
         "--work-dir",
         "-w",

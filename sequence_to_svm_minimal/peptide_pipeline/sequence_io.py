@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from peptide_pipeline.aa_sanitize import sanitize_for_esm2
+from peptide_pipeline.aa_sanitize import canonical_standard_aa_sequence
 
 
 def _iter_fasta_records(path: Path) -> list[tuple[str, str]]:
@@ -33,22 +33,33 @@ def is_fasta_suffix(path: Path) -> bool:
     return path.suffix.lower() in (".fa", ".fasta", ".faa")
 
 
-def read_sequence_records(path: Path) -> list[tuple[str, str]]:
+def read_sequence_records(
+    path: Path, invalid_stats: dict | None = None
+) -> list[tuple[str, str]]:
     """
     Parse sequences from TXT or FASTA.
 
     TXT: blank lines and full-line ``#`` comments skipped; each line is ``id seq`` or bare ``seq``
     (auto 1..n index). FASTA: only when suffix is .fa/.fasta/.faa (same as normalize_to_canonical).
 
-    Returns ``(peptide_id, sanitized_sequence)`` per record (sanitized via ``sanitize_for_esm2``).
+    Records whose sequence is not entirely standard 20 amino acids (after uppercasing) are dropped.
+    If ``invalid_stats`` is passed, it is updated with key ``n_skipped_invalid`` (incremented per
+    dropped record).
     """
     path = Path(path)
     records: list[tuple[str, str]] = []
 
+    def _skip_invalid() -> None:
+        if invalid_stats is not None:
+            invalid_stats["n_skipped_invalid"] = invalid_stats.get("n_skipped_invalid", 0) + 1
+
     if is_fasta_suffix(path):
         for rid, seq in _iter_fasta_records(path):
-            seq = sanitize_for_esm2(seq.replace(" ", ""))
-            records.append((rid, seq))
+            canon = canonical_standard_aa_sequence(seq)
+            if canon is None:
+                _skip_invalid()
+                continue
+            records.append((rid, canon))
         return records
 
     auto_i = 0
@@ -65,8 +76,11 @@ def read_sequence_records(path: Path) -> list[tuple[str, str]]:
                 idx, seq = str(auto_i), parts[0].strip()
             else:
                 continue
-            seq = sanitize_for_esm2(seq.replace(" ", ""))
-            records.append((idx, seq))
+            canon = canonical_standard_aa_sequence(seq)
+            if canon is None:
+                _skip_invalid()
+                continue
+            records.append((idx, canon))
     return records
 
 

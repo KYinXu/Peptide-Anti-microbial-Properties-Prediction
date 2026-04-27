@@ -15,8 +15,12 @@ def step_geometric(ctx: RunContext, cfg: RunConfig, svm_preds: Path | None) -> N
         str(ctx.structures_dir),
         "--output",
         str(ctx.geo_csv),
-        "--unlabeled",
     ]
+    if cfg.is_blind_mode():
+        cmd.append("--unlabeled")
+    else:
+        # In labeled mode, make results_log discovery explicit so label/sequence are attached.
+        cmd.extend(["--results-log", str(ctx.structures_dir / "results_log.csv")])
     if svm_preds is not None and svm_preds.is_file():
         cmd.extend(["--svm-predictions", str(svm_preds)])
     skip = cfg.skip_if_exists and ctx.geo_csv.is_file()
