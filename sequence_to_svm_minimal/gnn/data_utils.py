@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 from Bio.PDB import PDBParser
 import warnings
+import functools
 
 warnings.filterwarnings('ignore', category=Warning, module='Bio')
 
@@ -313,6 +314,109 @@ def _is_missing_pdb_file_value(pdb_file: object) -> bool:
     return not s or s.lower() == "nan"
 
 
+def esm2_residue_file_stem(peptide_id: str | int | float) -> str:
+    """Filesystem-safe stem matching esm_sequence_processor per-residue saves."""
+    s = str(peptide_id).strip().replace("\\", "/")
+    return s.replace("/", "_").replace(":", "_")
+
+
+def load_esm2_per_residue_tensor(esm2_residue_dir: Path | str, peptide_id: str | int | float) -> torch.Tensor:
+    """
+    Load per-residue ESM-2 representations (L, D) from ``{stem}.pt`` under esm2_residue_dir.
+    File format: dict with key ``embedding`` (float tensor) or a raw tensor.
+    """
+    d = Path(esm2_residue_dir)
+    stem = esm2_residue_file_stem(peptide_id)
+    candidates = [d / f"{stem}.pt"]
+    # Backwards/interop: some pipelines generate per-residue tensors without AMP_/DECOY_ prefix
+    # while geometric_features/peptide_id may include it.
+    s = str(peptide_id).strip()
+    for prefix in ("AMP_", "DECOY_"):
+        if s.startswith(prefix):
+            candidates.append(d / f"{esm2_residue_file_stem(s[len(prefix):])}.pt")
+    path = next((p for p in candidates if p.is_file()), None)
+    if path is None:
+        raise FileNotFoundError(f"Per-residue ESM2 file not found: {candidates[0]}")
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    if isinstance(payload, dict):
+        t = payload["embedding"]
+    else:
+        t = payload
+    if not isinstance(t, torch.Tensor):
+        t = torch.as_tensor(t)
+    return t.to(dtype=torch.float32)
+
+
+def read_canonical_sequences(canonical_path: Path | str) -> Dict[str, str]:
+    """
+    Read canonical sequences file produced by the pipeline (space-separated: "<id> <sequence>").
+    Returns dict mapping peptide_id -> sequence (uppercase, no whitespace).
+    """
+    p = Path(canonical_path)
+    if not p.is_file():
+        raise FileNotFoundError(f"Canonical sequences file not found: {p}")
+    out: Dict[str, str] = {}
+    for raw in p.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        pid = parts[0].strip()
+        seq = "".join(parts[1:]).strip().upper()
+        if pid and seq:
+            out[pid] = seq
+    if not out:
+        raise ValueError(f"No sequences parsed from canonical file: {p}")
+    return out
+
+
+class ESM2WindowResolver:
+    """
+    Resolve a window-level sequence to a parent per-residue ESM2 tensor slice.
+
+    This is a compatibility path for pipelines that:
+    - generate many window PDBs/feature rows (e.g. IDs like SEQ_1234), but
+    - only store per-residue ESM2 tensors for the original parent sequences (canonical ids).
+    """
+
+    def __init__(self, esm2_residue_dir: Path | str, canonical_seqs_path: Path | str):
+        self.esm2_residue_dir = Path(esm2_residue_dir)
+        self.parents = read_canonical_sequences(canonical_seqs_path)
+        # Precompute search order (longest parents first helps ambiguous substring matches).
+        self._parent_items = sorted(self.parents.items(), key=lambda kv: len(kv[1]), reverse=True)
+        self._parent_tensor_cache: Dict[str, torch.Tensor] = {}
+
+    def _find_parent_and_start(self, window_seq: str) -> Tuple[str, int]:
+        w = str(window_seq).strip().upper()
+        if not w:
+            raise ValueError("Empty window sequence; cannot resolve ESM2 slice.")
+        for pid, parent_seq in self._parent_items:
+            start = parent_seq.find(w)
+            if start >= 0:
+                return pid, start
+        raise KeyError(
+            "Could not map window sequence to any canonical parent sequence. "
+            "Provide per-window ESM2 tensors, or ensure canonical_seqs.txt matches your windows."
+        )
+
+    def slice_window_tensor(self, window_seq: str) -> torch.Tensor:
+        pid, start = self._find_parent_and_start(window_seq)
+        parent_t = self._parent_tensor_cache.get(pid)
+        if parent_t is None:
+            parent_t = load_esm2_per_residue_tensor(self.esm2_residue_dir, pid)
+            self._parent_tensor_cache[pid] = parent_t
+        wlen = len(str(window_seq).strip())
+        end = start + wlen
+        if end > int(parent_t.shape[0]):
+            raise ValueError(
+                f"Window slice [{start}:{end}] out of range for parent {pid!r} "
+                f"(parent_len={int(parent_t.shape[0])}, window_len={wlen})."
+            )
+        return parent_t[start:end].clone()
+
+
 def resolve_peptide_pdb_path(
     pdb_dir: Path | str,
     pdb_file: str | float | None,
@@ -382,6 +486,8 @@ class PeptideGraphDataset(Dataset):
         geometric_feature_cols: Optional[List[str]] = None,
         tabular_scaler_path: Optional[str] = None,
         node_feature_keep_indices: Optional[List[int]] = None,
+        esm2_residue_dir: Optional[str] = None,
+        canonical_seqs_path: Optional[str] = None,
         transform=None,
         pre_transform=None
     ):
@@ -390,6 +496,14 @@ class PeptideGraphDataset(Dataset):
         self.distance_threshold = distance_threshold
         self.use_geometric_features = use_geometric_features
         self.node_feature_keep_indices = node_feature_keep_indices
+        self.esm2_residue_dir = Path(esm2_residue_dir).resolve() if esm2_residue_dir else None
+        self._esm2_window_resolver: Optional[ESM2WindowResolver] = None
+        if self.esm2_residue_dir is not None and canonical_seqs_path:
+            try:
+                self._esm2_window_resolver = ESM2WindowResolver(self.esm2_residue_dir, canonical_seqs_path)
+            except Exception:
+                # Best-effort: if this fails, we still try direct per-window loads.
+                self._esm2_window_resolver = None
         self.tabular_scaler = None
         if tabular_scaler_path:
             from gnn.extra_feature_scaler import load_extra_feature_scaler
@@ -463,6 +577,19 @@ class PeptideGraphDataset(Dataset):
             geometric_features=geo_feats,
             node_feature_keep_indices=self.node_feature_keep_indices
         )
+        if self.esm2_residue_dir is not None:
+            try:
+                esm = load_esm2_per_residue_tensor(self.esm2_residue_dir, row["peptide_id"])
+            except FileNotFoundError:
+                if self._esm2_window_resolver is None:
+                    raise
+                esm = self._esm2_window_resolver.slice_window_tensor(row.get("sequence", ""))
+            if int(esm.shape[0]) != int(data.num_nodes):
+                raise ValueError(
+                    f"ESM2 length {esm.shape[0]} != graph nodes {data.num_nodes} "
+                    f"for peptide_id={row['peptide_id']!r}"
+                )
+            data.esm2_node = esm
         return data
 
 

@@ -7,7 +7,7 @@ import sys
 # Add the parent directory to the path so we can import the gnn modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from gnn.data_utils import PeptideGraphDataset
-from gnn.models import PeptideGNN
+from gnn.models import PeptideGNN, esm2_raw_dim_from_state_dict, esm2_hidden_dim_from_state_dict
 from gnn.train import evaluate, evaluate_probs
 from torch_geometric.loader import DataLoader
 import pandas as pd
@@ -54,6 +54,12 @@ def parse_args():
         default=None,
         help='Joblib scaler from training (default: <model_stem>_tabular_scaler.joblib next to checkpoint).',
     )
+    parser.add_argument(
+        '--esm2_residue_dir',
+        type=str,
+        default=None,
+        help='Per-residue ESM2 .pt directory (required if checkpoint includes esm2_encoder).',
+    )
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--save_predictions', type=str, default=None,
                         help='Optional path to save a CSV of raw predictions (e.g., test_preds.csv)')
@@ -74,12 +80,21 @@ def main():
         if cand.is_file():
             scaler_path = str(cand)
             print(f"Using tabular scaler: {scaler_path}")
+    sd0 = torch.load(args.model_path, map_location="cpu", weights_only=True)
+    esm2_raw = esm2_raw_dim_from_state_dict(sd0)
+    esm2_h = esm2_hidden_dim_from_state_dict(sd0)
+    if esm2_raw > 0 and not args.esm2_residue_dir:
+        raise SystemExit(
+            f"Checkpoint expects per-residue ESM2 (in_dim={esm2_raw}); pass --esm2_residue_dir."
+        )
+
     dataset = PeptideGraphDataset(
         csv_path=args.csv_path,
         pdb_dir=args.pdb_dir,
         use_geometric_features=args.use_geo_features,
         geometric_feature_cols=geo_cols,
         tabular_scaler_path=scaler_path,
+        esm2_residue_dir=args.esm2_residue_dir if esm2_raw > 0 else None,
     )
     
     # Dynamically determine geometric feature dimension just like in the training script
@@ -99,11 +114,13 @@ def main():
         num_layers=args.num_layers,
         num_classes=2,
         pooling=args.pooling,
-        geo_feature_dim=geo_dim
+        geo_feature_dim=geo_dim,
+        esm2_raw_dim=esm2_raw,
+        esm2_hidden_dim=esm2_h,
     )
     
     print(f"Loading weights from {args.model_path}...")
-    model.load_state_dict(torch.load(args.model_path, map_location=device, weights_only=True))
+    model.load_state_dict(sd0)
     model = model.to(device)
 
     probs = get_predictions_and_probs(model, test_loader, device)

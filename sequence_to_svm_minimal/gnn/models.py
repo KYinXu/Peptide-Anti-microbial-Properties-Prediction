@@ -16,13 +16,41 @@ from torch_geometric.nn import (
     global_mean_pool, global_max_pool, global_add_pool,
     BatchNorm
 )
-from torch_geometric.data import Data, Batch
-from typing import Optional, Literal
+from torch_geometric.data import Data
+from typing import Optional, Literal, Dict, Any
+
+
+def esm2_raw_dim_from_state_dict(state_dict: Dict[str, Any]) -> int:
+    """Width of raw per-residue ESM2 vectors (e.g. 1280) if checkpoint uses node-level ESM2."""
+    for k, t in state_dict.items():
+        if k.endswith("esm2_encoder.weight"):
+            return int(t.shape[1])
+    return 0
+
+
+def esm2_hidden_dim_from_state_dict(state_dict: Dict[str, Any], default: int = 64) -> int:
+    """Output width of the ESM2 node projection (matches training ``esm2_hidden_dim``)."""
+    for k, t in state_dict.items():
+        if k.endswith("esm2_encoder.weight"):
+            return int(t.shape[0])
+    return default
 
 
 # =============================================================================
 # GCN: Graph Convolutional Network
 # =============================================================================
+
+def _esm_augmented_x(
+    x: torch.Tensor,
+    data: Data,
+    esm2_encoder: Optional[nn.Module],
+) -> torch.Tensor:
+    if esm2_encoder is None:
+        return x
+    if not hasattr(data, "esm2_node") or data.esm2_node is None:
+        raise RuntimeError("GNN expects data.esm2_node when esm2_raw_dim > 0")
+    return torch.cat([x, esm2_encoder(data.esm2_node)], dim=-1)
+
 
 class GCN(nn.Module):
     """
@@ -42,7 +70,9 @@ class GCN(nn.Module):
         dropout: float = 0.2,
         num_classes: int = 2,
         pooling: str = 'mean_max',
-        geo_feature_dim: int = 0
+        geo_feature_dim: int = 0,
+        esm2_raw_dim: int = 0,
+        esm2_hidden_dim: int = 64,
     ):
         super().__init__()
         
@@ -50,13 +80,19 @@ class GCN(nn.Module):
         self.dropout = dropout
         self.pooling = pooling
         self.geo_feature_dim = geo_feature_dim
+        self.esm2_raw_dim = esm2_raw_dim
+        self.esm2_encoder: Optional[nn.Linear] = None
+        first_in = in_channels
+        if esm2_raw_dim > 0:
+            self.esm2_encoder = nn.Linear(esm2_raw_dim, esm2_hidden_dim)
+            first_in = in_channels + esm2_hidden_dim
         
         # GCN layers
         self.convs = nn.ModuleList()
         self.bns = nn.ModuleList()
         
         # First layer
-        self.convs.append(GCNConv(in_channels, hidden_channels))
+        self.convs.append(GCNConv(first_in, hidden_channels))
         self.bns.append(BatchNorm(hidden_channels))
         
         # Hidden layers
@@ -78,6 +114,7 @@ class GCN(nn.Module):
     
     def forward(self, data: Data) -> torch.Tensor:
         x, edge_index, batch = data.x, data.edge_index, data.batch
+        x = _esm_augmented_x(x, data, self.esm2_encoder)
         
         # GCN layers
         for i in range(self.num_layers):
@@ -127,7 +164,9 @@ class GAT(nn.Module):
         dropout: float = 0.2,
         num_classes: int = 2,
         pooling: str = 'mean_max',
-        geo_feature_dim: int = 0
+        geo_feature_dim: int = 0,
+        esm2_raw_dim: int = 0,
+        esm2_hidden_dim: int = 64,
     ):
         super().__init__()
         
@@ -135,13 +174,19 @@ class GAT(nn.Module):
         self.dropout = dropout
         self.pooling = pooling
         self.geo_feature_dim = geo_feature_dim
+        self.esm2_raw_dim = esm2_raw_dim
+        self.esm2_encoder: Optional[nn.Linear] = None
+        first_in = in_channels
+        if esm2_raw_dim > 0:
+            self.esm2_encoder = nn.Linear(esm2_raw_dim, esm2_hidden_dim)
+            first_in = in_channels + esm2_hidden_dim
         
         # GAT layers
         self.convs = nn.ModuleList()
         self.bns = nn.ModuleList()
         
         # First layer
-        self.convs.append(GATConv(in_channels, hidden_channels, heads=heads, dropout=dropout))
+        self.convs.append(GATConv(first_in, hidden_channels, heads=heads, dropout=dropout))
         self.bns.append(BatchNorm(hidden_channels * heads))
         
         # Hidden layers
@@ -167,6 +212,7 @@ class GAT(nn.Module):
     
     def forward(self, data: Data) -> torch.Tensor:
         x, edge_index, batch = data.x, data.edge_index, data.batch
+        x = _esm_augmented_x(x, data, self.esm2_encoder)
         
         # GAT layers
         for i in range(self.num_layers):
@@ -304,7 +350,9 @@ class EGNN(nn.Module):
         num_classes: int = 2,
         edge_dim: int = 3,
         pooling: str = 'mean_max',
-        geo_feature_dim: int = 0
+        geo_feature_dim: int = 0,
+        esm2_raw_dim: int = 0,
+        esm2_hidden_dim: int = 64,
     ):
         super().__init__()
         
@@ -312,9 +360,15 @@ class EGNN(nn.Module):
         self.dropout = dropout
         self.pooling = pooling
         self.geo_feature_dim = geo_feature_dim
+        self.esm2_raw_dim = esm2_raw_dim
+        self.esm2_encoder: Optional[nn.Linear] = None
+        first_in = in_channels
+        if esm2_raw_dim > 0:
+            self.esm2_encoder = nn.Linear(esm2_raw_dim, esm2_hidden_dim)
+            first_in = in_channels + esm2_hidden_dim
         
         # Input projection
-        self.input_proj = nn.Linear(in_channels, hidden_channels)
+        self.input_proj = nn.Linear(first_in, hidden_channels)
         
         # EGNN layers
         self.layers = nn.ModuleList()
@@ -344,6 +398,7 @@ class EGNN(nn.Module):
         x, pos, edge_index, batch = data.x, data.pos, data.edge_index, data.batch
         edge_attr = data.edge_attr if hasattr(data, 'edge_attr') else None
         
+        x = _esm_augmented_x(x, data, self.esm2_encoder)
         # Input projection
         x = self.input_proj(x)
         
@@ -402,6 +457,8 @@ class PeptideGNN(nn.Module):
         num_classes: int = 2,
         pooling: str = 'mean_max',
         geo_feature_dim: int = 0,
+        esm2_raw_dim: int = 0,
+        esm2_hidden_dim: int = 64,
         **kwargs
     ):
         super().__init__()
@@ -421,6 +478,8 @@ class PeptideGNN(nn.Module):
             num_classes=num_classes,
             pooling=pooling,
             geo_feature_dim=geo_feature_dim,
+            esm2_raw_dim=esm2_raw_dim,
+            esm2_hidden_dim=esm2_hidden_dim,
             **kwargs
         )
         

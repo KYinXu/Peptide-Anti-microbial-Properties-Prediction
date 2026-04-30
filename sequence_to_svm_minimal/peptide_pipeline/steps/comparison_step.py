@@ -14,6 +14,14 @@ def step_compare_model_predictions(ctx: RunContext, cfg: RunConfig) -> None:
         if cfg.final_gnn_output_dir
         else (ctx.work_dir / "gnn_ready_models").resolve()
     )
+    # If final-model training writes into timestamped subfolders, pick the newest folder with checkpoints.
+    if out_d.is_dir() and not list(out_d.glob("*.pt")):
+        subdirs = [p for p in out_d.iterdir() if p.is_dir()]
+        subdirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for sd in subdirs:
+            if list(sd.glob("*.pt")):
+                out_d = sd
+                break
     cmd = [
         ctx.py,
         str(ctx.compare_script),

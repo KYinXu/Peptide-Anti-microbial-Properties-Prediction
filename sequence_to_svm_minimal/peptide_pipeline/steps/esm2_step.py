@@ -19,6 +19,7 @@ def _esm2_device(cfg: RunConfig) -> str:
 
 def step_esm2(ctx: RunContext, cfg: RunConfig) -> None:
     dev = _esm2_device(cfg)
+    per_residue = ctx.work_dir / "esm2_per_residue"
     cmd = [
         ctx.py,
         str(ctx.esm2_script),
@@ -32,6 +33,8 @@ def step_esm2(ctx: RunContext, cfg: RunConfig) -> None:
         dev,
         "--max-length",
         str(cfg.esm2_max_length),
+        "--per-residue-dir",
+        str(per_residue),
     ]
     skip = cfg.skip_if_exists and ctx.esm2_csv.is_file()
     if not skip:
@@ -40,3 +43,4 @@ def step_esm2(ctx: RunContext, cfg: RunConfig) -> None:
             add_peptide_id_to_esm2_csv(ctx.esm2_csv)
     ctx.manifest["steps"].append({"name": "esm_sequence_processor", "cmd": cmd})
     ctx.manifest["esm2_embeddings"] = str(ctx.esm2_csv)
+    ctx.manifest["esm2_per_residue"] = str(per_residue)

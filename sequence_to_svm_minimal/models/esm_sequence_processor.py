@@ -14,6 +14,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 import torch
 import pandas as pd
 from tqdm import tqdm
@@ -101,7 +102,17 @@ def parse_sequence_file(input_file):
     return _parse_svm_style_file(input_file)
 
 
-def extract_esm2_embeddings(sequences, model_name="esm2_t33_650M_UR50D", device="cuda"):
+def _safe_esm2_residue_filename(seq_index) -> str:
+    s = str(seq_index).strip().replace("\\", "/")
+    return s.replace("/", "_").replace(":", "_")
+
+
+def extract_esm2_embeddings(
+    sequences,
+    model_name="esm2_t33_650M_UR50D",
+    device="cuda",
+    per_residue_dir: Optional[Path | str] = None,
+):
     """
     Extract ESM-2 embeddings for sequences
     
@@ -109,6 +120,8 @@ def extract_esm2_embeddings(sequences, model_name="esm2_t33_650M_UR50D", device=
         sequences: List of (index, sequence) tuples
         model_name: ESM-2 model to use
         device: 'cuda' or 'cpu'
+        per_residue_dir: If set, save ``(L, D)`` per-residue tensors as
+            ``{safe_id}.pt`` (dict with ``embedding`` key) for GNN node features.
     
     Returns:
         DataFrame with embeddings
@@ -136,6 +149,11 @@ def extract_esm2_embeddings(sequences, model_name="esm2_t33_650M_UR50D", device=
     print(f"\n{'='*60}")
     print(f"  Extracting Embeddings")
     print(f"{'='*60}")
+
+    if per_residue_dir is not None:
+        per_residue_dir = Path(per_residue_dir)
+        per_residue_dir.mkdir(parents=True, exist_ok=True)
+        print(f"   Per-residue tensors → {per_residue_dir}")
     
     for idx, seq in tqdm(sequences, desc="Processing sequences"):
         canon = canonical_standard_aa_sequence(seq)
@@ -154,11 +172,15 @@ def extract_esm2_embeddings(sequences, model_name="esm2_t33_650M_UR50D", device=
         with torch.no_grad():
             results = model(batch_tokens, repr_layers=[33])
             
-            # Get per-sequence representation (mean pool over length)
             token_representations = results["representations"][33]
-            
-            # Remove batch and special tokens, then mean pool
-            sequence_rep = token_representations[0, 1:len(seq)+1].mean(0)
+            per_tok = token_representations[0, 1 : len(seq) + 1].float().cpu()
+            if per_residue_dir is not None:
+                stem = _safe_esm2_residue_filename(idx)
+                torch.save(
+                    {"seqIndex": str(idx), "embedding": per_tok},
+                    per_residue_dir / f"{stem}.pt",
+                )
+            sequence_rep = per_tok.mean(0)
             
         all_embeddings.append(sequence_rep.cpu().numpy())
         all_indices.append(idx)
@@ -348,6 +370,15 @@ Input formats:
     parser.add_argument('--esm-model', default='esm2_t33_650M_UR50D',
                         choices=['esm2_t33_650M_UR50D', 'esm2_t36_3B_UR50D', 'esm2_t30_150M_UR50D'],
                         help='ESM-2 model to use for embeddings')
+    parser.add_argument(
+        '--per-residue-dir',
+        type=str,
+        default=None,
+        help=(
+            'If set (embeddings mode), also write per-residue ESM-2 layer tensors '
+            'as {seqIndex}.pt files under this directory for GNN node features.'
+        ),
+    )
     
     args = parser.parse_args()
     
@@ -399,10 +430,12 @@ Input formats:
     # Process based on mode
     if args.mode in ['embeddings', 'both']:
         # Extract embeddings
+        pr_dir = Path(args.per_residue_dir).resolve() if args.per_residue_dir else None
         embeddings_df = extract_esm2_embeddings(
-            sequences, 
+            sequences,
             model_name=args.esm_model,
-            device=args.device
+            device=args.device,
+            per_residue_dir=pr_dir,
         )
         
         # Save embeddings

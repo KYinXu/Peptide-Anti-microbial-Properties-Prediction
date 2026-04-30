@@ -11,10 +11,10 @@ You may also pass the parent of ``generated/``; the script resolves ``generated/
 when the manifest lives there. Omit the path to use CONFIG / explicit CSV flags.
 
 Configs mirror `run_gnn_comparison.py`:
-- ESM (graph + ESM2)
-- Geo (graph + Geo20 + ESM2)
-- QSAR (graph + QSAR12 + ESM2)
-- Combined (graph + Geo20 + QSAR12 + ESM2)
+- ESM (graph + per-residue ESM2 on nodes; no pooled ESM in the MLP)
+- Geo (graph + Geo20 + per-residue ESM2)
+- QSAR (graph + QSAR12 + per-residue ESM2)
+- Combined (graph + Geo20 + QSAR12 + per-residue ESM2)
 """
 from __future__ import annotations
 
@@ -190,8 +190,6 @@ def create_feature_cols(use_geo: bool, use_qsar: bool, use_esm2: bool, qsar_cols
         cols.extend(geo_cols)
     if use_qsar and qsar_cols:
         cols.extend(qsar_cols)
-    if use_esm2 and esm2_cols:
-        cols.extend(esm2_cols)
     return cols
 
 
@@ -205,12 +203,14 @@ class CustomPeptideDataset:
         feature_cols,
         distance_threshold: float = 8.0,
         tabular_scaler: ExtraFeatureRobustScaler | None = None,
+        esm2_residue_dir: str | None = None,
     ):
         self.df = df
         self.pdb_dir = Path(pdb_dir)
         self.feature_cols = feature_cols
         self.distance_threshold = distance_threshold
         self.tabular_scaler = tabular_scaler
+        self.esm2_residue_dir = Path(esm2_residue_dir).resolve() if esm2_residue_dir else None
 
         from gnn.data_utils import pdb_to_graph, parse_pdb, compute_node_features, compute_edges
 
@@ -224,7 +224,7 @@ class CustomPeptideDataset:
 
     def __getitem__(self, idx):
         from torch_geometric.data import Data
-        from gnn.data_utils import parse_pdb, compute_node_features, compute_edges
+        from gnn.data_utils import parse_pdb, compute_node_features, compute_edges, load_esm2_per_residue_tensor
 
         row = self.df.iloc[idx]
 
@@ -262,6 +262,14 @@ class CustomPeptideDataset:
                 extra = np.nan_to_num(extra, nan=0.0)
             data.geo_features = torch.tensor(extra, dtype=torch.float32).unsqueeze(0)
 
+        if self.esm2_residue_dir is not None:
+            esm = load_esm2_per_residue_tensor(self.esm2_residue_dir, row["peptide_id"])
+            if int(esm.shape[0]) != int(data.num_nodes):
+                raise ValueError(
+                    f"ESM2 length {esm.shape[0]} != graph nodes {data.num_nodes} for peptide_id={row['peptide_id']!r}"
+                )
+            data.esm2_node = esm
+
         return data
 
 
@@ -296,12 +304,15 @@ def train_single_model(arch: str,
             balance_blocks=True,
         )
 
+    esm2_dir = str(Path(args.esm2_residue_dir).resolve()) if feature_cfg.get("use_esm2") and args.esm2_residue_dir else None
+
     dataset = CustomPeptideDataset(
         df,
         args.pdb_dir,
         feature_cols if feature_cols else None,
         args.distance_threshold,
         tabular_scaler=tabular_scaler,
+        esm2_residue_dir=esm2_dir,
     )
 
     from torch_geometric.loader import DataLoader
@@ -330,6 +341,7 @@ def train_single_model(arch: str,
         class_weights = None
 
     geo_dim = len(feature_cols)
+    esm2_raw = len(esm2_cols) if feature_cfg.get("use_esm2") else 0
     model = PeptideGNN(
         architecture=arch,
         in_channels=26,
@@ -339,6 +351,8 @@ def train_single_model(arch: str,
         num_classes=2,
         pooling="mean_max",
         geo_feature_dim=geo_dim,
+        esm2_raw_dim=esm2_raw,
+        esm2_hidden_dim=args.esm2_hidden_dim,
     )
 
     print(f"\n=== Training {arch.upper()} on {feature_name} ===")
@@ -414,6 +428,11 @@ def resolve_final_train_paths(args: argparse.Namespace) -> None:
         args.pdb_dir = bundle["pdb_dir"] if bundle else CONFIG["pdb_dir"]
     if getattr(args, "qsar_csv", None) is None:
         args.qsar_csv = bundle["qsar_csv"] if bundle else CONFIG["qsar_csv"]
+    if getattr(args, "esm2_residue_dir", None) is None:
+        if bundle and bundle.get("esm2_residue_dir"):
+            args.esm2_residue_dir = bundle["esm2_residue_dir"]
+        elif bundle and bundle.get("esm2_csv"):
+            args.esm2_residue_dir = str(Path(bundle["esm2_csv"]).parent / "esm2_per_residue")
     if (
         args.esm2_csv is None
         and getattr(args, "esm2_amp_csv", None) is None
@@ -503,6 +522,15 @@ def parse_args():
     ap.add_argument("--device", type=str, default="auto")
     ap.add_argument("--output_dir", type=str, default="results/gnn/ready_models")
     ap.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help=(
+            "Optional subfolder name created under --output_dir for this run "
+            "(default: timestamped run_YYYYmmdd_HHMMSS)."
+        ),
+    )
+    ap.add_argument(
         "--no_tabular_robust_scaler",
         action="store_true",
         help="Disable per-block RobustScaler + block balancing on concatenated extras (raw CSV values).",
@@ -518,6 +546,18 @@ def parse_args():
         type=float,
         default=CONFIG["logit_penalty"],
         help="Weight on mean(logits^2) added to training loss (0 disables). Softens raw score collapse.",
+    )
+    ap.add_argument(
+        "--esm2_residue_dir",
+        type=str,
+        default=None,
+        help="Directory of {peptide_id}.pt per-residue ESM2 tensors (from esm_sequence_processor --per-residue-dir).",
+    )
+    ap.add_argument(
+        "--esm2_hidden_dim",
+        type=int,
+        default=64,
+        help="Project raw per-residue ESM2 (e.g. 1280-d) to this width before concatenating to node features.",
     )
     return ap.parse_args()
 
@@ -536,8 +576,12 @@ def main():
 
     print("Device:", device)
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    out_dir = Path(args.output_dir)
+    base_out_dir = Path(args.output_dir)
+    base_out_dir.mkdir(parents=True, exist_ok=True)
+    run_name = args.run_name or datetime.now().strftime("run_%Y%m%d_%H%M%S")
+    out_dir = base_out_dir / run_name
+    out_dir.mkdir(parents=True, exist_ok=False)
+    print("Output dir:", out_dir, flush=True)
 
     if args.esm2_csv is not None:
         esm2_csv_path = args.esm2_csv
@@ -556,10 +600,18 @@ def main():
     )
     if not esm2_cols:
         raise ValueError(
-            "ESM2 embeddings are required for all feature configs, but no esm2_dim_* columns were loaded. "
+            "ESM2 embedding width is required (esm2_dim_* columns in CSV) for all feature configs. "
             "Check CONFIG['esm2_csv'] or CONFIG['esm2_amp_csv']/CONFIG['esm2_decoy_csv']."
         )
+    rdir = Path(args.esm2_residue_dir) if args.esm2_residue_dir else None
+    if rdir is None or not rdir.is_dir():
+        raise ValueError(
+            f"Per-residue ESM2 directory missing or not a directory: {args.esm2_residue_dir!r}. "
+            "Re-run ESM2 with models/esm_sequence_processor.py --per-residue-dir <dir> "
+            "or use the data pipeline (writes work_dir/esm2_per_residue)."
+        )
     print(f"Loaded training data: {len(merged_df)} samples")
+    print(f"Per-residue ESM2 dir: {rdir} (raw dim {len(esm2_cols)})")
 
     summary = {"timestamp": datetime.now().isoformat(), "models": []}
 
