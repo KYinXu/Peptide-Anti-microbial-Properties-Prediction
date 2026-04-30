@@ -36,12 +36,12 @@ class TestPipelineModular(unittest.TestCase):
             inp = t / "seqs.txt"
             inp.write_text("ACDEFGHIKLMNPQRSTVWY\n", encoding="utf-8")
             out = t / "workspace"
-            cfg = RunConfig(input_path=inp, work_dir=out, dry_run=True)
+            cfg = RunConfig(mode="blind", input_path=inp, work_dir=out, dry_run=True)
             self.assertEqual(run_pipeline(cfg), 0)
 
     def test_run_pipeline_missing_input(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            cfg = RunConfig(input_path=Path(td) / "missing.txt", dry_run=True)
+            cfg = RunConfig(mode="blind", input_path=Path(td) / "missing.txt", dry_run=True)
             self.assertEqual(run_pipeline(cfg), 1)
 
     def test_resolve_generated_workspace_parent_or_nested(self) -> None:
@@ -72,6 +72,8 @@ class TestPipelineModular(unittest.TestCase):
             p = gnn_final_training_paths_from_work_dir(wd)
             self.assertEqual(p["csv_path"], str(g.resolve()))
             self.assertTrue(p["pdb_dir"].endswith("pdb"))
+            self.assertIn("esm2_residue_dir", p)
+            self.assertTrue(str(p["esm2_residue_dir"]).replace("\\", "/").endswith("esm2_per_residue"))
 
 
 if __name__ == "__main__":

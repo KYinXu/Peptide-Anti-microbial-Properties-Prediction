@@ -51,6 +51,13 @@ def run_pipeline(cfg: RunConfig) -> int:
             )
             ctx.manifest["canonical_amp_seqs"] = str(ctx.canonical_amp)
             ctx.manifest["canonical_decoy_seqs"] = str(ctx.canonical_decoy)
+            # Some downstream steps (ESM2, optional SVM) use a single canonical file.
+            # In train mode, also produce the combined file for compatibility.
+            combined = []
+            combined.extend(read_sequence_records(ctx.canonical_amp))
+            combined.extend(read_sequence_records(ctx.canonical_decoy))
+            write_canonical(ctx.canonical, combined)
+            ctx.manifest["canonical_seqs"] = str(ctx.canonical)
             ctx.manifest["normalization"] = {
                 "mode": "train",
                 "amp": st_amp,
@@ -127,6 +134,7 @@ def run_pipeline(cfg: RunConfig) -> int:
             assert ctx.canonical_amp is not None and ctx.canonical_decoy is not None
             ctx.manifest["canonical_amp_seqs"] = str(ctx.canonical_amp)
             ctx.manifest["canonical_decoy_seqs"] = str(ctx.canonical_decoy)
+            ctx.manifest["canonical_seqs"] = str(ctx.canonical)
             ctx.manifest["normalization"] = {
                 "dry_run": True,
                 "mode": "train",

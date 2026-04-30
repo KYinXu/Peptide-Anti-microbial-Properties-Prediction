@@ -58,7 +58,21 @@ def _build_parser() -> argparse.ArgumentParser:
 
     ap.add_argument("--skip-qsar", action="store_true")
     ap.add_argument("--skip-esm2", action="store_true")
-    ap.add_argument("--with-cluster", action="store_true")
+    cluster_g = ap.add_mutually_exclusive_group()
+    cluster_g.add_argument(
+        "--with-cluster",
+        action="store_true",
+        default=None,
+        dest="with_cluster",
+        help="Enable clustering step (default: auto-enabled in --mode train; off in --mode blind).",
+    )
+    cluster_g.add_argument(
+        "--no-cluster",
+        action="store_false",
+        default=None,
+        dest="with_cluster",
+        help="Disable clustering step (overrides the --mode train default).",
+    )
     ap.add_argument(
         "--cluster-simple-identity",
         type=float,

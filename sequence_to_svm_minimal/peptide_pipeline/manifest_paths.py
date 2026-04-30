@@ -47,11 +47,16 @@ def gnn_final_training_paths_from_work_dir(work_dir: Path) -> dict[str, str]:
             f"Manifest {work_dir / MANIFEST_NAME} missing or empty keys: {missing}. "
             "Run the full pipeline without --skip-qsar / --skip-esm2 for final GNN training."
         )
+    esm2_csv = Path(m["esm2_embeddings"]).resolve()
+    per_res = m.get("esm2_per_residue")
+    if not per_res:
+        per_res = str(esm2_csv.parent / "esm2_per_residue")
     return {
         "csv_path": str(Path(m["geometric_features"]).resolve()),
         "pdb_dir": str(Path(m["structures_dir"]).resolve()),
         "qsar_csv": str(Path(m["qsar12_descriptors"]).resolve()),
-        "esm2_csv": str(Path(m["esm2_embeddings"]).resolve()),
+        "esm2_csv": str(esm2_csv),
+        "esm2_residue_dir": str(Path(per_res).resolve()),
     }
 
 

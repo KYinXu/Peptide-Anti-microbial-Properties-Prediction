@@ -41,9 +41,9 @@ from torch_geometric.loader import DataLoader
 # =============================================================================
 
 CONFIG = {
-    'csv_path': 'data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/geometric_features_clustered.csv',
-    'pdb_dir': 'data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced',
-    'qsar_csv': 'data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/qsar12_descriptors.csv',
+    'csv_path': 'data/gnn_training_dataset/normalized_combined_set/generated/geometric_features.csv',
+    'pdb_dir': 'data/gnn_training_dataset/normalized_combined_set/generated/structures',
+    'qsar_csv': 'data/gnn_training_dataset/normalized_combined_set/generated/qsar12_descriptors.csv',
     'seed': 42,
     'n_folds': 5,
     'epochs': 500,

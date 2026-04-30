@@ -101,6 +101,13 @@ class RunConfig:
             # Use AMP input as the "primary" path for default work_dir behavior.
             input_path = amp_input_path
 
+        # Default clustering behavior:
+        # - train mode: clustering ON by default (prevents leakage in splits)
+        # - blind mode: clustering OFF by default (not needed)
+        # CLI can override via --with-cluster / --no-cluster (args.with_cluster is tri-state).
+        raw_with_cluster = getattr(args, "with_cluster", None)
+        with_cluster = bool(raw_with_cluster) if raw_with_cluster is not None else (mode == "train")
+
         return cls(
             mode=mode,
             input_path=input_path,
@@ -116,7 +123,7 @@ class RunConfig:
             esmfold_device=args.esmfold_device,
             skip_qsar=args.skip_qsar,
             skip_esm2=args.skip_esm2,
-            with_cluster=args.with_cluster,
+            with_cluster=with_cluster,
             cluster_simple_identity=args.cluster_simple_identity,
             cluster_run_cdhit=args.cluster_run_cdhit,
             cdhit_path=args.cdhit_path,

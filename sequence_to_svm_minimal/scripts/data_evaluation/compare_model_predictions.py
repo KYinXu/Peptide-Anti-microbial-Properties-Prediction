@@ -33,10 +33,10 @@ SVM as ``svm_qsar12_model.pkl`` and ``svm_qsar12_zscores.txt`` (optionally under
 Descriptors for SVM default to the pipeline ``--qsar_csv`` when present.
 
 You may pass the parent directory that contains ``generated/``. This mode reads
-``pipeline_manifest.json`` (including ``esm2_embeddings``) and skips the legacy QSAR-SVM block
+``pipeline_manifest.json`` (including ``esm2_embeddings`` / ``esm2_per_residue``) and skips the legacy QSAR-SVM block
 unless you omit the positional and pass ``--svm_pkl`` / ``--svm_z_file`` / ``--svm_descriptor_csv``
 explicitly, or use ``--checkpoints-base``. GNN checkpoints from ``run_gnn_train_final_models``
-use graph + ESM2 tabular dimensions; without ESM2, pass ``--esm2-csv`` or use a full pipeline run.
+use graph-level Geo/QSAR tabular columns; per-residue ESM2 is loaded from ``esm2_per_residue/`` (see manifest).
 """
 from __future__ import annotations
 
@@ -65,10 +65,10 @@ CONFIG = {
     'svm_z_file': str(_ROOT / 'results/checkpoints/svm_alpha_beta_combined/svm_qsar12_zscores.txt'),
     'svm_pkl': str(_ROOT / 'results/checkpoints/svm_alpha_beta_combined/svm_qsar12_model.pkl'),
     'architecture': 'gat',  # 'gcn', 'gat', or 'egnn'
-    'esm_only_pt': str(_ROOT / 'checkpoints/gat_ready_ESM.pt'),
-    'esm_geo_pt': str(_ROOT / 'checkpoints/gat_ready_Geo.pt'),
-    'esm_qsar_pt': str(_ROOT / 'checkpoints/gat_ready_QSAR.pt'),
-    'esm_combined_pt': str(_ROOT / 'checkpoints/gat_ready_Combined.pt'),
+    'esm_only_pt': str(_ROOT / 'checkpoints/latest/gat_ready_ESM.pt'),
+    'esm_geo_pt': str(_ROOT / 'checkpoints/latest/gat_ready_Geo.pt'),
+    'esm_qsar_pt': str(_ROOT / 'checkpoints/latest/gat_ready_QSAR.pt'),
+    'esm_combined_pt': str(_ROOT / 'checkpoints/latest/gat_ready_Combined.pt'),
     'gnn_hidden': 64,
     'gnn_layers': 3,
     'gnn_pooling': 'mean_max',
@@ -214,33 +214,11 @@ GNN_QSAR_COLS = [
 ]
 
 
-def _normalize_core_id(series: pd.Series) -> pd.Series:
-    s = series.astype(str)
-    return s.str.replace(r"^(AMP_|DECOY_)", "", regex=True)
-
-
-def _load_esm2_subtable(esm2_path: str) -> tuple[pd.DataFrame, list[str]]:
-    df = pd.read_csv(esm2_path)
-    if "peptide_id" in df.columns:
-        id_col = "peptide_id"
-    elif "seqIndex" in df.columns:
-        id_col = "seqIndex"
-    else:
-        raise SystemExit("ESM2 CSV must contain 'peptide_id' or 'seqIndex'")
-    emb_cols = [c for c in df.columns if c.startswith("esm2_dim_")]
-    if not emb_cols:
-        raise SystemExit("ESM2 CSV has no esm2_dim_* columns")
-    sub = df[[id_col] + emb_cols].copy()
-    sub["core_id"] = _normalize_core_id(sub[id_col])
-    return sub[["core_id"] + emb_cols], emb_cols
-
-
 def _build_gnn_feature_master(
     args: argparse.Namespace, ws: Path | None
 ) -> tuple[Path | None, dict[str, list[str]], bool]:
-    """Merge geo + optional QSAR + ESM2; write one CSV; column lists per training feature mode."""
-    esm2_path = getattr(args, "esm2_csv", None)
-    if not esm2_path or not Path(esm2_path).is_file():
+    """Merge geo + optional QSAR; write one CSV; column lists per GNN tabular mode (no pooled ESM2)."""
+    if not getattr(args, "geo_csv", None) or not Path(args.geo_csv).is_file():
         return None, {}, bool(args.qsar_csv and Path(args.qsar_csv).is_file())
 
     geo_df = pd.read_csv(args.geo_csv)
@@ -256,24 +234,18 @@ def _build_gnn_feature_master(
             raise SystemExit(f"QSAR CSV missing columns: {miss}")
         df = df.merge(qsar_df[["peptide_id"] + GNN_QSAR_COLS], on="peptide_id", how="left")
 
-    df["core_id"] = _normalize_core_id(df["peptide_id"])
-    esm_sub, esm_cols = _load_esm2_subtable(esm2_path)
-    df = df.merge(esm_sub, on="core_id", how="left")
-    df = df.drop(columns=["core_id"])
-
     out_path = Path(args.geometric_qsar_combined_csv)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_path, index=False)
 
     geo_present = [c for c in GNN_GEO_COLS if c in df.columns]
     qsar_present = [c for c in GNN_QSAR_COLS if c in df.columns]
-    esm_present = [c for c in esm_cols if c in df.columns]
 
     modes: dict[str, list[str]] = {
-        "esm": esm_present,
-        "geo20": geo_present + esm_present,
-        "qsar12": (qsar_present + esm_present) if has_qsar else [],
-        "combined32": (geo_present + qsar_present + esm_present) if has_qsar else [],
+        "esm": [],
+        "geo20": geo_present,
+        "qsar12": qsar_present if has_qsar else [],
+        "combined32": (geo_present + qsar_present) if has_qsar else [],
     }
     return out_path, modes, has_qsar
 
@@ -467,6 +439,14 @@ def apply_pipeline_generated_workspace(
     args.geometric_qsar_combined_csv = str(ws / "compare_geo_qsar_merged.csv")
     if getattr(args, "esm2_csv", None) is None:
         args.esm2_csv = str(Path(m["esm2_embeddings"]).resolve())
+    if getattr(args, "gnn_esm2_residue_dir", None) in (None, ""):
+        pr = m.get("esm2_per_residue")
+        if pr:
+            args.gnn_esm2_residue_dir = str(Path(pr).resolve())
+        else:
+            args.gnn_esm2_residue_dir = str(
+                (Path(m["esm2_embeddings"]).parent / "esm2_per_residue").resolve()
+            )
 
     if not skip_workspace_checkpoint_roots:
         _set_gnn_paths_from_dir(args, ws / "gnn_ready_models")
@@ -545,23 +525,6 @@ def _classifier_input_dim_from_state_dict(sd: dict) -> int:
     )
 
 
-def _geo_feature_dim_from_gnn_checkpoint(model_path: str, hidden: int, pooling: str) -> int:
-    """Extra vector width concatenated after graph pooling (0 = graph-only)."""
-    import torch
-
-    sd = torch.load(model_path, map_location="cpu", weights_only=True)
-    cin = _classifier_input_dim_from_state_dict(sd)
-    pool = _pool_dim_for_gnn_classifier(hidden, pooling)
-    extra = cin - pool
-    if extra < 0:
-        raise SystemExit(
-            f"Checkpoint {model_path!r} has classifier input {cin} but pool_dim is {pool} "
-            f"for --gnn_hidden {hidden} and --gnn_pooling {pooling!r}. "
-            "These must match how the model was trained."
-        )
-    return extra
-
-
 def _run_gnn_predictions(csv_path: str,
                          pdb_dir: str,
                          model_path: str,
@@ -572,6 +535,8 @@ def _run_gnn_predictions(csv_path: str,
                          batch_size: int,
                          geometric_feature_cols: list[str] | None = None,
                          tabular_scaler_path: str | None = None,
+                         esm2_residue_dir: str | None = None,
+                         canonical_seqs_path: str | None = None,
                          *,
                          use_gnn_platt: bool = True):
     """Run one GNN checkpoint and return ids/preds/prob/logits/margin."""
@@ -579,11 +544,21 @@ def _run_gnn_predictions(csv_path: str,
     from torch_geometric.loader import DataLoader
 
     from gnn.data_utils import PeptideGraphDataset
-    from gnn.models import PeptideGNN
+    from gnn.models import PeptideGNN, esm2_raw_dim_from_state_dict, esm2_hidden_dim_from_state_dict
     from gnn.platt import default_platt_path, load_platt_json, platt_prob_amp, softmax_prob_amp
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    geo_dim_ckpt = _geo_feature_dim_from_gnn_checkpoint(model_path, hidden, pooling)
+    sd0 = torch.load(model_path, map_location="cpu", weights_only=True)
+    esm2_raw_ckpt = esm2_raw_dim_from_state_dict(sd0)
+    esm2_h_ckpt = esm2_hidden_dim_from_state_dict(sd0)
+    cin = _classifier_input_dim_from_state_dict(sd0)
+    pool = _pool_dim_for_gnn_classifier(hidden, pooling)
+    geo_dim_ckpt = cin - pool
+    if geo_dim_ckpt < 0:
+        raise SystemExit(
+            f"Checkpoint {model_path!r} has classifier input {cin} but pool_dim is {pool} "
+            f"for --gnn_hidden {hidden} and --gnn_pooling {pooling!r}."
+        )
     cols = list(geometric_feature_cols or [])
     use_geo = geo_dim_ckpt > 0
     if not use_geo and cols:
@@ -599,6 +574,12 @@ def _run_gnn_predictions(csv_path: str,
             "Use the .pt that matches your merged CSV feature mode (ESM / Geo+ESM / …), "
             "or fix --esm_*_pt / --checkpoints-base."
         )
+    if esm2_raw_ckpt > 0:
+        if not esm2_residue_dir or not Path(esm2_residue_dir).is_dir():
+            raise SystemExit(
+                f"Checkpoint {model_path!r} expects per-residue ESM2 (encoder in={esm2_raw_ckpt}), "
+                f"but --gnn-esm2-residue-dir is missing or not a directory ({esm2_residue_dir!r})."
+            )
     platt_json = default_platt_path(model_path)
     platt = load_platt_json(platt_json) if use_gnn_platt else None
     if not use_gnn_platt:
@@ -614,12 +595,20 @@ def _run_gnn_predictions(csv_path: str,
     scaler_path = tabular_scaler_path
     if scaler_path is None and use_geo:
         scaler_path = _default_tabular_scaler_path(model_path)
+    canon_path = canonical_seqs_path
+    if canon_path is None:
+        # Default pipeline layout: <work_dir>/inputs/canonical_seqs.txt next to geometric_features.csv
+        guess = Path(csv_path).resolve().parent / "inputs" / "canonical_seqs.txt"
+        if guess.is_file():
+            canon_path = str(guess)
     dataset = PeptideGraphDataset(
         csv_path=csv_path,
         pdb_dir=pdb_dir,
         use_geometric_features=use_geo,
         geometric_feature_cols=cols if use_geo else None,
         tabular_scaler_path=scaler_path,
+        esm2_residue_dir=esm2_residue_dir if esm2_raw_ckpt > 0 else None,
+        canonical_seqs_path=canon_path,
     )
 
     if use_geo and len(dataset) > 0 and hasattr(dataset[0], "geo_features"):
@@ -639,8 +628,10 @@ def _run_gnn_predictions(csv_path: str,
         num_classes=2,
         pooling=pooling,
         geo_feature_dim=geo_dim_ckpt,
+        esm2_raw_dim=esm2_raw_ckpt,
+        esm2_hidden_dim=esm2_h_ckpt,
     )
-    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
+    model.load_state_dict(sd0)
     model = model.to(device)
     model.eval()
 
@@ -878,8 +869,18 @@ def main():
         default=None,
         dest='esm2_csv',
         help=(
-            'ESM2 embeddings (peptide_id or seqIndex + esm2_dim_*). Required for GNN unless using GENERATED '
-            '(manifest esm2_embeddings). Checkpoints from run_gnn_train_final_models always use ESM2 tabular dims.'
+            'ESM2 mean-pooled CSV (optional for SVM / legacy); GNN uses per-residue tensors under '
+            '--gnn-esm2-residue-dir or manifest esm2_per_residue.'
+        ),
+    )
+    ap.add_argument(
+        '--gnn-esm2-residue-dir',
+        type=str,
+        default=None,
+        dest='gnn_esm2_residue_dir',
+        help=(
+            'Directory of {peptide_id}.pt per-residue ESM2 (defaults from GENERATED manifest '
+            'esm2_per_residue or sibling esm2_per_residue/).'
         ),
     )
     ap.add_argument(
@@ -1025,22 +1026,19 @@ def main():
     gnn_master_path, mode_cols, _has_qsar_merge = _build_gnn_feature_master(args, ws)
     if gnn_master_path is None:
         print(
-            "GNN: no ESM2 embeddings CSV (--esm2-csv or GENERATED manifest). "
-            "Skipping GNN models; checkpoints expect esm2_dim_* tabular features.",
+            "GNN: missing --geo_csv (or GENERATED manifest geometric_features). Skipping GNN models.",
             flush=True,
         )
 
     for name, path, feat_mode in feature_models:
         if not path or not Path(path).exists():
             continue
-        if gnn_master_path is None or not mode_cols:
+        if gnn_master_path is None:
             continue
         geom_cols = mode_cols.get(feat_mode, [])
-        if not geom_cols:
-            if feat_mode == 'esm':
-                print(f"Skipping {name}: no ESM2 columns after merge", flush=True)
-            elif feat_mode in ('qsar12', 'combined32'):
-                print(f"Skipping {name}: need merged QSAR-12 + ESM2 (check --qsar_csv)", flush=True)
+        if feat_mode != "esm" and not geom_cols:
+            if feat_mode in ('qsar12', 'combined32'):
+                print(f"Skipping {name}: need merged QSAR-12 (check --qsar_csv)", flush=True)
             continue
         print(f"Running {args.architecture.upper()} ({name})...")
         ids, preds, prob_amp, logit_amp, logit_nonamp, logit_margin = _run_gnn_predictions(
@@ -1048,6 +1046,7 @@ def main():
             args.gnn_hidden, args.gnn_layers, args.gnn_pooling,
             args.batch_size,
             geometric_feature_cols=geom_cols,
+            esm2_residue_dir=getattr(args, "gnn_esm2_residue_dir", None),
             use_gnn_platt=not args.no_gnn_platt,
         )
         results[name] = {
