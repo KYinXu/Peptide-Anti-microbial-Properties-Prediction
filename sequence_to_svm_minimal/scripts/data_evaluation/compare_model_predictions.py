@@ -217,7 +217,7 @@ GNN_QSAR_COLS = [
 def _build_gnn_feature_master(
     args: argparse.Namespace, ws: Path | None
 ) -> tuple[Path | None, dict[str, list[str]], bool]:
-    """Merge geo + optional QSAR; write one CSV; column lists per GNN tabular mode (no pooled ESM2)."""
+    """Merge geo + optional QSAR (+ optional pooled ESM2); write one CSV; column lists per GNN tabular mode."""
     if not getattr(args, "geo_csv", None) or not Path(args.geo_csv).is_file():
         return None, {}, bool(args.qsar_csv and Path(args.qsar_csv).is_file())
 
@@ -234,6 +234,40 @@ def _build_gnn_feature_master(
             raise SystemExit(f"QSAR CSV missing columns: {miss}")
         df = df.merge(qsar_df[["peptide_id"] + GNN_QSAR_COLS], on="peptide_id", how="left")
 
+    # Optional: legacy checkpoints used pooled ESM2 (mean-pooled) as tabular inputs to the MLP.
+    # When enabled, we merge the pooled embedding CSV into the same master file and include
+    # those columns in the per-mode tabular column lists.
+    esm_cols: list[str] = []
+    use_pooled_esm = bool(getattr(args, "legacy_pooled_esm_tabular", False))
+    if use_pooled_esm:
+        esm_path = getattr(args, "esm2_csv", None)
+        if not esm_path or not Path(esm_path).is_file():
+            raise SystemExit(
+                "--legacy-pooled-esm-tabular requires --esm2-csv (a pooled ESM2 embeddings CSV) to exist."
+            )
+        esm_df = pd.read_csv(esm_path)
+        if "peptide_id" not in esm_df.columns:
+            raise SystemExit(f"ESM2 CSV missing 'peptide_id' column: {esm_path}")
+
+        def _sort_key(c: str) -> tuple[int, str]:
+            # Prefer numeric suffix ordering (esm2_dim_0..), else lexical.
+            try:
+                return (int(c.rsplit("_", 1)[-1]), c)
+            except Exception:
+                return (10**9, c)
+
+        candidates = [c for c in esm_df.columns if str(c).startswith("esm2_dim_")]
+        if not candidates:
+            raise SystemExit(
+                f"--legacy-pooled-esm-tabular expects columns named esm2_dim_0.. in {esm_path} "
+                "(from esm_sequence_processor.py --mode embeddings)."
+            )
+        esm_cols = sorted(candidates, key=_sort_key)
+
+        # Some pooled embedding CSVs also include seqIndex or other metadata.
+        keep = ["peptide_id"] + esm_cols
+        df = df.merge(esm_df[keep], on="peptide_id", how="left")
+
     out_path = Path(args.geometric_qsar_combined_csv)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_path, index=False)
@@ -242,10 +276,15 @@ def _build_gnn_feature_master(
     qsar_present = [c for c in GNN_QSAR_COLS if c in df.columns]
 
     modes: dict[str, list[str]] = {
-        "esm": [],
-        "geo20": geo_present,
-        "qsar12": qsar_present if has_qsar else [],
-        "combined32": (geo_present + qsar_present) if has_qsar else [],
+        "esm": esm_cols if use_pooled_esm else [],
+        # Match training scaler column order: geometry/QSAR first, pooled ESM last.
+        "geo20": (geo_present + esm_cols) if use_pooled_esm else geo_present,
+        "qsar12": (qsar_present + esm_cols)
+        if (use_pooled_esm and has_qsar)
+        else (qsar_present if has_qsar else []),
+        "combined32": (geo_present + qsar_present + esm_cols)
+        if (use_pooled_esm and has_qsar)
+        else ((geo_present + qsar_present) if has_qsar else []),
     }
     return out_path, modes, has_qsar
 
@@ -400,8 +439,9 @@ def apply_pipeline_generated_workspace(
     If GENERATED or --input-dir is set, fill paths from pipeline_manifest.json.
 
     When the path is given as the positional GENERATED argument, also default GNN
-    checkpoints to ``<workspace>/gnn_ready_models/{arch}_ready_*.pt`` (unless later
-    overridden by ``--checkpoints-base`` / ``--gnn-checkpoints-dir`` / summary JSON).
+    checkpoints are NOT changed (defaults remain whatever the user configured, e.g.
+    ``checkpoints/latest/*.pt``). Use ``--gnn-checkpoints-dir`` or ``--checkpoints-base``
+    to point at a workspace-trained ``gnn_ready_models/`` folder.
 
     When only ``--input-dir`` / ``--pipeline-work-dir`` is used (no positional), only
     manifest-driven inputs are updated; checkpoint paths are left to CONFIG and other
@@ -414,6 +454,21 @@ def apply_pipeline_generated_workspace(
     that workspace.
     """
     from peptide_pipeline.manifest_paths import load_pipeline_manifest, resolve_generated_workspace
+
+    def _normalize_manifest_path(p: str) -> Path:
+        """
+        Convert WSL-style /mnt/<drive>/... paths into Windows paths when running on win32.
+        Keeps native paths unchanged.
+        """
+        s = str(p)
+        if sys.platform.startswith("win"):
+            # /mnt/c/Users/...  ->  C:\Users\...
+            if s.startswith("/mnt/") and len(s) >= 6 and s[5].isalpha() and s[6:7] == "/":
+                drive = s[5].upper()
+                rest = s[7:].replace("/", "\\")
+                return Path(f"{drive}:\\{rest}")
+            # \\wsl$\<distro>\mnt\c\... sometimes appears in copied paths; leave as-is (Path handles it)
+        return Path(s)
 
     pos = getattr(args, "generated", None)
     alt = getattr(args, "input_dir", None)
@@ -433,23 +488,25 @@ def apply_pipeline_generated_workspace(
                 f"Manifest missing {key!r}; run the full pipeline (QSAR + ESM2 required for GNN checkpoints)."
             )
 
-    args.geo_csv = str(Path(m["geometric_features"]).resolve())
-    args.pdb_dir = str(Path(m["structures_dir"]).resolve())
-    args.qsar_csv = str(Path(m["qsar12_descriptors"]).resolve())
+    args.geo_csv = str(_normalize_manifest_path(m["geometric_features"]).resolve())
+    args.pdb_dir = str(_normalize_manifest_path(m["structures_dir"]).resolve())
+    args.qsar_csv = str(_normalize_manifest_path(m["qsar12_descriptors"]).resolve())
     args.geometric_qsar_combined_csv = str(ws / "compare_geo_qsar_merged.csv")
     if getattr(args, "esm2_csv", None) is None:
-        args.esm2_csv = str(Path(m["esm2_embeddings"]).resolve())
+        args.esm2_csv = str(_normalize_manifest_path(m["esm2_embeddings"]).resolve())
     if getattr(args, "gnn_esm2_residue_dir", None) in (None, ""):
         pr = m.get("esm2_per_residue")
         if pr:
-            args.gnn_esm2_residue_dir = str(Path(pr).resolve())
+            args.gnn_esm2_residue_dir = str(_normalize_manifest_path(pr).resolve())
         else:
-            args.gnn_esm2_residue_dir = str(
-                (Path(m["esm2_embeddings"]).parent / "esm2_per_residue").resolve()
-            )
+            emb = _normalize_manifest_path(m["esm2_embeddings"])
+            args.gnn_esm2_residue_dir = str((emb.parent / "esm2_per_residue").resolve())
 
     if not skip_workspace_checkpoint_roots:
-        _set_gnn_paths_from_dir(args, ws / "gnn_ready_models")
+        # Do not override checkpoint defaults when a workspace is provided.
+        # Users can opt-in to workspace-trained checkpoints via --gnn-checkpoints-dir
+        # (or --checkpoints-base / ready_models_summary.json).
+        pass
 
     if not skip_svm_clear:
         args.svm_descriptor_csv = ""
@@ -811,7 +868,7 @@ def main():
     ap = argparse.ArgumentParser(
         description='Compare SVM and GNN predictions on unlabeled test data',
         epilog=(
-            "GENERATED (positional): manifest inputs + GNN defaults under <generated>/gnn_ready_models/. "
+            "GENERATED (positional): manifest inputs only (checkpoint defaults unchanged, e.g. checkpoints/latest). "
             "--input-dir / --pipeline-work-dir: manifest inputs only; checkpoints unchanged unless you pass "
             "--checkpoints-base / --gnn-checkpoints-dir / explicit .pt paths. "
             "--checkpoints-base sets one tree for GNN + QSAR-SVM; --gnn-checkpoints-dir overrides GNN only."
@@ -822,7 +879,7 @@ def main():
         nargs="?",
         default=None,
         metavar="GENERATED",
-        help="Pipeline generated/ directory or parent containing generated/; reads manifest and gnn_ready_models/.",
+        help="Pipeline generated/ directory or parent containing generated/; reads manifest inputs (does not change checkpoint defaults).",
     )
     ap.add_argument(
         "--input-dir",
@@ -888,6 +945,14 @@ def main():
         type=str,
         default=CONFIG['geometric_qsar_combined_csv'],
         help='Merged geo+QSAR+ESM2 CSV written for all GNN tabular modes (matches training merges)',
+    )
+    ap.add_argument(
+        '--legacy-pooled-esm-tabular',
+        action='store_true',
+        help=(
+            'Compatibility mode for older GNN checkpoints that used pooled ESM2 embeddings as tabular MLP inputs '
+            '(expects --esm2-csv with columns esm2_dim_0..esm2_dim_1279 + peptide_id).'
+        ),
     )
     ap.add_argument(
         '--svm_descriptor_csv',

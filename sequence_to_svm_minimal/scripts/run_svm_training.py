@@ -12,11 +12,12 @@ This script:
 """
 
 import argparse
+import re
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 from sklearn.metrics import (
     accuracy_score,
@@ -28,6 +29,17 @@ from sklearn.metrics import (
     matthews_corrcoef,
 )
 import joblib
+
+# Ensure `sequence_to_svm_minimal/` is on sys.path even when the script is run
+# from outside that directory (common when launching from WSL or a different cwd).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+try:
+    # Optional dependency: only needed when using the pipeline workspace mode.
+    from peptide_pipeline.manifest_paths import load_pipeline_manifest, resolve_generated_workspace
+except Exception:  # pragma: no cover
+    load_pipeline_manifest = None
+    resolve_generated_workspace = None
 
 
 def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> dict:
@@ -48,6 +60,56 @@ def _normalize_core_id(series: pd.Series) -> pd.Series:
     s = series.astype(str)
     s = s.str.replace(r"^(AMP_|DECOY_)", "", regex=True)
     return s
+
+
+def _resolve_pipeline_workspace(generated: str | None, input_dir: str | None) -> Path | None:
+    """
+    Resolve a pipeline workspace (directory containing pipeline_manifest.json).
+
+    Accepts either the generated/ folder itself, or a parent containing generated/.
+    Mirrors compare_model_predictions.py behavior.
+    """
+    if generated and input_dir:
+        gp = Path(generated).expanduser().resolve()
+        ip = Path(input_dir).expanduser().resolve()
+        if gp != ip:
+            raise SystemExit("Use only one of GENERATED (positional) or --input-dir / --pipeline-work-dir.")
+    chosen = generated or input_dir
+    if not chosen:
+        return None
+
+    if resolve_generated_workspace is None:
+        raise SystemExit(
+            "Pipeline workspace mode requested, but `peptide_pipeline` could not be imported. "
+            "Run from the `sequence_to_svm_minimal/` directory, or ensure that directory is on PYTHONPATH."
+        )
+    return resolve_generated_workspace(chosen)
+
+
+def _normalize_manifest_path(p: str) -> Path:
+    """
+    Normalize manifest paths across Windows / WSL.
+
+    - On Windows: convert WSL-style `/mnt/<drive>/...` to `X:\...`
+    - On WSL/Linux: convert Windows-style `X:\...` to `/mnt/x/...`
+    - Otherwise: keep path unchanged
+    """
+    s = str(p)
+    if sys.platform.startswith("win"):
+        # /mnt/c/Users/...  ->  C:\Users\...
+        if s.startswith("/mnt/") and len(s) >= 7 and s[5].isalpha() and s[6:7] == "/":
+            drive = s[5].upper()
+            rest = s[7:].replace("/", "\\")
+            return Path(f"{drive}:\\{rest}")
+        return Path(s)
+
+    # WSL/Linux: convert C:\Users\... -> /mnt/c/Users/...
+    m = re.match(r"^([A-Za-z]):[\\/](.*)$", s)
+    if m:
+        drive = m.group(1).lower()
+        rest = m.group(2).replace("\\", "/")
+        return Path(f"/mnt/{drive}/{rest}")
+    return Path(s)
 
 
 def _load_esm2_features(esm2_csv: str | None, esm2_amp_csv: str | None, esm2_decoy_csv: str | None):
@@ -92,15 +154,78 @@ def _load_esm2_features(esm2_csv: str | None, esm2_amp_csv: str | None, esm2_dec
 def main():
     base_dir = Path(__file__).resolve().parents[1]
 
-    default_geo = base_dir / "data" / "gnn_training_dataset" / "alpha_and_beta_combined" / "generated" / "spliced" / "geometric_features_clustered.csv"
-    default_qsar = base_dir / "data" / "gnn_training_dataset" / "alpha_and_beta_combined" / "generated" / "spliced" / "qsar12_descriptors.csv"
-    default_esm2_amp = base_dir / "data" / "gnn_training_dataset" / "alpha_and_beta_combined" / "generated" / "spliced" / "esm2_amp.csv"
-    default_esm2_decoy = base_dir / "data" / "gnn_training_dataset" / "alpha_and_beta_combined" / "generated" / "spliced" / "esm2_decoy.csv"
+    # Legacy defaults (pre-pipeline) retained for backwards compatibility.
+    default_geo = (
+        base_dir
+        / "data"
+        / "gnn_training_dataset"
+        / "alpha_and_beta_combined"
+        / "generated"
+        / "spliced"
+        / "geometric_features_clustered.csv"
+    )
+    default_qsar = (
+        base_dir
+        / "data"
+        / "gnn_training_dataset"
+        / "alpha_and_beta_combined"
+        / "generated"
+        / "spliced"
+        / "qsar12_descriptors.csv"
+    )
+    default_esm2_amp = (
+        base_dir
+        / "data"
+        / "gnn_training_dataset"
+        / "alpha_and_beta_combined"
+        / "generated"
+        / "spliced"
+        / "esm2_amp.csv"
+    )
+    default_esm2_decoy = (
+        base_dir
+        / "data"
+        / "gnn_training_dataset"
+        / "alpha_and_beta_combined"
+        / "generated"
+        / "spliced"
+        / "esm2_decoy.csv"
+    )
     default_out_dir = base_dir / "results" / "svm"
 
     ap = argparse.ArgumentParser(description="Train SVM for use with compare_model_predictions.py")
+    ap.add_argument(
+        "generated",
+        nargs="?",
+        default=None,
+        metavar="GENERATED",
+        help=(
+            "Pipeline generated/ directory or parent containing generated/. "
+            "When provided, geo/qsar/esm2 paths default to pipeline_manifest.json "
+            "(overridden by explicit --geo_csv/--qsar_csv/--esm2_* flags)."
+        ),
+    )
+    ap.add_argument(
+        "--input-dir",
+        "--pipeline-work-dir",
+        type=str,
+        default=None,
+        dest="input_dir",
+        help="Same as positional GENERATED (pipeline workspace containing pipeline_manifest.json).",
+    )
     ap.add_argument("--geo_csv", type=str, default=str(default_geo), help="Geometric features CSV used for training")
     ap.add_argument("--qsar_csv", type=str, default=str(default_qsar), help="QSAR-12 descriptors CSV aligned with geo_csv")
+    ap.add_argument(
+        "--svm_feature_set",
+        type=str,
+        default="qsar12",
+        choices=["qsar12", "qsar12+esm2"],
+        help=(
+            "Which features to train on. "
+            "'qsar12' trains a QSAR-only SVM (no ESM2 required). "
+            "'qsar12+esm2' trains the newer fused SVM (default)."
+        ),
+    )
     ap.add_argument("--esm2_csv", type=str, default=None,
                     help="Optional single ESM2 CSV with peptide_id/seqIndex + esm2_dim_*")
     ap.add_argument("--esm2_amp_csv", type=str, default=str(default_esm2_amp),
@@ -111,6 +236,41 @@ def main():
     ap.add_argument("--kernel", type=str, default="rbf", choices=["rbf", "linear"], help="SVM kernel")
     args = ap.parse_args()
 
+    # If a pipeline workspace is provided, use manifest paths as defaults unless user explicitly overrides.
+    ws = _resolve_pipeline_workspace(getattr(args, "generated", None), getattr(args, "input_dir", None))
+    if ws is not None:
+        if load_pipeline_manifest is None:
+            raise SystemExit(
+                "Pipeline workspace mode requested, but `peptide_pipeline` could not be imported. "
+                "Run from the `sequence_to_svm_minimal/` directory, or ensure that directory is on PYTHONPATH."
+            )
+        m = load_pipeline_manifest(ws)
+        # These keys are written by run_data_pipeline when QSAR/ESM2 are enabled.
+        required = ["geometric_features", "qsar12_descriptors"]
+        if args.svm_feature_set == "qsar12+esm2":
+            required.append("esm2_embeddings")
+        for k in required:
+            if not m.get(k):
+                raise SystemExit(
+                    f"Manifest missing {k!r} in {ws}. "
+                    "Run the pipeline without --skip-qsar (and without --skip-esm2 for qsar12+esm2), "
+                    "or pass explicit --geo_csv/--qsar_csv/(--esm2_csv)."
+                )
+
+        # Treat manifest paths as defaults: only apply if user did not set the corresponding CLI flags.
+        if args.geo_csv == str(default_geo):
+            args.geo_csv = str(_normalize_manifest_path(m["geometric_features"]).resolve())
+        if args.qsar_csv == str(default_qsar):
+            args.qsar_csv = str(_normalize_manifest_path(m["qsar12_descriptors"]).resolve())
+        if args.svm_feature_set == "qsar12+esm2":
+            if (
+                args.esm2_csv is None
+                and args.esm2_amp_csv == str(default_esm2_amp)
+                and args.esm2_decoy_csv == str(default_esm2_decoy)
+            ):
+                # Prefer the manifest merged embeddings CSV (with peptide_id).
+                args.esm2_csv = str(_normalize_manifest_path(m["esm2_embeddings"]).resolve())
+
     geo_csv = Path(args.geo_csv)
     qsar_csv = Path(args.qsar_csv)
     esm2_csv = Path(args.esm2_csv) if args.esm2_csv else None
@@ -120,9 +280,14 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("\n=== Training SVM for compare_model_predictions.py ===")
+    if ws is not None:
+        print(f"Pipeline workspace: {ws}")
     print(f"Geo CSV : {geo_csv}")
     print(f"QSAR CSV: {qsar_csv}")
-    print(f"ESM2 CSV: {esm2_csv if esm2_csv else f'{esm2_amp_csv} + {esm2_decoy_csv}'}")
+    if args.svm_feature_set == "qsar12+esm2":
+        print(f"ESM2 CSV: {esm2_csv if esm2_csv else f'{esm2_amp_csv} + {esm2_decoy_csv}'}")
+    else:
+        print("ESM2 CSV: (not used; --svm_feature_set=qsar12)")
     print(f"Out dir : {out_dir}")
 
     geo_df = pd.read_csv(geo_csv)
@@ -155,20 +320,23 @@ def main():
         if c not in qsar_df.columns:
             raise ValueError(f"QSAR column missing from {qsar_csv}: {c}")
 
-    # Merge ESM2 embeddings via normalized core IDs (strip AMP_/DECOY_ prefixes)
-    esm2_df, esm2_cols = _load_esm2_features(
-        str(esm2_csv) if esm2_csv else None,
-        str(esm2_amp_csv) if esm2_amp_csv else None,
-        str(esm2_decoy_csv) if esm2_decoy_csv else None,
-    )
-    if esm2_df is None or not esm2_cols:
-        raise ValueError("ESM2 embeddings are required but were not loaded.")
-
     train_df = geo_df[["peptide_id", "label"]].merge(qsar_df[["peptide_id"] + qsar_cols], on="peptide_id", how="left")
-    train_df["core_id"] = _normalize_core_id(train_df["peptide_id"])
-    train_df = train_df.merge(esm2_df, on="core_id", how="left")
-
-    feature_cols = qsar_cols + esm2_cols
+    feature_cols = list(qsar_cols)
+    if args.svm_feature_set == "qsar12+esm2":
+        # Merge ESM2 embeddings via normalized core IDs (strip AMP_/DECOY_ prefixes)
+        esm2_df, esm2_cols = _load_esm2_features(
+            str(esm2_csv) if esm2_csv else None,
+            str(esm2_amp_csv) if esm2_amp_csv else None,
+            str(esm2_decoy_csv) if esm2_decoy_csv else None,
+        )
+        if esm2_df is None or not esm2_cols:
+            raise ValueError(
+                "ESM2 embeddings are required for --svm_feature_set=qsar12+esm2 but were not loaded. "
+                "Provide --esm2_csv or --esm2_amp_csv/--esm2_decoy_csv, or switch to --svm_feature_set=qsar12."
+            )
+        train_df["core_id"] = _normalize_core_id(train_df["peptide_id"])
+        train_df = train_df.merge(esm2_df, on="core_id", how="left")
+        feature_cols = feature_cols + list(esm2_cols)
     missing_after_merge = train_df[feature_cols].isna().any(axis=1).sum()
     if missing_after_merge > 0:
         raise ValueError(f"Found {missing_after_merge} rows with missing QSAR/ESM2 features after merge.")
@@ -203,20 +371,28 @@ def main():
     svm.fit(X, y)
 
     # Save SVM model
-    svm_path = out_dir / "svm_qsar12_esm2_model.pkl"
+    svm_path = out_dir / "svm_qsar12_model.pkl"
     joblib.dump(svm, svm_path)
     print(f"\nSaved SVM model: {svm_path}")
+    if args.svm_feature_set == "qsar12+esm2":
+        svm_path_legacy = out_dir / "svm_qsar12_esm2_model.pkl"
+        joblib.dump(svm, svm_path_legacy)
+        print(f"Saved (legacy name): {svm_path_legacy}")
 
     # Save Z-score descriptor file expected by _load_svm_predictions:
     # line 1: comma-separated descriptor names in order
     # line 2: comma-separated means
     # line 3: comma-separated stds
-    z_path = out_dir / "svm_qsar12_esm2_zscores.txt"
+    z_path = out_dir / "svm_qsar12_zscores.txt"
     with z_path.open("w") as f:
         f.write(",".join(feature_cols) + "\n")
         f.write(",".join(f"{m:.10f}" for m in means) + "\n")
         f.write(",".join(f"{s:.10f}" for s in stds_safe) + "\n")
     print(f"Saved Z-score file: {z_path}")
+    if args.svm_feature_set == "qsar12+esm2":
+        z_path_legacy = out_dir / "svm_qsar12_esm2_zscores.txt"
+        z_path_legacy.write_text(z_path.read_text(encoding="utf-8"), encoding="utf-8")
+        print(f"Saved (legacy name): {z_path_legacy}")
 
     print("\nDone. To use this SVM in compare_model_predictions.py, run it with:")
     print("  --svm_descriptor_csv <descriptor CSV containing all features listed in z_file line 1>")

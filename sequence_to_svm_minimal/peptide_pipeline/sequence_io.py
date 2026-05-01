@@ -62,10 +62,22 @@ def read_sequence_records(
             records.append((rid, canon))
         return records
 
+    def _strip_inline_comment(s: str) -> str:
+        """
+        Allow inline comments in TXT inputs.
+
+        Examples:
+          "id ACDEFG  # comment" -> "id ACDEFG"
+          "ACDEFG # comment"     -> "ACDEFG"
+        """
+        if "#" not in s:
+            return s
+        return s.split("#", 1)[0].rstrip()
+
     auto_i = 0
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
-            raw = line.strip()
+            raw = _strip_inline_comment(line.strip())
             if not raw or raw.startswith("#"):
                 continue
             parts = raw.split(None, 1)
