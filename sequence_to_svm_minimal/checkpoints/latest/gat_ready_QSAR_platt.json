@@ -1,7 +1,7 @@
 {
   "method": "platt",
   "score": "logit_margin",
-  "coef": 1.4858489547425557,
-  "intercept": -0.8672836001560548,
+  "coef": 1.2138964020021745,
+  "intercept": -1.8238899288725945,
   "n_calib": 666
 }
