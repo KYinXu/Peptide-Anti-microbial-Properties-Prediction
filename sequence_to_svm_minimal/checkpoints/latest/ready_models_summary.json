@@ -1,197 +1,69 @@
 {
-  "timestamp": "2026-04-28T14:31:28.628441",
+  "timestamp": "2026-05-04T14:50:08.539060",
   "models": [
     {
-      "architecture": "gcn",
-      "feature_set": "ESM",
-      "checkpoint": "results/gnn/ready_models/gcn_ready_ESM.pt",
-      "metrics": {
-        "loss": 0.15440072119235992,
-        "accuracy": 0.9624624624624625,
-        "precision": 0.9560975609756097,
-        "recall": 0.9245283018867925,
-        "f1": 0.9400479616306955,
-        "mcc": 0.9130093404794761,
-        "auc_roc": 0.9894751059762281,
-        "auc_pr": 0.9847009986207342
-      },
-      "platt_calibration": "results/gnn/ready_models/gcn_ready_ESM_platt.json"
-    },
-    {
       "architecture": "gat",
       "feature_set": "ESM",
-      "checkpoint": "results/gnn/ready_models/gat_ready_ESM.pt",
+      "checkpoint": "results/gnn/ready_models/run_20260504_145008/gat_ready_ESM.pt",
       "metrics": {
-        "loss": 0.1948105487085524,
-        "accuracy": 0.9564564564564565,
-        "precision": 0.9216589861751152,
-        "recall": 0.9433962264150944,
-        "f1": 0.9324009324009324,
-        "mcc": 0.9004252567874682,
-        "auc_roc": 0.989973817637769,
-        "auc_pr": 0.9848963634222555
-      },
-      "platt_calibration": "results/gnn/ready_models/gat_ready_ESM_platt.json"
-    },
-    {
-      "architecture": "egnn",
-      "feature_set": "ESM",
-      "checkpoint": "results/gnn/ready_models/egnn_ready_ESM.pt",
-      "metrics": {
-        "loss": 0.18952473998069763,
-        "accuracy": 0.9624624624624625,
-        "precision": 0.943127962085308,
-        "recall": 0.9386792452830188,
-        "f1": 0.9408983451536643,
-        "mcc": 0.9134013007447283,
-        "auc_roc": 0.9927063419499627,
-        "auc_pr": 0.9868360674757967
-      },
-      "platt_calibration": "results/gnn/ready_models/egnn_ready_ESM_platt.json"
-    },
-    {
-      "architecture": "gcn",
-      "feature_set": "Geo",
-      "checkpoint": "results/gnn/ready_models/gcn_ready_Geo.pt",
-      "metrics": {
-        "loss": 0.1976941337897664,
-        "accuracy": 0.9474474474474475,
-        "precision": 0.8864628820960698,
-        "recall": 0.9575471698113207,
-        "f1": 0.9206349206349206,
-        "mcc": 0.8829055574639938,
-        "auc_roc": 0.9911894273127754,
-        "auc_pr": 0.9850103380886677
-      },
-      "platt_calibration": "results/gnn/ready_models/gcn_ready_Geo_platt.json"
-    },
-    {
-      "architecture": "gat",
-      "feature_set": "Geo",
-      "checkpoint": "results/gnn/ready_models/gat_ready_Geo.pt",
-      "metrics": {
-        "loss": 0.18452707997390203,
-        "accuracy": 0.9519519519519519,
-        "precision": 0.9054054054054054,
-        "recall": 0.9481132075471698,
-        "f1": 0.9262672811059908,
-        "mcc": 0.8911809669855018,
-        "auc_roc": 0.9915115119275205,
-        "auc_pr": 0.9863913966926503
-      },
-      "platt_calibration": "results/gnn/ready_models/gat_ready_Geo_platt.json"
-    },
-    {
-      "architecture": "egnn",
-      "feature_set": "Geo",
-      "checkpoint": "results/gnn/ready_models/egnn_ready_Geo.pt",
-      "metrics": {
-        "loss": 0.17364185445365451,
-        "accuracy": 0.9654654654654654,
-        "precision": 0.9354838709677419,
-        "recall": 0.9575471698113207,
-        "f1": 0.9463869463869464,
-        "mcc": 0.9210575066964246,
-        "auc_roc": 0.9910231900922616,
-        "auc_pr": 0.986084131663962
-      },
-      "platt_calibration": "results/gnn/ready_models/egnn_ready_Geo_platt.json"
-    },
-    {
-      "architecture": "gcn",
-      "feature_set": "QSAR",
-      "checkpoint": "results/gnn/ready_models/gcn_ready_QSAR.pt",
-      "metrics": {
-        "loss": 0.1813086558665548,
-        "accuracy": 0.9624624624624625,
-        "precision": 0.9308755760368663,
-        "recall": 0.9528301886792453,
-        "f1": 0.9417249417249417,
-        "mcc": 0.9141800900601058,
-        "auc_roc": 0.991947884631369,
-        "auc_pr": 0.9838327530562253
-      },
-      "platt_calibration": "results/gnn/ready_models/gcn_ready_QSAR_platt.json"
-    },
-    {
-      "architecture": "gat",
-      "feature_set": "QSAR",
-      "checkpoint": "results/gnn/ready_models/gat_ready_QSAR.pt",
-      "metrics": {
-        "loss": 0.15373684288490386,
-        "accuracy": 0.9579579579579579,
-        "precision": 0.9380952380952381,
-        "recall": 0.9292452830188679,
-        "f1": 0.933649289099526,
-        "mcc": 0.9029027953407714,
-        "auc_roc": 0.9912102069653395,
-        "auc_pr": 0.9857074554494821
-      },
-      "platt_calibration": "results/gnn/ready_models/gat_ready_QSAR_platt.json"
-    },
-    {
-      "architecture": "egnn",
-      "feature_set": "QSAR",
-      "checkpoint": "results/gnn/ready_models/egnn_ready_QSAR.pt",
-      "metrics": {
-        "loss": 0.17913030087947845,
-        "accuracy": 0.9594594594594594,
-        "precision": 0.9223744292237442,
-        "recall": 0.9528301886792453,
-        "f1": 0.9373549883990719,
-        "mcc": 0.9076615748974586,
-        "auc_roc": 0.9919582744576511,
-        "auc_pr": 0.9864220457257625
-      },
-      "platt_calibration": "results/gnn/ready_models/egnn_ready_QSAR_platt.json"
-    },
-    {
-      "architecture": "gcn",
-      "feature_set": "Combined",
-      "checkpoint": "results/gnn/ready_models/gcn_ready_Combined.pt",
-      "metrics": {
-        "loss": 0.2029186086285682,
-        "accuracy": 0.9534534534534534,
-        "precision": 0.8917748917748918,
+        "loss": 0.22400451877287456,
+        "accuracy": 0.948948948948949,
+        "precision": 0.8803418803418803,
         "recall": 0.9716981132075472,
-        "f1": 0.9300225733634312,
-        "mcc": 0.8970987862949465,
-        "auc_roc": 0.9923115285512426,
-        "auc_pr": 0.9868529264331053
+        "f1": 0.9237668161434978,
+        "mcc": 0.8879713438783302,
+        "auc_roc": 0.9913972238384173,
+        "auc_pr": 0.9852002071549352
       },
-      "platt_calibration": "results/gnn/ready_models/gcn_ready_Combined_platt.json"
+      "platt_calibration": "results/gnn/ready_models/run_20260504_145008/gat_ready_ESM_platt.json"
+    },
+    {
+      "architecture": "gat",
+      "feature_set": "Geo",
+      "checkpoint": "results/gnn/ready_models/run_20260504_145008/gat_ready_Geo.pt",
+      "metrics": {
+        "loss": 0.23613622784614563,
+        "accuracy": 0.9414414414414415,
+        "precision": 0.8619246861924686,
+        "recall": 0.9716981132075472,
+        "f1": 0.9135254988913526,
+        "mcc": 0.8730676986837707,
+        "auc_roc": 0.9901400548582827,
+        "auc_pr": 0.984711111655268
+      },
+      "platt_calibration": "results/gnn/ready_models/run_20260504_145008/gat_ready_Geo_platt.json"
+    },
+    {
+      "architecture": "gat",
+      "feature_set": "QSAR",
+      "checkpoint": "results/gnn/ready_models/run_20260504_145008/gat_ready_QSAR.pt",
+      "metrics": {
+        "loss": 0.20628713355177924,
+        "accuracy": 0.9504504504504504,
+        "precision": 0.908675799086758,
+        "recall": 0.9386792452830188,
+        "f1": 0.9234338747099768,
+        "mcc": 0.8870778576241778,
+        "auc_roc": 0.9904309699941817,
+        "auc_pr": 0.9822636622123064
+      },
+      "platt_calibration": "results/gnn/ready_models/run_20260504_145008/gat_ready_QSAR_platt.json"
     },
     {
       "architecture": "gat",
       "feature_set": "Combined",
-      "checkpoint": "results/gnn/ready_models/gat_ready_Combined.pt",
+      "checkpoint": "results/gnn/ready_models/run_20260504_145008/gat_ready_Combined.pt",
       "metrics": {
-        "loss": 0.18113995485362552,
-        "accuracy": 0.9654654654654654,
-        "precision": 0.9354838709677419,
-        "recall": 0.9575471698113207,
-        "f1": 0.9463869463869464,
-        "mcc": 0.9210575066964246,
-        "auc_roc": 0.9906595461723879,
-        "auc_pr": 0.9853803292086092
+        "loss": 0.19208495106015885,
+        "accuracy": 0.954954954954955,
+        "precision": 0.9099099099099099,
+        "recall": 0.9528301886792453,
+        "f1": 0.9308755760368663,
+        "mcc": 0.8980186726145465,
+        "auc_roc": 0.9907946139140553,
+        "auc_pr": 0.9852040905247553
       },
-      "platt_calibration": "results/gnn/ready_models/gat_ready_Combined_platt.json"
-    },
-    {
-      "architecture": "egnn",
-      "feature_set": "Combined",
-      "checkpoint": "results/gnn/ready_models/egnn_ready_Combined.pt",
-      "metrics": {
-        "loss": 0.18577832551229567,
-        "accuracy": 0.963963963963964,
-        "precision": 0.9607843137254902,
-        "recall": 0.9245283018867925,
-        "f1": 0.9423076923076923,
-        "mcc": 0.916479203217439,
-        "auc_roc": 0.9908361732191838,
-        "auc_pr": 0.9864798984108188
-      },
-      "platt_calibration": "results/gnn/ready_models/egnn_ready_Combined_platt.json"
+      "platt_calibration": "results/gnn/ready_models/run_20260504_145008/gat_ready_Combined_platt.json"
     }
   ]
 }
