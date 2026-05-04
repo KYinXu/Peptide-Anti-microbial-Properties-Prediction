@@ -23,7 +23,7 @@ from sklearn.model_selection import GroupKFold, StratifiedKFold
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from gnn.data_utils import PeptideGraphDataset
+from gnn.data_utils import PeptideGraphDataset, NODE_INPUT_DIM
 from gnn.models import PeptideGNN
 from gnn.train import cross_validate, print_cv_summary
 
@@ -110,7 +110,7 @@ def main():
     def model_fn():
         return PeptideGNN(
             architecture=args.architecture,
-            in_channels=26,
+            in_channels=NODE_INPUT_DIM,
             hidden_channels=args.hidden_channels,
             num_layers=args.num_layers,
             dropout=args.dropout,

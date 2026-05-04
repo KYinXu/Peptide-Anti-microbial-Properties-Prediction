@@ -4,19 +4,20 @@ Data utilities for converting PDB files to PyTorch Geometric graphs.
 Each peptide becomes a graph where:
 - Nodes = amino acid residues
 - Edges = sequential bonds (i, i+1) + spatial contacts (Cα-Cα < threshold)
-- Node features = AA type, pLDDT, hydrophobicity, charge, etc.
+- Node features = optional one-hot AA, PDB continuous scalars, VAE descriptor table
+  (see ``NODE_INPUT_DIM``, ``NodeFeatureGroups``; default is all blocks on)
 - Edge features = distance, edge type
 """
 
 import numpy as np
 import torch
 from torch_geometric.data import Data, Dataset
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
 from Bio.PDB import PDBParser
 import warnings
-import functools
 
 warnings.filterwarnings('ignore', category=Warning, module='Bio')
 
@@ -64,20 +65,94 @@ VOLUME = {
 }
 VOL_MIN, VOL_MAX = 60.1, 227.8
 
-# Node feature indices (0-19 one-hot AA; 20-25 continuous)
+ONEHOT_DIM = 20
+PDB_CONTINUOUS_DIM = 6
+
+
+def _load_vae_descriptor_matrix() -> np.ndarray:
+    path = Path(__file__).with_name("descriptor_table_vae.csv")
+    if not path.is_file():
+        raise FileNotFoundError(f"VAE descriptor table not found: {path}")
+    df = pd.read_csv(path, sep=r"\s+", engine="python").dropna(how="all")
+    if "Desc" not in df.columns:
+        raise ValueError(f"VAE descriptor CSV missing 'Desc' column: {path}")
+    missing = [aa for aa in AA_ORDER if aa not in df.columns]
+    if missing:
+        raise ValueError(f"VAE descriptor CSV missing AA columns {missing}: {path}")
+    return np.stack([df[aa].to_numpy(dtype=np.float64) for aa in AA_ORDER], axis=1).astype(np.float32)
+
+
+_VAE_DESCRIPTOR_MATRIX = _load_vae_descriptor_matrix()
+VAE_DESCRIPTOR_DIM = int(_VAE_DESCRIPTOR_MATRIX.shape[0])
+NODE_INPUT_DIM = ONEHOT_DIM + PDB_CONTINUOUS_DIM + VAE_DESCRIPTOR_DIM
+
+
+@dataclass
+class NodeFeatureGroups:
+    """Coarse toggles for node feature blocks. All True = full vector (default). Prefer this *or* node_feature_keep_indices per run, not conflicting combinations."""
+
+    onehot: bool = True
+    pdb_continuous: bool = True
+    vae_table: bool = True
+
+
+def _effective_node_feature_groups(groups: Optional[NodeFeatureGroups]) -> NodeFeatureGroups:
+    return groups if groups is not None else NodeFeatureGroups()
+
+
+def node_input_dim(groups: Optional[NodeFeatureGroups] = None) -> int:
+    """Feature width for ``data.x`` given enabled groups (None = all enabled)."""
+    g = _effective_node_feature_groups(groups)
+    n = 0
+    if g.onehot:
+        n += ONEHOT_DIM
+    if g.pdb_continuous:
+        n += PDB_CONTINUOUS_DIM
+    if g.vae_table:
+        n += VAE_DESCRIPTOR_DIM
+    return n
+
+
+def node_feature_groups_from_cli(spec: str) -> Optional[NodeFeatureGroups]:
+    """Parse comma-separated tokens: no_vae, no_onehot, no_pdb. Empty string -> None (all on)."""
+    if not (spec or "").strip():
+        return None
+    tok = {t.strip().lower() for t in spec.split(",") if t.strip()}
+    g = NodeFeatureGroups()
+    if "no_vae" in tok or "no_vae_table" in tok:
+        g.vae_table = False
+    if "no_onehot" in tok:
+        g.onehot = False
+    if "no_pdb" in tok or "no_pdb_continuous" in tok:
+        g.pdb_continuous = False
+    return g
+
+
+# Canonical indices when all groups are on: 0-19 one-hot; 20-25 PDB continuous; 26+ VAE table
 NODE_FEATURE_INDEX = {
-    'plddt': 20, 'hydrophobicity': 21, 'charge': 22,
-    'mw': 23, 'volume': 24, 'rel_position': 25
+    "plddt": 20,
+    "hydrophobicity": 21,
+    "charge": 22,
+    "mw": 23,
+    "volume": 24,
+    "rel_position": 25,
 }
 
 
 def node_feature_keep_indices_from_exclude(exclude_names: List[str]) -> List[int]:
-    """Return list of node feature indices to keep. One-hot 0-19 always kept; continuous by name."""
-    exclude = set(s.strip().lower() for s in exclude_names if s)
-    keep = list(range(20))
+    """
+    Indices on the full canonical vector (length ``NODE_INPUT_DIM``).
+    One-hot always kept; PDB scalars by name; append VAE columns unless excluded via
+    ``vae_descriptor`` / ``vae_descriptors``.
+    """
+    exclude = {s.strip().lower() for s in exclude_names if s}
+    drop_vae = ("vae_descriptor" in exclude) or ("vae_descriptors" in exclude)
+    keep = list(range(ONEHOT_DIM))
     for name, idx in NODE_FEATURE_INDEX.items():
         if name not in exclude:
             keep.append(idx)
+    if not drop_vae:
+        keep.extend(range(ONEHOT_DIM + PDB_CONTINUOUS_DIM, NODE_INPUT_DIM))
     return keep
 
 
@@ -132,56 +207,64 @@ def parse_pdb(pdb_path: str) -> Tuple[List[str], np.ndarray, np.ndarray]:
 # GRAPH CONSTRUCTION
 # =============================================================================
 
+def _onehot_block(aa_sequence: List[str], n_residues: int) -> np.ndarray:
+    out = np.zeros((n_residues, ONEHOT_DIM), dtype=np.float32)
+    for i, aa in enumerate(aa_sequence):
+        if aa in AA_TO_IDX:
+            out[i, AA_TO_IDX[aa]] = 1.0
+    return out
+
+
+def _pdb_continuous_block(
+    aa_sequence: List[str], plddt_values: np.ndarray, length: int, n_residues: int
+) -> np.ndarray:
+    out = np.zeros((n_residues, PDB_CONTINUOUS_DIM), dtype=np.float32)
+    for i, aa in enumerate(aa_sequence):
+        out[i, 0] = plddt_values[i] / 100.0 if plddt_values[i] > 1 else plddt_values[i]
+        hydro = HYDROPHOBICITY.get(aa, 0)
+        out[i, 1] = (hydro - HYDRO_MIN) / (HYDRO_MAX - HYDRO_MIN) * 2 - 1
+        out[i, 2] = CHARGE_PH7.get(aa, 0)
+        mw = MOLWEIGHT.get(aa, 100)
+        out[i, 3] = (mw - MW_MIN) / (MW_MAX - MW_MIN)
+        vol = VOLUME.get(aa, 100)
+        out[i, 4] = (vol - VOL_MIN) / (VOL_MAX - VOL_MIN)
+        out[i, 5] = i / (length - 1) if length > 1 else 0.5
+    return out
+
+
+def _vae_table_block(aa_sequence: List[str], n_residues: int) -> np.ndarray:
+    out = np.zeros((n_residues, VAE_DESCRIPTOR_DIM), dtype=np.float32)
+    for i, aa in enumerate(aa_sequence):
+        j = AA_TO_IDX.get(aa)
+        if j is not None:
+            out[i] = _VAE_DESCRIPTOR_MATRIX[:, j]
+    return out
+
+
 def compute_node_features(
     aa_sequence: List[str],
     plddt_values: np.ndarray,
-    length: int
+    length: int,
+    groups: Optional[NodeFeatureGroups] = None,
 ) -> torch.Tensor:
     """
-    Compute node features for each residue.
-    
-    Features (per residue):
-    - One-hot AA type (20)
-    - pLDDT confidence (1)
-    - Hydrophobicity normalized (1)
-    - Charge at pH 7 (1)
-    - Molecular weight normalized (1)
-    - Volume normalized (1)
-    - Relative position (1)
-    
-    Total: 26 features per node
+    Per-residue node features: concatenation of enabled groups in order
+    one-hot | PDB continuous | VAE descriptor table.
+
+    ``groups=None`` enables all blocks (full ``node_input_dim(None)`` == ``NODE_INPUT_DIM``).
     """
+    g = _effective_node_feature_groups(groups)
     n_residues = len(aa_sequence)
-    n_features = 20 + 6  # one-hot + continuous
-    
-    features = np.zeros((n_residues, n_features), dtype=np.float32)
-    
-    for i, aa in enumerate(aa_sequence):
-        # One-hot encoding (20 dims)
-        if aa in AA_TO_IDX:
-            features[i, AA_TO_IDX[aa]] = 1.0
-        
-        # pLDDT (normalized to [0, 1])
-        features[i, 20] = plddt_values[i] / 100.0 if plddt_values[i] > 1 else plddt_values[i]
-        
-        # Hydrophobicity (normalized to [-1, 1])
-        hydro = HYDROPHOBICITY.get(aa, 0)
-        features[i, 21] = (hydro - HYDRO_MIN) / (HYDRO_MAX - HYDRO_MIN) * 2 - 1
-        
-        # Charge
-        features[i, 22] = CHARGE_PH7.get(aa, 0)
-        
-        # Molecular weight (normalized to [0, 1])
-        mw = MOLWEIGHT.get(aa, 100)
-        features[i, 23] = (mw - MW_MIN) / (MW_MAX - MW_MIN)
-        
-        # Volume (normalized to [0, 1])
-        vol = VOLUME.get(aa, 100)
-        features[i, 24] = (vol - VOL_MIN) / (VOL_MAX - VOL_MIN)
-        
-        # Relative position in sequence [0, 1]
-        features[i, 25] = i / (length - 1) if length > 1 else 0.5
-    
+    parts: List[np.ndarray] = []
+    if g.onehot:
+        parts.append(_onehot_block(aa_sequence, n_residues))
+    if g.pdb_continuous:
+        parts.append(_pdb_continuous_block(aa_sequence, plddt_values, length, n_residues))
+    if g.vae_table:
+        parts.append(_vae_table_block(aa_sequence, n_residues))
+    if not parts:
+        raise ValueError("At least one NodeFeatureGroups field must be True")
+    features = np.concatenate(parts, axis=1)
     return torch.tensor(features, dtype=torch.float32)
 
 
@@ -258,17 +341,23 @@ def pdb_to_graph(
     peptide_id: str = None,
     distance_threshold: float = 8.0,
     geometric_features: Optional[np.ndarray] = None,
-    node_feature_keep_indices: Optional[List[int]] = None
+    node_feature_keep_indices: Optional[List[int]] = None,
+    node_feature_groups: Optional[NodeFeatureGroups] = None,
 ) -> Data:
     """
     Convert a PDB file to a PyTorch Geometric Data object.
-    node_feature_keep_indices: if set, keep only these node feature dimensions (0-25).
+
+    node_feature_groups: optional coarse blocks (default None = all on). Prefer this *or*
+    node_feature_keep_indices for ablation, not conflicting combinations.
+
+    node_feature_keep_indices: if set, column indices on the **canonical** full vector
+    (length ``NODE_INPUT_DIM``) to retain after ``compute_node_features``.
     """
     aa_sequence, ca_coords, plddt_values = parse_pdb(pdb_path)
     n_residues = len(aa_sequence)
     if n_residues < 2:
         raise ValueError(f"Peptide too short: {n_residues} residues")
-    x = compute_node_features(aa_sequence, plddt_values, n_residues)
+    x = compute_node_features(aa_sequence, plddt_values, n_residues, groups=node_feature_groups)
     if node_feature_keep_indices is not None:
         x = x[:, node_feature_keep_indices]
     
@@ -486,6 +575,7 @@ class PeptideGraphDataset(Dataset):
         geometric_feature_cols: Optional[List[str]] = None,
         tabular_scaler_path: Optional[str] = None,
         node_feature_keep_indices: Optional[List[int]] = None,
+        node_feature_groups: Optional[NodeFeatureGroups] = None,
         esm2_residue_dir: Optional[str] = None,
         canonical_seqs_path: Optional[str] = None,
         transform=None,
@@ -496,6 +586,7 @@ class PeptideGraphDataset(Dataset):
         self.distance_threshold = distance_threshold
         self.use_geometric_features = use_geometric_features
         self.node_feature_keep_indices = node_feature_keep_indices
+        self.node_feature_groups = node_feature_groups
         self.esm2_residue_dir = Path(esm2_residue_dir).resolve() if esm2_residue_dir else None
         self._esm2_window_resolver: Optional[ESM2WindowResolver] = None
         if self.esm2_residue_dir is not None and canonical_seqs_path:
@@ -575,7 +666,8 @@ class PeptideGraphDataset(Dataset):
             peptide_id=row['peptide_id'],
             distance_threshold=self.distance_threshold,
             geometric_features=geo_feats,
-            node_feature_keep_indices=self.node_feature_keep_indices
+            node_feature_keep_indices=self.node_feature_keep_indices,
+            node_feature_groups=self.node_feature_groups,
         )
         if self.esm2_residue_dir is not None:
             try:

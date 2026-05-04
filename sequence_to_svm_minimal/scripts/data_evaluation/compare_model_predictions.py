@@ -677,9 +677,10 @@ def _run_gnn_predictions(csv_path: str,
             )
 
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    in_ch = int(dataset[0].x.shape[1])
     model = PeptideGNN(
         architecture=architecture,
-        in_channels=26,
+        in_channels=in_ch,
         hidden_channels=hidden,
         num_layers=num_layers,
         num_classes=2,

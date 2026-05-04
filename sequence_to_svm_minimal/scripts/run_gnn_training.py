@@ -29,7 +29,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from gnn.data_utils import PeptideGraphDataset, create_dataloaders
+from gnn.data_utils import PeptideGraphDataset, create_dataloaders, NODE_INPUT_DIM
 from gnn.models import PeptideGNN
 from gnn.train import run_training, evaluate, cross_validate, print_cv_summary
 
@@ -208,7 +208,7 @@ def run_cluster_cv(args, dataset, labels, clusters, device, class_weights):
     def model_fn():
         return PeptideGNN(
             architecture=args.architecture,
-            in_channels=26,  # Node feature dimension
+            in_channels=NODE_INPUT_DIM,
             hidden_channels=args.hidden_channels,
             num_layers=args.num_layers,
             dropout=args.dropout,
@@ -297,7 +297,7 @@ def run_pnas_evaluation(args, dataset, df, labels, device, class_weights):
         # Fresh model
         model = PeptideGNN(
             architecture=args.architecture,
-            in_channels=26,
+            in_channels=NODE_INPUT_DIM,
             hidden_channels=args.hidden_channels,
             num_layers=args.num_layers,
             dropout=args.dropout,
@@ -353,7 +353,7 @@ def run_pnas_evaluation(args, dataset, df, labels, device, class_weights):
     
     final_model = PeptideGNN(
         architecture=args.architecture,
-        in_channels=26,
+        in_channels=NODE_INPUT_DIM,
         hidden_channels=args.hidden_channels,
         num_layers=args.num_layers,
         dropout=args.dropout,

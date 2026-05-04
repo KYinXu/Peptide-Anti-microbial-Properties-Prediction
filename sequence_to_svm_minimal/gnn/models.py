@@ -19,6 +19,8 @@ from torch_geometric.nn import (
 from torch_geometric.data import Data
 from typing import Optional, Literal, Dict, Any
 
+from .data_utils import NODE_INPUT_DIM
+
 
 def esm2_raw_dim_from_state_dict(state_dict: Dict[str, Any]) -> int:
     """Width of raw per-residue ESM2 vectors (e.g. 1280) if checkpoint uses node-level ESM2."""
@@ -64,7 +66,7 @@ class GCN(nn.Module):
     
     def __init__(
         self,
-        in_channels: int = 26,
+        in_channels: int = NODE_INPUT_DIM,
         hidden_channels: int = 64,
         num_layers: int = 3,
         dropout: float = 0.2,
@@ -157,7 +159,7 @@ class GAT(nn.Module):
     
     def __init__(
         self,
-        in_channels: int = 26,
+        in_channels: int = NODE_INPUT_DIM,
         hidden_channels: int = 64,
         num_layers: int = 3,
         heads: int = 4,
@@ -343,7 +345,7 @@ class EGNN(nn.Module):
     
     def __init__(
         self,
-        in_channels: int = 26,
+        in_channels: int = NODE_INPUT_DIM,
         hidden_channels: int = 64,
         num_layers: int = 4,
         dropout: float = 0.2,
@@ -450,7 +452,7 @@ class PeptideGNN(nn.Module):
     def __init__(
         self,
         architecture: Literal['gcn', 'gat', 'egnn'] = 'gcn',
-        in_channels: int = 26,
+        in_channels: int = NODE_INPUT_DIM,
         hidden_channels: int = 64,
         num_layers: int = 3,
         dropout: float = 0.2,

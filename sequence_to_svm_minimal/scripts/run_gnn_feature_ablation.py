@@ -25,12 +25,20 @@ from sklearn.model_selection import GroupKFold, StratifiedKFold
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from gnn.data_utils import PeptideGraphDataset, node_feature_keep_indices_from_exclude
+from gnn.data_utils import (
+    PeptideGraphDataset,
+    node_feature_keep_indices_from_exclude,
+    node_feature_groups_from_cli,
+    node_input_dim,
+)
 from gnn.models import PeptideGNN
 from gnn.train import cross_validate, print_cv_summary
 
-# Node features (26-dim): indices 0-19 = one-hot AA (always kept); 20-25 = these (excludable via --node_exclude)
+# Canonical node layout: 0-19 one-hot; 20-25 PDB scalars (excludable); 26+ VAE table (exclude with vae_descriptors).
 NODE_FEATURE_NAMES = ['plddt', 'hydrophobicity', 'charge', 'mw', 'volume', 'rel_position']
+
+# Preset "none": one-hot only (drop PDB block and VAE block).
+_NODE_EXCLUDE_ALL_PDB = NODE_FEATURE_NAMES + ['vae_descriptors']
 
 DEFAULT_GEO_COLS = [
     'radius_gyration', 'end_to_end_distance', 'max_pairwise_distance',
@@ -49,7 +57,7 @@ RUN_PRESETS = {
     'graph_only': {'node_exclude': [], 'use_geo': False, 'geo_exclude': []},
     'no_charge': {'node_exclude': ['charge'], 'use_geo': True, 'geo_exclude': []},
     'no_hydrophobicity': {'node_exclude': ['hydrophobicity'], 'use_geo': True, 'geo_exclude': []},
-    'none': {'node_exclude': NODE_FEATURE_NAMES, 'use_geo': False, 'geo_exclude': []},
+    'none': {'node_exclude': _NODE_EXCLUDE_ALL_PDB, 'use_geo': False, 'geo_exclude': []},
 }
 
 
@@ -70,7 +78,11 @@ def parse_args():
     p.add_argument('--geo_exclude', type=str, default='',
                    help='Comma-separated names to remove from default geometric columns')
     p.add_argument('--node_exclude', type=str, default='',
-                   help=f'Comma-separated node feature names to exclude. Options: {", ".join(NODE_FEATURE_NAMES)}')
+                   help=f'Comma-separated canonical columns to exclude. PDB scalars: {", ".join(NODE_FEATURE_NAMES)}; '
+                        'also vae_descriptors drops the VAE CSV block. Ignored if --node_groups is set.')
+    p.add_argument('--node_groups', type=str, default='',
+                   help='Coarse blocks: comma tokens no_vae, no_onehot, no_pdb (default empty = all on). '
+                        'If set, overrides --node_exclude; not applied with --runs (multi-preset).')
     p.add_argument('--runs', type=str, nargs='*',
                    help='Preset run names to compare (e.g. all no_plddt graph_only). If not set, single run with --geo/--geo_exclude/--node_exclude')
     return p.parse_args()
@@ -90,18 +102,33 @@ def resolve_geo_cols(geo_spec: str, geo_exclude_spec: str) -> list:
     return [c for c in DEFAULT_GEO_COLS if c not in exclude]
 
 
-def run_one_run(geo_cols, use_geo, node_feature_keep_indices, run_name, args, splits, device):
+def run_one_run(
+    geo_cols,
+    use_geo,
+    node_feature_keep_indices,
+    run_name,
+    args,
+    splits,
+    device,
+    node_feature_groups=None,
+):
     use_geo = use_geo and len(geo_cols) > 0
+    if node_feature_groups is not None:
+        keep = None
+        in_channels = node_input_dim(node_feature_groups)
+    else:
+        keep = node_feature_keep_indices
+        in_channels = len(node_feature_keep_indices)
     dataset = PeptideGraphDataset(
         csv_path=args.csv_path,
         pdb_dir=args.pdb_dir,
         distance_threshold=8.0,
         use_geometric_features=use_geo,
         geometric_feature_cols=geo_cols if geo_cols else None,
-        node_feature_keep_indices=node_feature_keep_indices,
+        node_feature_keep_indices=keep,
+        node_feature_groups=node_feature_groups,
     )
     all_data = [dataset[i] for i in range(len(dataset))]
-    in_channels = len(node_feature_keep_indices)
     geo_dim = 0
     if use_geo and geo_cols:
         for d in all_data:
@@ -150,6 +177,14 @@ def main():
         cv = StratifiedKFold(n_splits=args.n_folds, shuffle=True, random_state=args.seed)
         splits = list(cv.split(np.arange(len(labels)), labels))
 
+    groups_from_cli = node_feature_groups_from_cli(args.node_groups)
+    if args.runs and groups_from_cli is not None:
+        print(
+            "Warning: --node_groups is ignored when using --runs (presets use --node_exclude only).",
+            flush=True,
+        )
+        groups_from_cli = None
+
     if args.runs:
         for name in args.runs:
             if name not in RUN_PRESETS:
@@ -170,17 +205,26 @@ def main():
             geo_cols = resolve_geo_cols('', ','.join(p['geo_exclude'])) if use_geo else []
             node_keep = node_feature_keep_indices_from_exclude(p['node_exclude'])
             print(f"\n--- {name} ---")
-            cv_results = run_one_run(geo_cols, use_geo, node_keep, name, args, splits, device)
+            cv_results = run_one_run(
+                geo_cols, use_geo, node_keep, name, args, splits, device, node_feature_groups=None
+            )
             summary = {k: {'mean': float(np.mean(v)), 'std': float(np.std(v))} for k, v in cv_results.items()}
             all_results.append({'config': name, 'summary': summary, 'cv_results': cv_results})
             print_cv_summary(cv_results)
     else:
         geo_cols = resolve_geo_cols(args.geo, args.geo_exclude)
         use_geo = len(geo_cols) > 0
-        node_exclude = [x.strip() for x in args.node_exclude.split(',') if x.strip()] if args.node_exclude else []
-        node_keep = node_feature_keep_indices_from_exclude(node_exclude)
+        if groups_from_cli is not None:
+            if args.node_exclude.strip():
+                print('Warning: --node_exclude ignored because --node_groups is set.', flush=True)
+            node_keep = []
+            ng = groups_from_cli
+        else:
+            ng = None
+            node_exclude = [x.strip() for x in args.node_exclude.split(',') if x.strip()] if args.node_exclude else []
+            node_keep = node_feature_keep_indices_from_exclude(node_exclude)
         print("\n--- single ---")
-        cv_results = run_one_run(geo_cols, use_geo, node_keep, 'single', args, splits, device)
+        cv_results = run_one_run(geo_cols, use_geo, node_keep, 'single', args, splits, device, node_feature_groups=ng)
         summary = {k: {'mean': float(np.mean(v)), 'std': float(np.std(v))} for k, v in cv_results.items()}
         all_results.append({'config': 'single', 'summary': summary, 'cv_results': cv_results})
         print_cv_summary(cv_results)

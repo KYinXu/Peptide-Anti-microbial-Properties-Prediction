@@ -34,7 +34,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from gnn.data_utils import resolve_peptide_pdb_path
+from gnn.data_utils import NODE_INPUT_DIM, resolve_peptide_pdb_path
 from gnn.models import PeptideGNN
 from gnn.platt import (
     collect_margins_and_labels,
@@ -344,7 +344,7 @@ def train_single_model(arch: str,
     esm2_raw = len(esm2_cols) if feature_cfg.get("use_esm2") else 0
     model = PeptideGNN(
         architecture=arch,
-        in_channels=26,
+        in_channels=NODE_INPUT_DIM,
         hidden_channels=args.hidden_channels,
         num_layers=args.num_layers,
         dropout=args.dropout,

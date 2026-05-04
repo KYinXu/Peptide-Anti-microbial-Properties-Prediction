@@ -21,16 +21,28 @@ import warnings
 warnings.filterwarnings('ignore', message='.*Disabling its usage.*', category=UserWarning)
 warnings.filterwarnings('ignore', message=".*torch-scatter.*was not found", category=UserWarning)
 
-from .data_utils import PeptideGraphDataset, pdb_to_graph, create_dataloaders
+from .data_utils import (
+    PeptideGraphDataset,
+    pdb_to_graph,
+    create_dataloaders,
+    NODE_INPUT_DIM,
+    NodeFeatureGroups,
+    node_input_dim,
+    node_feature_groups_from_cli,
+)
 from .models import GCN, GAT, EGNN, PeptideGNN
 from .train import train_epoch, evaluate, run_training
 
 __all__ = [
     'PeptideGraphDataset',
-    'pdb_to_graph', 
+    'pdb_to_graph',
     'create_dataloaders',
+    'NODE_INPUT_DIM',
+    'NodeFeatureGroups',
+    'node_input_dim',
+    'node_feature_groups_from_cli',
     'GCN',
-    'GAT', 
+    'GAT',
     'EGNN',
     'PeptideGNN',
     'train_epoch',

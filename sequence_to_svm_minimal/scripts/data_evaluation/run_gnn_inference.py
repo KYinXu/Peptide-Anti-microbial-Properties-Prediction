@@ -105,11 +105,12 @@ def main():
             print(f"Detected geometric feature dimension: {geo_dim}")
             
     test_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
-    
-    print(f"\nInitializing {args.architecture.upper()} model...")
+
+    in_ch = int(dataset[0].x.shape[1])
+    print(f"\nInitializing {args.architecture.upper()} model (in_channels={in_ch})...")
     model = PeptideGNN(
         architecture=args.architecture,
-        in_channels=26,
+        in_channels=in_ch,
         hidden_channels=args.hidden_channels,
         num_layers=args.num_layers,
         num_classes=2,

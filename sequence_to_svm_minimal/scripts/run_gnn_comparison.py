@@ -205,7 +205,7 @@ def run_single_experiment(arch, feature_name, feature_config, all_data, labels, 
     def model_fn():
         return PeptideGNN(
             architecture=arch,
-            in_channels=26,
+            in_channels=int(all_data[0].x.shape[1]),
             hidden_channels=config['hidden_channels'],
             num_layers=config['num_layers'],
             dropout=config['dropout'],
