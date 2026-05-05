@@ -3,9 +3,9 @@
 GNN Training Script for Peptide MIC Classification
 
 Usage:
-    python run_gnn_training.py --architecture gcn --epochs 100
+    python run_gnn_training.py path/to/generated --architecture gcn --epochs 100
     python run_gnn_training.py --architecture gat --use_geo_features
-    python run_gnn_training.py --architecture egnn --hidden_channels 128
+    python run_gnn_training.py path/to/generated --architecture egnn --hidden_channels 128
 
 This script trains GNN models on ESMFold-predicted peptide structures.
 Supports cluster-based cross-validation and PNAS-style evaluation.
@@ -38,11 +38,16 @@ _LEGACY_DEFAULT_PDB = "data/training_dataset"
 
 
 def resolve_legacy_train_paths(args: argparse.Namespace) -> None:
-    from peptide_pipeline.manifest_paths import gnn_legacy_training_paths_from_work_dir
+    from peptide_pipeline.manifest_paths import (
+        gnn_legacy_training_paths_from_work_dir,
+        resolve_generated_workspace,
+    )
 
     bundle = None
-    if getattr(args, "pipeline_work_dir", None):
-        bundle = gnn_legacy_training_paths_from_work_dir(Path(args.pipeline_work_dir))
+    gen = getattr(args, "generated", None)
+    if gen:
+        ws = resolve_generated_workspace(gen)
+        bundle = gnn_legacy_training_paths_from_work_dir(ws)
     if getattr(args, "csv_path", None) is None:
         args.csv_path = bundle["csv_path"] if bundle else _LEGACY_DEFAULT_CSV
     if getattr(args, "pdb_dir", None) is None:
@@ -54,10 +59,11 @@ def parse_args():
     
     # Data arguments
     parser.add_argument(
-        "--pipeline-work-dir",
-        type=str,
+        "generated",
+        nargs="?",
         default=None,
-        help="Pipeline workspace with pipeline_manifest.json; sets csv_path and pdb_dir unless overridden.",
+        metavar="GENERATED",
+        help="Pipeline generated/ (or parent containing generated/) with pipeline_manifest.json; sets csv_path and pdb_dir unless overridden.",
     )
     parser.add_argument('--csv_path', type=str, default=argparse.SUPPRESS,
                         help='Path to CSV with peptide data')

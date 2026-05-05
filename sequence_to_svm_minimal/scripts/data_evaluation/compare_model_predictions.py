@@ -51,31 +51,15 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-# Default paths (relative to sequence_to_svm_minimal/). Override with CLI.
-_ROOT = Path(__file__).resolve().parents[2]
+from configs.load_config import argv_without_config_flags, load_compare_models_config, repo_root
+from gnn.data_utils import (
+    NodeFeatureGroups,
+    node_feature_groups_from_cli,
+    node_feature_groups_from_config_value,
+    node_input_dim,
+)
 
-# Default config: compare feature sets for a single architecture.
-# Checkpoints should come from run_gnn_train_final_models.py.
-CONFIG = {
-    'geo_csv': str(_ROOT / 'data/test/CPPs/geometric_features.csv'),
-    'pdb_dir': str(_ROOT / 'data/test/CPPs/structures/sequences'),
-    'qsar_csv': str(_ROOT / 'data/test/CPPs/qsar12_descriptors.csv'),
-    'geometric_qsar_combined_csv': str(_ROOT / 'data/test/CPPs/geometric_qsar_combined.csv'),
-    'svm_descriptor_csv': str(_ROOT / 'data/test/CPPs/qsar12_descriptors.csv'),
-    'svm_z_file': str(_ROOT / 'results/checkpoints/svm_alpha_beta_combined/svm_qsar12_zscores.txt'),
-    'svm_pkl': str(_ROOT / 'results/checkpoints/svm_alpha_beta_combined/svm_qsar12_model.pkl'),
-    'architecture': 'gat',  # 'gcn', 'gat', or 'egnn'
-    'esm_only_pt': str(_ROOT / 'checkpoints/latest/gat_ready_ESM.pt'),
-    'esm_geo_pt': str(_ROOT / 'checkpoints/latest/gat_ready_Geo.pt'),
-    'esm_qsar_pt': str(_ROOT / 'checkpoints/latest/gat_ready_QSAR.pt'),
-    'esm_combined_pt': str(_ROOT / 'checkpoints/latest/gat_ready_Combined.pt'),
-    'gnn_hidden': 64,
-    'gnn_layers': 3,
-    'gnn_pooling': 'mean_max',
-    'batch_size': 32,
-    # Runtime default is set in main() with a fresh timestamp (do not use datetime at import).
-    'output_csv': str(_ROOT / 'results' / 'comparisons' / 'model_comparison_latest.csv'),
-}
+_ROOT = repo_root()
 
 def _comparison_snapshot_csv_path(ws: Path | None) -> Path:
     """Stable path overwritten each run so tools can open a fixed filename."""
@@ -436,22 +420,16 @@ def apply_pipeline_generated_workspace(
     skip_svm_clear: bool,
 ) -> tuple[Path | None, bool]:
     """
-    If GENERATED or --input-dir is set, fill paths from pipeline_manifest.json.
+    If GENERATED (positional) is set, fill paths from pipeline_manifest.json.
 
-    When the path is given as the positional GENERATED argument, also default GNN
-    checkpoints are NOT changed (defaults remain whatever the user configured, e.g.
-    ``checkpoints/latest/*.pt``). Use ``--gnn-checkpoints-dir`` or ``--checkpoints-base``
-    to point at a workspace-trained ``gnn_ready_models/`` folder.
-
-    When only ``--input-dir`` / ``--pipeline-work-dir`` is used (no positional), only
-    manifest-driven inputs are updated; checkpoint paths are left to CONFIG and other
-    CLI flags.
+    Default GNN checkpoints are NOT changed (e.g. ``checkpoints/latest/*.pt``). Use
+    ``--gnn-checkpoints-dir`` or ``--checkpoints-base`` to point at a workspace-trained
+    ``gnn_ready_models/`` folder.
 
     Unless skip_svm_clear, clears this script's QSAR-SVM paths (use --svm_pkl etc. to keep).
 
-    Returns ``(workspace_or_none, skip_workspace_checkpoint_roots)``. The second value
-    is True for flag-only workspace selection so callers do not resolve checkpoints under
-    that workspace.
+    Returns ``(resolved_workspace_or_none, skip_workspace_checkpoint_roots)``. The second
+    value is kept for API compatibility and is always False when a workspace path is given.
     """
     from peptide_pipeline.manifest_paths import load_pipeline_manifest, resolve_generated_workspace
 
@@ -470,15 +448,11 @@ def apply_pipeline_generated_workspace(
             # \\wsl$\<distro>\mnt\c\... sometimes appears in copied paths; leave as-is (Path handles it)
         return Path(s)
 
-    pos = getattr(args, "generated", None)
-    alt = getattr(args, "input_dir", None)
-    if pos and alt and Path(pos).resolve() != Path(alt).resolve():
-        raise SystemExit("Use only one of GENERATED (positional) or --input-dir / --pipeline-work-dir.")
-    chosen = pos or alt
+    chosen = getattr(args, "generated", None)
     if not chosen:
         return None, False
 
-    skip_workspace_checkpoint_roots = pos is None and alt is not None
+    skip_workspace_checkpoint_roots = False
 
     ws = resolve_generated_workspace(chosen)
     m = load_pipeline_manifest(ws)
@@ -595,6 +569,7 @@ def _run_gnn_predictions(csv_path: str,
                          esm2_residue_dir: str | None = None,
                          canonical_seqs_path: str | None = None,
                          *,
+                         node_feature_groups=None,
                          use_gnn_platt: bool = True):
     """Run one GNN checkpoint and return ids/preds/prob/logits/margin."""
     import torch
@@ -608,6 +583,13 @@ def _run_gnn_predictions(csv_path: str,
     sd0 = torch.load(model_path, map_location="cpu", weights_only=True)
     esm2_raw_ckpt = esm2_raw_dim_from_state_dict(sd0)
     esm2_h_ckpt = esm2_hidden_dim_from_state_dict(sd0)
+    eff_ng = node_feature_groups if node_feature_groups is not None else NodeFeatureGroups()
+    if esm2_raw_ckpt > 0 and not eff_ng.esm2_residue:
+        raise SystemExit(
+            "This checkpoint uses per-residue ESM2 on graph nodes, but node_feature_groups.esm2_residue is false "
+            "(or --node-groups includes no_esm2). Enable esm2_residue in configs/compare_models.json or match "
+            "training settings."
+        )
     cin = _classifier_input_dim_from_state_dict(sd0)
     pool = _pool_dim_for_gnn_classifier(hidden, pooling)
     geo_dim_ckpt = cin - pool
@@ -666,6 +648,7 @@ def _run_gnn_predictions(csv_path: str,
         tabular_scaler_path=scaler_path,
         esm2_residue_dir=esm2_residue_dir if esm2_raw_ckpt > 0 else None,
         canonical_seqs_path=canon_path,
+        node_feature_groups=node_feature_groups,
     )
 
     if use_geo and len(dataset) > 0 and hasattr(dataset[0], "geo_features"):
@@ -866,13 +849,16 @@ def _print_benchmark_z_summary(names: list[str], results: dict, canonical_ids: l
 
 
 def main():
+    cfg_path, argv_rest = argv_without_config_flags(sys.argv[1:])
+    cfg = load_compare_models_config(cfg_path)
+
     ap = argparse.ArgumentParser(
         description='Compare SVM and GNN predictions on unlabeled test data',
         epilog=(
             "GENERATED (positional): manifest inputs only (checkpoint defaults unchanged, e.g. checkpoints/latest). "
-            "--input-dir / --pipeline-work-dir: manifest inputs only; checkpoints unchanged unless you pass "
-            "--checkpoints-base / --gnn-checkpoints-dir / explicit .pt paths. "
-            "--checkpoints-base sets one tree for GNN + QSAR-SVM; --gnn-checkpoints-dir overrides GNN only."
+            "Use --checkpoints-base / --gnn-checkpoints-dir / explicit .pt paths for workspace checkpoints. "
+            "--checkpoints-base sets one tree for GNN + QSAR-SVM; --gnn-checkpoints-dir overrides GNN only. "
+            "JSON defaults: pass --config PATH anywhere (default: configs/compare_models.json when omitted)."
         ),
     )
     ap.add_argument(
@@ -881,18 +867,6 @@ def main():
         default=None,
         metavar="GENERATED",
         help="Pipeline generated/ directory or parent containing generated/; reads manifest inputs (does not change checkpoint defaults).",
-    )
-    ap.add_argument(
-        "--input-dir",
-        "--pipeline-work-dir",
-        type=str,
-        default=None,
-        dest="input_dir",
-        help=(
-            "Same manifest-driven inputs as positional GENERATED, but does not set GNN "
-            "checkpoint paths from <workspace>/gnn_ready_models/ (use CONFIG, "
-            "--checkpoints-base, --gnn-checkpoints-dir, or explicit --esm_*_pt)."
-        ),
     )
     ap.add_argument(
         "--checkpoints-base",
@@ -918,9 +892,9 @@ def main():
             "Overrides the GNN location chosen by --checkpoints-base."
         ),
     )
-    ap.add_argument('--geo_csv', type=str, default=CONFIG['geo_csv'], help='Test geometric_features.csv')
-    ap.add_argument('--pdb_dir', type=str, default=CONFIG['pdb_dir'], help='Directory containing test PDB files')
-    ap.add_argument('--qsar_csv', type=str, default=CONFIG['qsar_csv'], help='Optional QSAR-12 descriptors CSV for Combined32')
+    ap.add_argument('--geo_csv', type=str, default=cfg['geo_csv'], help='Test geometric_features.csv')
+    ap.add_argument('--pdb_dir', type=str, default=cfg['pdb_dir'], help='Directory containing test PDB files')
+    ap.add_argument('--qsar_csv', type=str, default=cfg['qsar_csv'], help='Optional QSAR-12 descriptors CSV for Combined32')
     ap.add_argument(
         '--esm2-csv',
         type=str,
@@ -944,7 +918,7 @@ def main():
     ap.add_argument(
         '--geometric_qsar_combined_csv',
         type=str,
-        default=CONFIG['geometric_qsar_combined_csv'],
+        default=cfg['geometric_qsar_combined_csv'],
         help='Merged geo+QSAR+ESM2 CSV written for all GNN tabular modes (matches training merges)',
     )
     ap.add_argument(
@@ -959,7 +933,7 @@ def main():
         '--svm_descriptor_csv',
         type=str,
         default=argparse.SUPPRESS,
-        help='Descriptor CSV for QSAR SVM (default: CONFIG; cleared when using GENERATED unless --svm_pkl is set)',
+        help='Descriptor CSV for QSAR SVM (default: configs/compare_models.json; cleared when using GENERATED unless --svm_pkl is set)',
     )
     ap.add_argument(
         '--svm_z_file',
@@ -973,21 +947,21 @@ def main():
         default=argparse.SUPPRESS,
         help='Trained SVM pickle',
     )
-    ap.add_argument('--architecture', type=str, default=CONFIG['architecture'],
+    ap.add_argument('--architecture', type=str, default=cfg['architecture'],
                     choices=['gcn', 'gat', 'egnn'],
                     help='GNN architecture to compare across feature sets')
-    ap.add_argument('--esm_only_pt', type=str, default=CONFIG['esm_only_pt'],
+    ap.add_argument('--esm_only_pt', type=str, default=cfg['esm_only_pt'],
                     help='Checkpoint for ESM-only model')
-    ap.add_argument('--esm_geo_pt', type=str, default=CONFIG['esm_geo_pt'],
+    ap.add_argument('--esm_geo_pt', type=str, default=cfg['esm_geo_pt'],
                     help='Checkpoint for ESM+Geo20 model')
-    ap.add_argument('--esm_qsar_pt', type=str, default=CONFIG['esm_qsar_pt'],
+    ap.add_argument('--esm_qsar_pt', type=str, default=cfg['esm_qsar_pt'],
                     help='Checkpoint for ESM+QSAR12 model')
-    ap.add_argument('--esm_combined_pt', type=str, default=CONFIG['esm_combined_pt'],
+    ap.add_argument('--esm_combined_pt', type=str, default=cfg['esm_combined_pt'],
                     help='Checkpoint for ESM+Combined32 model')
-    ap.add_argument('--gnn_hidden', type=int, default=CONFIG['gnn_hidden'])
-    ap.add_argument('--gnn_layers', type=int, default=CONFIG['gnn_layers'])
-    ap.add_argument('--gnn_pooling', type=str, default=CONFIG['gnn_pooling'])
-    ap.add_argument('--batch_size', type=int, default=CONFIG['batch_size'])
+    ap.add_argument('--gnn_hidden', type=int, default=cfg['gnn_hidden'])
+    ap.add_argument('--gnn_layers', type=int, default=cfg['gnn_layers'])
+    ap.add_argument('--gnn_pooling', type=str, default=cfg['gnn_pooling'])
+    ap.add_argument('--batch_size', type=int, default=cfg['batch_size'])
     ap.add_argument(
         '--output_csv',
         type=str,
@@ -1009,15 +983,38 @@ def main():
         action='store_true',
         help='Use softmax on GNN logits for P(AMP) even when *_platt.json exists next to checkpoints',
     )
-    args = ap.parse_args()
+    ap.add_argument(
+        '--node-groups',
+        type=str,
+        default=None,
+        dest='node_groups',
+        help=(
+            'GNN node blocks: comma tokens no_vae, no_onehot, no_pdb, no_esm2 '
+            '(overrides configs/compare_models.json node_feature_groups).'
+        ),
+    )
+    args = ap.parse_args(argv_rest)
+
+    node_feature_groups = (
+        node_feature_groups_from_cli(args.node_groups)
+        if args.node_groups
+        else node_feature_groups_from_config_value(cfg.get("node_feature_groups"))
+    )
+    _nfg = node_feature_groups if node_feature_groups is not None else NodeFeatureGroups()
+    print(
+        f"GNN node feature groups: onehot={_nfg.onehot} pdb_continuous={_nfg.pdb_continuous} "
+        f"vae_table={_nfg.vae_table} esm2_residue={_nfg.esm2_residue} "
+        f"(graph x width {node_input_dim(node_feature_groups)})",
+        flush=True,
+    )
 
     user_passed_svm_pkl = hasattr(args, "svm_pkl")
     if not hasattr(args, "svm_descriptor_csv"):
-        args.svm_descriptor_csv = CONFIG["svm_descriptor_csv"]
+        args.svm_descriptor_csv = cfg["svm_descriptor_csv"]
     if not hasattr(args, "svm_z_file"):
-        args.svm_z_file = CONFIG["svm_z_file"]
+        args.svm_z_file = cfg["svm_z_file"]
     if not hasattr(args, "svm_pkl"):
-        args.svm_pkl = CONFIG["svm_pkl"]
+        args.svm_pkl = cfg["svm_pkl"]
 
     ws, skip_workspace_checkpoint_roots = apply_pipeline_generated_workspace(
         args, skip_svm_clear=user_passed_svm_pkl
@@ -1113,6 +1110,7 @@ def main():
             args.batch_size,
             geometric_feature_cols=geom_cols,
             esm2_residue_dir=getattr(args, "gnn_esm2_residue_dir", None),
+            node_feature_groups=node_feature_groups,
             use_gnn_platt=not args.no_gnn_platt,
         )
         results[name] = {

@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from peptide_pipeline.config import RunConfig
+from peptide_pipeline.constants import CANONICAL_WINDOWS_SIDECAR
 from peptide_pipeline.context import RunContext
 from peptide_pipeline.steps.cluster_step import step_cluster
 from peptide_pipeline.steps.esm2_step import step_esm2
@@ -67,8 +68,17 @@ def run_pipeline(cfg: RunConfig) -> int:
                 print("No sequences after normalization (amp or decoy).", file=sys.stderr)
                 return 1
         elif cfg.uses_windowing():
-            records = [(pid, seq) for pid, seq in read_sequence_records(inp) if seq]
             assert cfg.window_min_len is not None and cfg.window_max_len is not None
+            if cfg.window_expand_canonical:
+                records = [(pid, seq) for pid, seq in read_sequence_records(inp) if seq]
+            else:
+                st_norm = normalize_to_canonical(
+                    inp, ctx.canonical, min_len=cfg.min_len, max_len=cfg.max_len
+                )
+                if st_norm["n_written"] == 0:
+                    print("No sequences after normalization.", file=sys.stderr)
+                    return 1
+                records = [(pid, seq) for pid, seq in read_sequence_records(ctx.canonical) if seq]
             expanded, windows = expand_records_to_windows(
                 records,
                 min_len=cfg.window_min_len,
@@ -81,7 +91,12 @@ def run_pipeline(cfg: RunConfig) -> int:
                     file=sys.stderr,
                 )
                 return 1
-            write_canonical(ctx.canonical, expanded)
+            if cfg.window_expand_canonical:
+                write_canonical(ctx.canonical, expanded)
+            else:
+                # Parents already in ctx.canonical from normalize_to_canonical.
+                win_side = ctx.inputs_dir / CANONICAL_WINDOWS_SIDECAR
+                write_canonical(win_side, expanded)
             wpath = ctx.inputs_dir / "window_map.csv"
             with open(wpath, "w", newline="", encoding="utf-8") as wf:
                 writer = csv.DictWriter(
@@ -110,18 +125,32 @@ def run_pipeline(cfg: RunConfig) -> int:
                         }
                     )
             ctx.manifest["canonical_seqs"] = str(ctx.canonical)
-            ctx.manifest["normalization"] = {
-                "format": "windowed_txt",
-                "n_written": len(expanded),
-                "n_parents": len({w.parent_id for w in windows}),
-            }
+            if cfg.window_expand_canonical:
+                ctx.manifest["normalization"] = {
+                    "format": "windowed_txt",
+                    "n_written": len(expanded),
+                    "n_parents": len({w.parent_id for w in windows}),
+                }
+            else:
+                ctx.manifest["normalization"] = {
+                    "format": "windowed_txt_parents",
+                    "n_written": len(records),
+                    "n_parents": len(records),
+                    "n_window_rows": len(expanded),
+                }
             ctx.manifest["windowing"] = {
                 "window_map": str(wpath),
                 "n_windows": len(windows),
                 "min_len": cfg.window_min_len,
                 "max_len": cfg.window_max_len,
                 "stride": cfg.window_stride,
+                "expand_canonical": cfg.window_expand_canonical,
+                "esmfold_sequences": "windows" if cfg.window_expand_canonical else "parents",
             }
+            if not cfg.window_expand_canonical:
+                ctx.manifest["windowing"]["canonical_windows_expanded"] = str(
+                    (ctx.inputs_dir / CANONICAL_WINDOWS_SIDECAR).resolve()
+                )
         else:
             st = normalize_to_canonical(inp, ctx.canonical, min_len=cfg.min_len, max_len=cfg.max_len)
             ctx.manifest["normalization"] = st

@@ -1,0 +1,29 @@
+{
+  "_documentation": "Defaults for scripts/run_gnn_comparison.py (cluster CV comparison). Paths relative to sequence_to_svm_minimal/. node_feature_groups / --node-groups control per-residue graph features (see gnn/data_utils.NodeFeatureGroups).",
+  "csv_path": "data/gnn_training_dataset/normalized_combined_set/generated/geometric_features.csv",
+  "pdb_dir": "data/gnn_training_dataset/normalized_combined_set/generated/structures",
+  "qsar_csv": "data/gnn_training_dataset/normalized_combined_set/generated/qsar12_descriptors.csv",
+  "seed": 42,
+  "n_folds": 5,
+  "epochs": 500,
+  "batch_size": 32,
+  "lr": 0.001,
+  "patience": 30,
+  "hidden_channels": 64,
+  "num_layers": 3,
+  "dropout": 0.2,
+  "distance_threshold": 8.0,
+  "node_feature_groups": {
+    "onehot": true,
+    "pdb_continuous": true,
+    "vae_table": true,
+    "esm2_residue": true
+  },
+  "architectures": ["gcn", "gat", "egnn"],
+  "feature_sets": {
+    "Graph-only": {"use_geo": false, "use_qsar": false, "geo_dim": 0},
+    "Graph+Geo20": {"use_geo": true, "use_qsar": false, "geo_dim": 20},
+    "Graph+QSAR12": {"use_geo": false, "use_qsar": true, "geo_dim": 12},
+    "Graph+Combined32": {"use_geo": true, "use_qsar": true, "geo_dim": 32}
+  }
+}

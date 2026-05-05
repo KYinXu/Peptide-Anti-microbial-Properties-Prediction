@@ -29,6 +29,8 @@ from .data_utils import (
     NodeFeatureGroups,
     node_input_dim,
     node_feature_groups_from_cli,
+    node_feature_groups_from_config_value,
+    wants_esm2_residue_nodes,
 )
 from .models import GCN, GAT, EGNN, PeptideGNN
 from .train import train_epoch, evaluate, run_training
@@ -41,6 +43,8 @@ __all__ = [
     'NodeFeatureGroups',
     'node_input_dim',
     'node_feature_groups_from_cli',
+    'node_feature_groups_from_config_value',
+    'wants_esm2_residue_nodes',
     'GCN',
     'GAT',
     'EGNN',

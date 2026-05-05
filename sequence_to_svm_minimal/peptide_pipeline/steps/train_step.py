@@ -16,7 +16,6 @@ def step_legacy_gnn(ctx: RunContext, cfg: RunConfig, geo_csv: Path) -> None:
     cmd = [
         ctx.py,
         str(ctx.legacy_train_script),
-        "--pipeline-work-dir",
         str(ctx.work_dir),
         "--architecture",
         cfg.legacy_gnn_architecture,
@@ -37,7 +36,6 @@ def step_final_gnn(ctx: RunContext, cfg: RunConfig, geo_csv: Path) -> None:
     cmd = [
         ctx.py,
         str(ctx.final_train_script),
-        "--pipeline-work-dir",
         str(ctx.work_dir),
         "--output_dir",
         str(out_d),

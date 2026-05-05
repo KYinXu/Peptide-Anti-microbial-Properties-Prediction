@@ -1,0 +1,33 @@
+{
+  "_documentation": "Defaults for scripts/run_gnn_train_final_models.py (override with CLI). node_feature_groups: onehot, pdb_continuous, vae_table (graph x), esm2_residue (per-residue .pt on nodes); CLI --node-groups tokens no_vae, no_onehot, no_pdb, no_esm2.",
+  "csv_path": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/geometric_features_clustered.csv",
+  "pdb_dir": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced",
+  "qsar_csv": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/qsar12_descriptors.csv",
+  "esm2_csv": null,
+  "esm2_amp_csv": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/esm2_amp.csv",
+  "esm2_decoy_csv": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/esm2_decoy.csv",
+  "seed": 42,
+  "epochs": 300,
+  "batch_size": 32,
+  "lr": 0.001,
+  "patience": 30,
+  "hidden_channels": 64,
+  "num_layers": 3,
+  "dropout": 0.2,
+  "distance_threshold": 8.0,
+  "label_smoothing": 0.08,
+  "logit_penalty": 0.0001,
+  "node_feature_groups": {
+    "onehot": true,
+    "pdb_continuous": false,
+    "vae_table": true,
+    "esm2_residue": false
+  },
+  "architectures": ["gcn", "gat", "egnn"],
+  "feature_sets": {
+    "ESM": {"use_geo": false, "use_qsar": false},
+    "Geo": {"use_geo": true, "use_qsar": false},
+    "QSAR": {"use_geo": false, "use_qsar": true},
+    "Combined": {"use_geo": true, "use_qsar": true}
+  }
+}

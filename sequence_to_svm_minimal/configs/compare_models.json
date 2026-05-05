@@ -1,0 +1,26 @@
+{
+  "_documentation": "Defaults for scripts/data_evaluation/compare_model_predictions.py. Paths relative to sequence_to_svm_minimal/. node_feature_groups must match how the .pt checkpoints were trained; override with --node-groups if needed.",
+  "geo_csv": "data/test/CPPs/geometric_features.csv",
+  "pdb_dir": "data/test/CPPs/structures/sequences",
+  "qsar_csv": "data/test/CPPs/qsar12_descriptors.csv",
+  "geometric_qsar_combined_csv": "data/test/CPPs/geometric_qsar_combined.csv",
+  "svm_descriptor_csv": "data/test/CPPs/qsar12_descriptors.csv",
+  "svm_z_file": "results/checkpoints/svm_alpha_beta_combined/svm_qsar12_zscores.txt",
+  "svm_pkl": "results/checkpoints/svm_alpha_beta_combined/svm_qsar12_model.pkl",
+  "architecture": "gat",
+  "esm_only_pt": "checkpoints/latest/gat_ready_ESM.pt",
+  "esm_geo_pt": "checkpoints/latest/gat_ready_Geo.pt",
+  "esm_qsar_pt": "checkpoints/latest/gat_ready_QSAR.pt",
+  "esm_combined_pt": "checkpoints/latest/gat_ready_Combined.pt",
+  "gnn_hidden": 64,
+  "gnn_layers": 3,
+  "gnn_pooling": "mean_max",
+  "batch_size": 32,
+  "node_feature_groups": {
+    "onehot": true,
+    "pdb_continuous": true,
+    "vae_table": true,
+    "esm2_residue": true
+  },
+  "output_csv": "results/comparisons/model_comparison_latest.csv"
+}

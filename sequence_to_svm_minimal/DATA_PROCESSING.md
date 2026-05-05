@@ -11,7 +11,8 @@ Orchestrates the default **unlabeled** path in one command: normalize input → 
 - **Input:** `--input` path to a **txt** (one sequence per line, or `index sequence` / `id sequence` per line; `#` lines skipped) or **FASTA** (`.fa`/`.fasta`).
 - **Defaults:** clustering is **auto-enabled in `--mode train`** (can override with `--no-cluster`), and **off in `--mode blind`** (can override with `--with-cluster`). QSAR and ESM2 run unless `--skip-qsar` / `--skip-esm2`.
 - **Outputs (typical):** `inputs/canonical_seqs.txt`, `structures/` (PDBs + `results_log.csv`), `geometric_features.csv`, `qsar12_descriptors.csv`, `esm2_embeddings.csv` (with `peptide_id` added for merges). With `--with-cluster`: `geometric_features_clustered.csv` and QSAR built from that file.
-- **Optional:** `--with-svm` (+ `--svm-aaindex`, `--svm-model-pkl`, `--svm-scaler-csv`), `--train-legacy-gnn`, `--train-final-gnn` (passes `--csv_path`, `--pdb_dir`, `--qsar_csv`, `--esm2_csv` into `run_gnn_train_final_models.py`). See `python scripts/run_data_pipeline.py --help`.
+- **Optional:** `--with-svm` (+ `--svm-aaindex`, `--svm-model-pkl`, `--svm-scaler-csv`), `--train-legacy-gnn`, `--train-final-gnn` (invokes `run_gnn_train_final_models.py` with the workspace directory as the positional `GENERATED` argument). See `python scripts/run_data_pipeline.py --help`.
+- **JSON presets:** `--config PATH` / `-c PATH` may be repeated (later files override earlier); CLI overrides merged JSON. Starter files live under `configs/` (`pipeline_defaults.json`, `windowed_20_35_stride1.json`, etc.).
 - **Run from** the `sequence_to_svm_minimal` directory.
 
 ```bash
@@ -211,7 +212,7 @@ python scripts/run_gnn_training.py --csv_path data/geometric_features_clustered.
 
 - **Inputs (unchanged upstream):** same `geometric_features_clustered.csv` (or `geometric_features.csv`) from step 3, PDBs from step 2, plus:
   - **QSAR-12:** from **step 6** (`generate_qsar_features.py`), e.g. `qsar12_descriptors.csv` (merged on `peptide_id` by the script).
-  - **ESM2:** from **step 7** (`esm_sequence_processor.py --mode embeddings`); embedding tables with columns `esm2_dim_*` — AMP/DECOY split CSVs or one merged CSV as in `run_gnn_train_final_models.py` `CONFIG`.
+  - **ESM2:** from **step 7** (`esm_sequence_processor.py --mode embeddings`); embedding tables with columns `esm2_dim_*` — AMP/DECOY split CSVs or one merged CSV as in `run_gnn_train_final_models.py` + `configs/gnn_final_train.json` defaults.
 - **Tabular scaling:** By default, Geo / QSAR / ESM2 blocks are **RobustScaler**-normalized on the **training split only** and a sidecar file is saved next to each checkpoint: `{checkpoint_stem}_tabular_scaler.joblib`. Raw CSVs are **not** modified. Use `--no_tabular_robust_scaler` to match older checkpoints trained on raw values.
 - **Inference:** `scripts/data_evaluation/compare_model_predictions.py` and `scripts/data_evaluation/run_gnn_inference.py` load that sidecar automatically when it sits beside the `.pt` file; test CSV columns and order must match training.
 
@@ -229,7 +230,7 @@ python scripts/run_gnn_training.py --csv_path data/geometric_features_clustered.
 | `compare_model_predictions.py` / `run_gnn_inference.py` | Test geometric CSV (and merged columns matching the checkpoint) | Same PDB layout |
 | NN / FeaturePipeline | geometric_features.csv (or _clustered) | — |
 
-SVM/descriptor columns are optional for the legacy GNN script; the final-models script expects ESM2 columns as configured in `CONFIG`.
+SVM/descriptor columns are optional for the legacy GNN script; the final-models script expects ESM2 columns as configured in `configs/gnn_final_train.json` (or your `--config` / CLI overrides).
 
 ---
 

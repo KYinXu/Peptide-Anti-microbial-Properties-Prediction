@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from peptide_pipeline.config import RunConfig
+from peptide_pipeline.constants import CANONICAL_WINDOWS_SIDECAR
 from peptide_pipeline.context import RunContext
 from peptide_pipeline.steps.exec import run_command
 
@@ -18,11 +19,15 @@ def step_svm(ctx: RunContext, cfg: RunConfig) -> Path | None:
         )
     svm_out = Path(cfg.svm_output_dir) if cfg.svm_output_dir else (ctx.work_dir / "svm_out")
     svm_out.mkdir(parents=True, exist_ok=True)
+    seqs_path = ctx.canonical
+    win_side = ctx.inputs_dir / CANONICAL_WINDOWS_SIDECAR
+    if cfg.uses_windowing() and not cfg.window_expand_canonical and win_side.is_file():
+        seqs_path = win_side
     cmd = [
         ctx.py,
         str(ctx.run_svm_script),
         "--seqs",
-        str(ctx.canonical),
+        str(seqs_path),
         "--aaindex",
         str(Path(cfg.svm_aaindex).resolve()),
         "--output-dir",

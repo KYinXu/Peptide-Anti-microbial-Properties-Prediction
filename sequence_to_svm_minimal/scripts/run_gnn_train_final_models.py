@@ -8,7 +8,7 @@ Typical usage after ``run_data_pipeline`` (writes ``<input_dir>/generated/``):
   python scripts/run_gnn_train_final_models.py path/to/generated
 
 You may also pass the parent of ``generated/``; the script resolves ``generated/``
-when the manifest lives there. Omit the path to use CONFIG / explicit CSV flags.
+when the manifest lives there. Omit the path to use ``configs/gnn_final_train.json`` (or ``--config``) / explicit CSV flags.
 
 Configs mirror `run_gnn_comparison.py`:
 - ESM (graph + per-residue ESM2 on nodes; no pooled ESM in the MLP)
@@ -34,7 +34,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from gnn.data_utils import NODE_INPUT_DIM, resolve_peptide_pdb_path
+from gnn.data_utils import (
+    NodeFeatureGroups,
+    node_feature_groups_from_cli,
+    node_feature_groups_from_config_value,
+    node_input_dim,
+    resolve_peptide_pdb_path,
+    wants_esm2_residue_nodes,
+)
 from gnn.models import PeptideGNN
 from gnn.platt import (
     collect_margins_and_labels,
@@ -44,36 +51,7 @@ from gnn.platt import (
 )
 from gnn.train import run_training, evaluate
 from gnn.extra_feature_scaler import ExtraFeatureRobustScaler, save_extra_feature_scaler
-
-
-CONFIG = {
-    "csv_path": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/geometric_features_clustered.csv",
-    "pdb_dir": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced",
-    "qsar_csv": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/qsar12_descriptors.csv",
-    "esm2_csv": None,
-    "esm2_amp_csv": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/esm2_amp.csv",
-    "esm2_decoy_csv": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/esm2_decoy.csv",
-    "seed": 42,
-    "epochs": 300,
-    "batch_size": 32,
-    "lr": 1e-3,
-    "patience": 30,
-    "hidden_channels": 64,
-    "num_layers": 3,
-    "dropout": 0.2,
-    "distance_threshold": 8.0,
-    "label_smoothing": 0.08,
-    "logit_penalty": 1e-4,
-}
-
-FEATURE_CONFIGS = {
-    "ESM": {"use_geo": False, "use_qsar": False, "use_esm2": True},
-    "Geo": {"use_geo": True, "use_qsar": False, "use_esm2": True},
-    "QSAR": {"use_geo": False, "use_qsar": True, "use_esm2": True},
-    "Combined": {"use_geo": True, "use_qsar": True, "use_esm2": True},
-}
-
-ARCHITECTURES = ["gcn", "gat", "egnn"]
+from configs.load_config import argv_without_config_flags, load_gnn_final_train_bundle
 
 
 def set_seed(seed: int) -> None:
@@ -162,7 +140,7 @@ def load_data_with_features(csv_path: str,
     return merged_df, qsar_cols, esm2_cols
 
 
-def create_feature_cols(use_geo: bool, use_qsar: bool, use_esm2: bool, qsar_cols, esm2_cols):
+def create_feature_cols(use_geo: bool, use_qsar: bool, qsar_cols):
     geo_cols = [
         "radius_gyration",
         "end_to_end_distance",
@@ -204,6 +182,7 @@ class CustomPeptideDataset:
         distance_threshold: float = 8.0,
         tabular_scaler: ExtraFeatureRobustScaler | None = None,
         esm2_residue_dir: str | None = None,
+        node_feature_groups: NodeFeatureGroups | None = None,
     ):
         self.df = df
         self.pdb_dir = Path(pdb_dir)
@@ -211,6 +190,7 @@ class CustomPeptideDataset:
         self.distance_threshold = distance_threshold
         self.tabular_scaler = tabular_scaler
         self.esm2_residue_dir = Path(esm2_residue_dir).resolve() if esm2_residue_dir else None
+        self.node_feature_groups = node_feature_groups
 
         from gnn.data_utils import pdb_to_graph, parse_pdb, compute_node_features, compute_edges
 
@@ -238,7 +218,9 @@ class CustomPeptideDataset:
         aa_sequence, ca_coords, plddt_values = parse_pdb(str(pdb_path))
         n_residues = len(aa_sequence)
 
-        x = compute_node_features(aa_sequence, plddt_values, n_residues)
+        x = compute_node_features(
+            aa_sequence, plddt_values, n_residues, groups=self.node_feature_groups
+        )
         edge_index, edge_attr = compute_edges(ca_coords, self.distance_threshold)
         pos = torch.tensor(ca_coords, dtype=torch.float32)
 
@@ -262,7 +244,7 @@ class CustomPeptideDataset:
                 extra = np.nan_to_num(extra, nan=0.0)
             data.geo_features = torch.tensor(extra, dtype=torch.float32).unsqueeze(0)
 
-        if self.esm2_residue_dir is not None:
+        if self.esm2_residue_dir is not None and wants_esm2_residue_nodes(self.node_feature_groups):
             esm = load_esm2_per_residue_tensor(self.esm2_residue_dir, row["peptide_id"])
             if int(esm.shape[0]) != int(data.num_nodes):
                 raise ValueError(
@@ -273,22 +255,24 @@ class CustomPeptideDataset:
         return data
 
 
-def train_single_model(arch: str,
-                       feature_name: str,
-                       feature_cfg: dict,
-                       df: pd.DataFrame,
-                       qsar_cols,
-                       esm2_cols,
-                       args,
-                       device: torch.device,
-                       out_dir: Path):
+def train_single_model(
+    arch: str,
+    feature_name: str,
+    feature_cfg: dict,
+    df: pd.DataFrame,
+    qsar_cols,
+    esm2_cols,
+    args,
+    device: torch.device,
+    out_dir: Path,
+    *,
+    node_feature_groups: NodeFeatureGroups | None = None,
+):
     """Train a single model with a train/val split; save checkpoint and Platt JSON on val."""
     feature_cols = create_feature_cols(
         feature_cfg["use_geo"],
         feature_cfg["use_qsar"],
-        feature_cfg.get("use_esm2", False),
         qsar_cols,
-        esm2_cols,
     )
 
     labels = np.where(df["label"].values == 1, 1, 0)
@@ -304,7 +288,8 @@ def train_single_model(arch: str,
             balance_blocks=True,
         )
 
-    esm2_dir = str(Path(args.esm2_residue_dir).resolve()) if feature_cfg.get("use_esm2") and args.esm2_residue_dir else None
+    want_esm2_nodes = wants_esm2_residue_nodes(node_feature_groups)
+    esm2_dir = str(Path(args.esm2_residue_dir).resolve()) if want_esm2_nodes and args.esm2_residue_dir else None
 
     dataset = CustomPeptideDataset(
         df,
@@ -313,6 +298,7 @@ def train_single_model(arch: str,
         args.distance_threshold,
         tabular_scaler=tabular_scaler,
         esm2_residue_dir=esm2_dir,
+        node_feature_groups=node_feature_groups,
     )
 
     from torch_geometric.loader import DataLoader
@@ -341,10 +327,11 @@ def train_single_model(arch: str,
         class_weights = None
 
     geo_dim = len(feature_cols)
-    esm2_raw = len(esm2_cols) if feature_cfg.get("use_esm2") else 0
+    esm2_raw = len(esm2_cols) if want_esm2_nodes else 0
+    in_ch = node_input_dim(node_feature_groups)
     model = PeptideGNN(
         architecture=arch,
-        in_channels=NODE_INPUT_DIM,
+        in_channels=in_ch,
         hidden_channels=args.hidden_channels,
         num_layers=args.num_layers,
         dropout=args.dropout,
@@ -402,32 +389,24 @@ def train_single_model(arch: str,
     return str(ckpt_path), best_metrics, str(platt_path) if platt_payload is not None else None
 
 
-def resolve_final_train_paths(args: argparse.Namespace) -> None:
+def resolve_final_train_paths(args: argparse.Namespace, training_defaults: dict) -> None:
     from peptide_pipeline.manifest_paths import (
         gnn_final_training_paths_from_work_dir,
         resolve_generated_workspace,
     )
 
     pos = getattr(args, "generated", None)
-    legacy = getattr(args, "pipeline_work_dir", None)
-    input_dir = getattr(args, "input_dir", None)
-    paths = [p for p in (pos, legacy, input_dir) if p]
-    if len(paths) > 1 and len({Path(p).resolve() for p in paths}) > 1:
-        raise SystemExit(
-            "Use only one of: GENERATED (positional), --pipeline-work-dir, or --input-dir."
-        )
-    chosen = pos or legacy or input_dir
     bundle = None
-    if chosen:
-        workspace = resolve_generated_workspace(chosen)
+    if pos:
+        workspace = resolve_generated_workspace(pos)
         bundle = gnn_final_training_paths_from_work_dir(workspace)
         print("Pipeline workspace:", workspace, flush=True)
     if getattr(args, "csv_path", None) is None:
-        args.csv_path = bundle["csv_path"] if bundle else CONFIG["csv_path"]
+        args.csv_path = bundle["csv_path"] if bundle else training_defaults["csv_path"]
     if getattr(args, "pdb_dir", None) is None:
-        args.pdb_dir = bundle["pdb_dir"] if bundle else CONFIG["pdb_dir"]
+        args.pdb_dir = bundle["pdb_dir"] if bundle else training_defaults["pdb_dir"]
     if getattr(args, "qsar_csv", None) is None:
-        args.qsar_csv = bundle["qsar_csv"] if bundle else CONFIG["qsar_csv"]
+        args.qsar_csv = bundle["qsar_csv"] if bundle else training_defaults["qsar_csv"]
     if getattr(args, "esm2_residue_dir", None) is None:
         if bundle and bundle.get("esm2_residue_dir"):
             args.esm2_residue_dir = bundle["esm2_residue_dir"]
@@ -443,11 +422,16 @@ def resolve_final_train_paths(args: argparse.Namespace) -> None:
 
 
 def parse_args():
+    cfg_path, argv_rest = argv_without_config_flags(sys.argv[1:])
+    training_defaults, feature_sets, arch_list, node_groups_cfg = load_gnn_final_train_bundle(cfg_path)
+    feat_keys = list(feature_sets.keys())
+
     ap = argparse.ArgumentParser(
         description="Train single GNN models (no CV) for test-time inference.",
         epilog=(
             "Primary input: the pipeline generated/ folder (or parent containing generated/) "
-            "with pipeline_manifest.json from run_data_pipeline."
+            "with pipeline_manifest.json from run_data_pipeline. "
+            "Optional defaults file: pass --config PATH (configs/gnn_final_train.json when omitted)."
         ),
     )
     ap.add_argument(
@@ -458,21 +442,8 @@ def parse_args():
         help=(
             "Pipeline generated/ directory (pipeline_manifest.json inside), or a parent folder "
             "that contains generated/. Sets geometric CSV, PDB dir, QSAR12, ESM2 paths. "
-            "Omit for CONFIG defaults or use --csv_path / overrides."
+            "Omit to use config file defaults or --csv_path / overrides."
         ),
-    )
-    ap.add_argument(
-        "--input-dir",
-        type=str,
-        default=None,
-        help="Same as positional GENERATED (kept for scripts and backward compatibility).",
-    )
-    ap.add_argument(
-        "--pipeline-work-dir",
-        type=str,
-        default=None,
-        dest="pipeline_work_dir",
-        help="Same as positional GENERATED (alias used by other pipeline scripts).",
     )
     ap.add_argument("--csv_path", type=str, default=argparse.SUPPRESS)
     ap.add_argument("--pdb_dir", type=str, default=argparse.SUPPRESS)
@@ -481,22 +452,22 @@ def parse_args():
         "--esm2_csv",
         type=str,
         default=None,
-        help="Single merged ESM2 CSV (seqIndex or peptide_id + esm2_dim_*). Overrides CONFIG esm2 paths when set.",
+        help="Single merged ESM2 CSV (seqIndex or peptide_id + esm2_dim_*). Overrides config esm2 paths when set.",
     )
     ap.add_argument(
         "--esm2_amp_csv",
         type=str,
         default=None,
-        help="Optional override for CONFIG esm2_amp_csv when not using --esm2_csv.",
+        help="Optional override for esm2_amp_csv when not using --esm2_csv.",
     )
     ap.add_argument(
         "--esm2_decoy_csv",
         type=str,
         default=None,
-        help="Optional override for CONFIG esm2_decoy_csv when not using --esm2_csv.",
+        help="Optional override for esm2_decoy_csv when not using --esm2_csv.",
     )
-    ap.add_argument("--architectures", type=str, nargs="+", default=ARCHITECTURES, choices=ARCHITECTURES)
-    ap.add_argument("--feature_sets", type=str, nargs="+", default=list(FEATURE_CONFIGS.keys()), choices=list(FEATURE_CONFIGS.keys()))
+    ap.add_argument("--architectures", type=str, nargs="+", default=arch_list, choices=arch_list)
+    ap.add_argument("--feature_sets", type=str, nargs="+", default=feat_keys, choices=feat_keys)
     ap.add_argument(
         "--models",
         type=str,
@@ -508,17 +479,17 @@ def parse_args():
             "--feature_sets are ignored."
         ),
     )
-    ap.add_argument("--epochs", type=int, default=CONFIG["epochs"])
-    ap.add_argument("--batch_size", type=int, default=CONFIG["batch_size"])
-    ap.add_argument("--lr", type=float, default=CONFIG["lr"])
+    ap.add_argument("--epochs", type=int, default=training_defaults["epochs"])
+    ap.add_argument("--batch_size", type=int, default=training_defaults["batch_size"])
+    ap.add_argument("--lr", type=float, default=training_defaults["lr"])
     ap.add_argument("--weight_decay", type=float, default=1e-4)
-    ap.add_argument("--patience", type=int, default=CONFIG["patience"])
-    ap.add_argument("--hidden_channels", type=int, default=CONFIG["hidden_channels"])
-    ap.add_argument("--num_layers", type=int, default=CONFIG["num_layers"])
-    ap.add_argument("--dropout", type=float, default=CONFIG["dropout"])
-    ap.add_argument("--distance_threshold", type=float, default=CONFIG["distance_threshold"])
+    ap.add_argument("--patience", type=int, default=training_defaults["patience"])
+    ap.add_argument("--hidden_channels", type=int, default=training_defaults["hidden_channels"])
+    ap.add_argument("--num_layers", type=int, default=training_defaults["num_layers"])
+    ap.add_argument("--dropout", type=float, default=training_defaults["dropout"])
+    ap.add_argument("--distance_threshold", type=float, default=training_defaults["distance_threshold"])
     ap.add_argument("--val_size", type=float, default=0.2)
-    ap.add_argument("--seed", type=int, default=CONFIG["seed"])
+    ap.add_argument("--seed", type=int, default=training_defaults["seed"])
     ap.add_argument("--device", type=str, default="auto")
     ap.add_argument("--output_dir", type=str, default="results/gnn/ready_models")
     ap.add_argument(
@@ -538,13 +509,13 @@ def parse_args():
     ap.add_argument(
         "--label_smoothing",
         type=float,
-        default=CONFIG["label_smoothing"],
+        default=training_defaults["label_smoothing"],
         help="Cross-entropy label smoothing (0 disables). Reduces extreme logit margins / softmax saturation.",
     )
     ap.add_argument(
         "--logit_penalty",
         type=float,
-        default=CONFIG["logit_penalty"],
+        default=training_defaults["logit_penalty"],
         help="Weight on mean(logits^2) added to training loss (0 disables). Softens raw score collapse.",
     )
     ap.add_argument(
@@ -559,7 +530,17 @@ def parse_args():
         default=64,
         help="Project raw per-residue ESM2 (e.g. 1280-d) to this width before concatenating to node features.",
     )
-    return ap.parse_args()
+    ap.add_argument(
+        "--node-groups",
+        type=str,
+        default=None,
+        help=(
+            "Node feature blocks: comma tokens no_vae, no_onehot, no_pdb, no_esm2 (overrides "
+            "configs/gnn_final_train.json node_feature_groups; no_esm2 disables per-residue ESM2 on graph nodes)."
+        ),
+    )
+    args = ap.parse_args(argv_rest)
+    return args, training_defaults, feature_sets, arch_list, node_groups_cfg
 
 
 def get_device(name: str) -> torch.device:
@@ -568,53 +549,17 @@ def get_device(name: str) -> torch.device:
     return torch.device(name)
 
 
-def main():
-    args = parse_args()
-    resolve_final_train_paths(args)
-    set_seed(args.seed)
-    device = get_device(args.device)
+def _node_groups_as_dict(g: NodeFeatureGroups | None) -> dict[str, bool]:
+    eff = g if g is not None else NodeFeatureGroups()
+    return {
+        "onehot": eff.onehot,
+        "pdb_continuous": eff.pdb_continuous,
+        "vae_table": eff.vae_table,
+        "esm2_residue": eff.esm2_residue,
+    }
 
-    print("Device:", device)
 
-    base_out_dir = Path(args.output_dir)
-    base_out_dir.mkdir(parents=True, exist_ok=True)
-    run_name = args.run_name or datetime.now().strftime("run_%Y%m%d_%H%M%S")
-    out_dir = base_out_dir / run_name
-    out_dir.mkdir(parents=True, exist_ok=False)
-    print("Output dir:", out_dir, flush=True)
-
-    if args.esm2_csv is not None:
-        esm2_csv_path = args.esm2_csv
-        esm2_amp_path = None
-        esm2_decoy_path = None
-    else:
-        esm2_csv_path = CONFIG.get("esm2_csv")
-        esm2_amp_path = args.esm2_amp_csv if args.esm2_amp_csv is not None else CONFIG.get("esm2_amp_csv")
-        esm2_decoy_path = args.esm2_decoy_csv if args.esm2_decoy_csv is not None else CONFIG.get("esm2_decoy_csv")
-    merged_df, qsar_cols, esm2_cols = load_data_with_features(
-        args.csv_path,
-        args.qsar_csv,
-        esm2_csv_path,
-        esm2_amp_path,
-        esm2_decoy_path,
-    )
-    if not esm2_cols:
-        raise ValueError(
-            "ESM2 embedding width is required (esm2_dim_* columns in CSV) for all feature configs. "
-            "Check CONFIG['esm2_csv'] or CONFIG['esm2_amp_csv']/CONFIG['esm2_decoy_csv']."
-        )
-    rdir = Path(args.esm2_residue_dir) if args.esm2_residue_dir else None
-    if rdir is None or not rdir.is_dir():
-        raise ValueError(
-            f"Per-residue ESM2 directory missing or not a directory: {args.esm2_residue_dir!r}. "
-            "Re-run ESM2 with models/esm_sequence_processor.py --per-residue-dir <dir> "
-            "or use the data pipeline (writes work_dir/esm2_per_residue)."
-        )
-    print(f"Loaded training data: {len(merged_df)} samples")
-    print(f"Per-residue ESM2 dir: {rdir} (raw dim {len(esm2_cols)})")
-
-    summary = {"timestamp": datetime.now().isoformat(), "models": []}
-
+def _collect_unique_training_pairs(args, feature_sets, architectures):
     selected_pairs = []
     if args.models:
         for item in args.models:
@@ -627,15 +572,15 @@ def main():
             arch = arch.strip().lower()
             feature_name = feature_name.strip()
 
-            if arch not in ARCHITECTURES:
+            if arch not in architectures:
                 raise ValueError(
                     f"Unknown architecture '{arch}' in --models. "
-                    f"Choose from: {ARCHITECTURES}"
+                    f"Choose from: {architectures}"
                 )
-            if feature_name not in FEATURE_CONFIGS:
+            if feature_name not in feature_sets:
                 raise ValueError(
                     f"Unknown feature set '{feature_name}' in --models. "
-                    f"Choose from: {list(FEATURE_CONFIGS.keys())}"
+                    f"Choose from: {list(feature_sets.keys())}"
                 )
             selected_pairs.append((arch, feature_name))
     else:
@@ -643,8 +588,6 @@ def main():
             for arch in args.architectures:
                 selected_pairs.append((arch, feature_name))
 
-    # Keep output deterministic when duplicates are provided:
-    # run once per unique pair while preserving first-seen order.
     unique_pairs = []
     seen = set()
     for pair in selected_pairs:
@@ -652,9 +595,91 @@ def main():
             continue
         seen.add(pair)
         unique_pairs.append(pair)
+    return unique_pairs
+
+
+def main():
+    args, training_defaults, feature_sets, architectures, node_groups_cfg = parse_args()
+    resolve_final_train_paths(args, training_defaults)
+    set_seed(args.seed)
+    device = get_device(args.device)
+
+    node_feature_groups = (
+        node_feature_groups_from_cli(args.node_groups)
+        if args.node_groups
+        else node_feature_groups_from_config_value(node_groups_cfg)
+    )
+
+    print("Device:", device)
+    print(
+        "Node feature groups:",
+        _node_groups_as_dict(node_feature_groups),
+        f"(width {node_input_dim(node_feature_groups)})",
+        flush=True,
+    )
+
+    base_out_dir = Path(args.output_dir)
+    base_out_dir.mkdir(parents=True, exist_ok=True)
+    run_name = args.run_name or datetime.now().strftime("run_%Y%m%d_%H%M%S")
+    out_dir = base_out_dir / run_name
+    out_dir.mkdir(parents=True, exist_ok=False)
+    print("Output dir:", out_dir, flush=True)
+
+    unique_pairs = _collect_unique_training_pairs(args, feature_sets, architectures)
+    needs_merged_esm2 = wants_esm2_residue_nodes(node_feature_groups)
+
+    if needs_merged_esm2:
+        if args.esm2_csv is not None:
+            esm2_csv_path = args.esm2_csv
+            esm2_amp_path = None
+            esm2_decoy_path = None
+        else:
+            esm2_csv_path = training_defaults.get("esm2_csv")
+            esm2_amp_path = (
+                args.esm2_amp_csv if args.esm2_amp_csv is not None else training_defaults.get("esm2_amp_csv")
+            )
+            esm2_decoy_path = (
+                args.esm2_decoy_csv if args.esm2_decoy_csv is not None else training_defaults.get("esm2_decoy_csv")
+            )
+    else:
+        esm2_csv_path = None
+        esm2_amp_path = None
+        esm2_decoy_path = None
+
+    merged_df, qsar_cols, esm2_cols = load_data_with_features(
+        args.csv_path,
+        args.qsar_csv,
+        esm2_csv_path,
+        esm2_amp_path,
+        esm2_decoy_path,
+    )
+    if needs_merged_esm2 and not esm2_cols:
+        raise ValueError(
+            "Per-residue ESM2 is enabled (node_feature_groups.esm2_residue) but no esm2_dim_* columns were merged. "
+            "Check esm2_csv / esm2_amp_csv / esm2_decoy_csv in configs/gnn_final_train.json or pass overrides."
+        )
+    rdir = Path(args.esm2_residue_dir) if args.esm2_residue_dir else None
+    if needs_merged_esm2 and (rdir is None or not rdir.is_dir()):
+        raise ValueError(
+            f"Per-residue ESM2 directory missing or not a directory: {args.esm2_residue_dir!r}. "
+            "Re-run ESM2 with models/esm_sequence_processor.py --per-residue-dir <dir> "
+            "or use the data pipeline (writes work_dir/esm2_per_residue), or set node_feature_groups.esm2_residue "
+            "to false / pass --node-groups no_esm2 to train without on-node ESM2."
+        )
+    print(f"Loaded training data: {len(merged_df)} samples")
+    if needs_merged_esm2:
+        print(f"Per-residue ESM2 dir: {rdir} (raw dim {len(esm2_cols)})", flush=True)
+    else:
+        print("Per-residue ESM2: off (node_feature_groups.esm2_residue false or --node-groups no_esm2).", flush=True)
+
+    summary = {
+        "timestamp": datetime.now().isoformat(),
+        "node_feature_groups": _node_groups_as_dict(node_feature_groups),
+        "models": [],
+    }
 
     for arch, feature_name in unique_pairs:
-        f_cfg = FEATURE_CONFIGS[feature_name]
+        f_cfg = feature_sets[feature_name]
         ckpt_path, metrics, platt_path = train_single_model(
             arch=arch,
             feature_name=feature_name,
@@ -665,6 +690,7 @@ def main():
             args=args,
             device=device,
             out_dir=out_dir,
+            node_feature_groups=node_feature_groups,
         )
         entry = {
             "architecture": arch,

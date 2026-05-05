@@ -27,46 +27,21 @@ from sklearn.model_selection import GroupKFold, StratifiedKFold
 warnings.filterwarnings('ignore')
 os.environ['PYTHONWARNINGS'] = 'ignore'
 
-# Add parent directory to path
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from gnn.data_utils import PeptideGraphDataset, resolve_peptide_pdb_path
+from configs.load_config import argv_without_config_flags, load_gnn_comparison_bundle
+from gnn.data_utils import (
+    NodeFeatureGroups,
+    node_feature_groups_from_cli,
+    node_feature_groups_from_config_value,
+    node_input_dim,
+    resolve_peptide_pdb_path,
+)
 from gnn.models import PeptideGNN
 from gnn.train import run_training, cross_validate, evaluate, evaluate_probs
 from torch_geometric.loader import DataLoader
-
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
-CONFIG = {
-    'csv_path': 'data/gnn_training_dataset/normalized_combined_set/generated/geometric_features.csv',
-    'pdb_dir': 'data/gnn_training_dataset/normalized_combined_set/generated/structures',
-    'qsar_csv': 'data/gnn_training_dataset/normalized_combined_set/generated/qsar12_descriptors.csv',
-    'seed': 42,
-    'n_folds': 5,
-    'epochs': 500,
-    'batch_size': 32,
-    'lr': 1e-3,
-    'patience': 30,
-    'hidden_channels': 64,
-    'num_layers': 3,
-    'dropout': 0.2,
-    'distance_threshold': 8.0,
-}
-
-# Feature configurations
-# Note: geometric feature dims exclude pLDDT-derived confidence scores
-FEATURE_CONFIGS = {
-    'Graph-only': {'use_geo': False, 'use_qsar': False, 'geo_dim': 0},
-    'Graph+Geo20': {'use_geo': True, 'use_qsar': False, 'geo_dim': 20},
-    'Graph+QSAR12': {'use_geo': False, 'use_qsar': True, 'geo_dim': 12},
-    'Graph+Combined32': {'use_geo': True, 'use_qsar': True, 'geo_dim': 32},
-}
-
-# GNN architectures
-ARCHITECTURES = ['gcn', 'gat', 'egnn']
 
 
 def set_seed(seed):
@@ -123,11 +98,19 @@ def create_dataset_with_features(df, config, use_geo=True, use_qsar=False, qsar_
 class CustomPeptideDataset:
     """Custom dataset that supports different feature combinations."""
     
-    def __init__(self, df, pdb_dir, feature_cols, distance_threshold=8.0):
+    def __init__(
+        self,
+        df,
+        pdb_dir,
+        feature_cols,
+        distance_threshold=8.0,
+        node_feature_groups: NodeFeatureGroups | None = None,
+    ):
         self.df = df
         self.pdb_dir = Path(pdb_dir)
         self.feature_cols = feature_cols
         self.distance_threshold = distance_threshold
+        self.node_feature_groups = node_feature_groups
         
         # Import here to avoid circular imports
         from gnn.data_utils import pdb_to_graph, parse_pdb, compute_node_features, compute_edges
@@ -157,7 +140,9 @@ class CustomPeptideDataset:
         n_residues = len(aa_sequence)
         
         # Compute node features
-        x = compute_node_features(aa_sequence, plddt_values, n_residues)
+        x = compute_node_features(
+            aa_sequence, plddt_values, n_residues, groups=self.node_feature_groups
+        )
         
         # Compute edges
         edge_index, edge_attr = compute_edges(ca_coords, self.distance_threshold)
@@ -327,21 +312,43 @@ def run_single_experiment(arch, feature_name, feature_config, all_data, labels, 
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Compare GCN, GAT, and EGNN architectures')
+    cfg_path, argv_rest = argv_without_config_flags(sys.argv[1:])
+    cfg, feature_sets, architectures, node_groups_cfg = load_gnn_comparison_bundle(cfg_path)
+
+    parser = argparse.ArgumentParser(
+        description='Compare GCN, GAT, and EGNN architectures',
+        epilog='Optional JSON defaults: --config PATH (default: configs/gnn_comparison.json when omitted).',
+    )
     parser.add_argument('--save_checkpoints', action='store_true',
                         help='Save a .pt checkpoint for each fold of each model (under curves/<model>/checkpoints/)')
-    return parser.parse_args()
+    parser.add_argument(
+        "--node-groups",
+        type=str,
+        default=None,
+        help=(
+            "Node blocks: comma tokens no_vae, no_onehot, no_pdb, no_esm2 "
+            "(overrides configs/gnn_comparison.json node_feature_groups)."
+        ),
+    )
+    args = parser.parse_args(argv_rest)
+    return args, cfg, feature_sets, architectures, node_groups_cfg
 
 
 def main():
-    args = parse_args()
+    args, cfg, feature_sets, architectures, node_groups_cfg = parse_args()
+
+    node_feature_groups = (
+        node_feature_groups_from_cli(args.node_groups)
+        if args.node_groups
+        else node_feature_groups_from_config_value(node_groups_cfg)
+    )
     
     print("="*80)
     print("GNN Architecture Comparison: GCN vs GAT vs EGNN")
     print("="*80)
     
     # Setup
-    set_seed(CONFIG['seed'])
+    set_seed(cfg['seed'])
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     print(f"\n🖥️  Device: {device}")
@@ -349,19 +356,25 @@ def main():
         print(f"   GPU: {torch.cuda.get_device_name(0)}")
     
     print(f"\n📊 Configuration:")
-    print(f"   Epochs: {CONFIG['epochs']}")
-    print(f"   Patience: {CONFIG['patience']}")
-    print(f"   Hidden channels: {CONFIG['hidden_channels']}")
-    print(f"   Num layers: {CONFIG['num_layers']}")
-    print(f"   CV folds: {CONFIG['n_folds']}")
+    print(f"   Epochs: {cfg['epochs']}")
+    print(f"   Patience: {cfg['patience']}")
+    print(f"   Hidden channels: {cfg['hidden_channels']}")
+    print(f"   Num layers: {cfg['num_layers']}")
+    print(f"   CV folds: {cfg['n_folds']}")
     print(f"   Save checkpoints: {args.save_checkpoints}")
+    eff_ng = node_feature_groups if node_feature_groups is not None else NodeFeatureGroups()
+    print(
+        f"   Node groups: onehot={eff_ng.onehot} pdb_continuous={eff_ng.pdb_continuous} "
+        f"vae_table={eff_ng.vae_table} esm2_residue={eff_ng.esm2_residue} "
+        f"(width {node_input_dim(node_feature_groups)})"
+    )
     
     # Load data
     print("\n" + "-"*80)
     print("Loading Data...")
     print("-"*80)
     
-    merged_df, qsar_cols = load_data_with_features(CONFIG)
+    merged_df, qsar_cols = load_data_with_features(cfg)
     print(f"Loaded {len(merged_df)} peptides")
     
     # Get labels and clusters
@@ -386,14 +399,14 @@ def main():
     print("Running Experiments (Cluster-Based 5-Fold CV)")
     print("="*80)
     
-    for feature_name, feature_config in FEATURE_CONFIGS.items():
+    for feature_name, feature_config in feature_sets.items():
         print(f"\n{'='*60}")
         print(f"Feature Set: {feature_name}")
         print(f"{'='*60}")
         
         # Create dataset for this feature configuration
         feature_cols = create_dataset_with_features(
-            merged_df, CONFIG,
+            merged_df, cfg,
             use_geo=feature_config['use_geo'],
             use_qsar=feature_config['use_qsar'],
             qsar_cols=qsar_cols
@@ -403,10 +416,11 @@ def main():
         
         # Create dataset
         dataset = CustomPeptideDataset(
-            merged_df, 
-            CONFIG['pdb_dir'], 
+            merged_df,
+            cfg['pdb_dir'],
             feature_cols if feature_cols else None,
-            CONFIG['distance_threshold']
+            cfg['distance_threshold'],
+            node_feature_groups=node_feature_groups,
         )
         
         # Load all data
@@ -414,12 +428,12 @@ def main():
         all_data = [dataset[i] for i in range(len(dataset))]
         print(f"Loaded {len(all_data)} graphs")
         
-        for arch in ARCHITECTURES:
+        for arch in architectures:
             print(f"\n   🔬 {arch.upper()}...")
             
             cv_results = run_single_experiment(
                 arch, feature_name, feature_config,
-                all_data, labels, clusters, device, CONFIG,
+                all_data, labels, clusters, device, cfg,
                 curves_base_dir,
                 save_checkpoints=args.save_checkpoints
             )
@@ -450,8 +464,8 @@ def main():
     print("-"*100)
     
     # Group by feature set for cleaner display
-    for feature_name in FEATURE_CONFIGS.keys():
-        for arch in ARCHITECTURES:
+    for feature_name in feature_sets.keys():
+        for arch in architectures:
             key = f"{arch.upper()} ({feature_name})"
             if key in all_results:
                 r = all_results[key]
@@ -479,8 +493,15 @@ MLP (Combined-36)          0.9908 ± 0.0040    0.9453 ± 0.0243    0.8946 ± 0.0
     # Save results
     os.makedirs('results/gnn', exist_ok=True)
     
+    eff = node_feature_groups if node_feature_groups is not None else NodeFeatureGroups()
     results_dict = {
-        'config': CONFIG,
+        'config': cfg,
+        'node_feature_groups': {
+            'onehot': eff.onehot,
+            'pdb_continuous': eff.pdb_continuous,
+            'vae_table': eff.vae_table,
+            'esm2_residue': eff.esm2_residue,
+        },
         'results': all_results,
         'timestamp': timestamp,
         'curves_dir': str(curves_base_dir)

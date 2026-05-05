@@ -51,6 +51,10 @@ class RunConfig:
     window_min_len: int | None = None
     window_max_len: int | None = None
     window_stride: int = 1
+    # When False (default): keep parent sequences in canonical_seqs.txt for ESMFold/ESM2;
+    # still write window_map.csv and canonical_windows_expanded.txt for SVM / joins.
+    # When True: legacy behavior — canonical_seqs.txt lists every window (ESMFold per window).
+    window_expand_canonical: bool = False
 
     def uses_windowing(self) -> bool:
         return self.window_min_len is not None and self.window_max_len is not None
@@ -147,4 +151,5 @@ class RunConfig:
             window_min_len=getattr(args, "window_min_len", None),
             window_max_len=getattr(args, "window_max_len", None),
             window_stride=getattr(args, "window_stride", 1),
+            window_expand_canonical=bool(getattr(args, "window_expand_canonical", False)),
         )

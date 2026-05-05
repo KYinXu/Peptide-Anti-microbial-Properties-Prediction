@@ -94,10 +94,16 @@ class NodeFeatureGroups:
     onehot: bool = True
     pdb_continuous: bool = True
     vae_table: bool = True
+    esm2_residue: bool = True
 
 
 def _effective_node_feature_groups(groups: Optional[NodeFeatureGroups]) -> NodeFeatureGroups:
     return groups if groups is not None else NodeFeatureGroups()
+
+
+def wants_esm2_residue_nodes(groups: Optional[NodeFeatureGroups]) -> bool:
+    """True when per-residue ESM2 tensors should be attached on graph nodes (``node_feature_groups.esm2_residue``)."""
+    return _effective_node_feature_groups(groups).esm2_residue
 
 
 def node_input_dim(groups: Optional[NodeFeatureGroups] = None) -> int:
@@ -114,7 +120,7 @@ def node_input_dim(groups: Optional[NodeFeatureGroups] = None) -> int:
 
 
 def node_feature_groups_from_cli(spec: str) -> Optional[NodeFeatureGroups]:
-    """Parse comma-separated tokens: no_vae, no_onehot, no_pdb. Empty string -> None (all on)."""
+    """Parse comma-separated tokens: no_vae, no_onehot, no_pdb, no_esm2 / no_esm2_residue. Empty string -> None (all on)."""
     if not (spec or "").strip():
         return None
     tok = {t.strip().lower() for t in spec.split(",") if t.strip()}
@@ -125,7 +131,35 @@ def node_feature_groups_from_cli(spec: str) -> Optional[NodeFeatureGroups]:
         g.onehot = False
     if "no_pdb" in tok or "no_pdb_continuous" in tok:
         g.pdb_continuous = False
+    if "no_esm2" in tok or "no_esm2_residue" in tok:
+        g.esm2_residue = False
     return g
+
+
+def node_feature_groups_from_config_value(obj: object) -> Optional[NodeFeatureGroups]:
+    """
+    Build toggles from JSON (``configs/*.json`` ``node_feature_groups``) or a CLI-style string.
+
+    - ``None`` / omitted: all groups on (same as ``NodeFeatureGroups()`` defaults).
+    - ``str``: same as :func:`node_feature_groups_from_cli`.
+    - ``dict``: optional keys ``onehot``, ``pdb_continuous``, ``vae_table``, ``esm2_residue`` (booleans); absent keys stay at default True.
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, str):
+        return node_feature_groups_from_cli(obj)
+    if isinstance(obj, dict):
+        g = NodeFeatureGroups()
+        if "onehot" in obj:
+            g.onehot = bool(obj["onehot"])
+        if "pdb_continuous" in obj:
+            g.pdb_continuous = bool(obj["pdb_continuous"])
+        if "vae_table" in obj:
+            g.vae_table = bool(obj["vae_table"])
+        if "esm2_residue" in obj:
+            g.esm2_residue = bool(obj["esm2_residue"])
+        return g
+    raise TypeError(f"node_feature_groups must be null, str, or dict; got {type(obj).__name__}")
 
 
 # Canonical indices when all groups are on: 0-19 one-hot; 20-25 PDB continuous; 26+ VAE table
@@ -669,7 +703,7 @@ class PeptideGraphDataset(Dataset):
             node_feature_keep_indices=self.node_feature_keep_indices,
             node_feature_groups=self.node_feature_groups,
         )
-        if self.esm2_residue_dir is not None:
+        if self.esm2_residue_dir is not None and wants_esm2_residue_nodes(self.node_feature_groups):
             try:
                 esm = load_esm2_per_residue_tensor(self.esm2_residue_dir, row["peptide_id"])
             except FileNotFoundError:

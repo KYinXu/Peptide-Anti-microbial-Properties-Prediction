@@ -9,7 +9,6 @@ Run from sequence_to_svm_minimal:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -17,12 +16,20 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from configs.load_config import merge_pipeline_config_paths
 from peptide_pipeline.config import RunConfig
 from peptide_pipeline.runner import run_pipeline
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(description="Run sequence -> structure -> features pipeline (see DATA_PROCESSING.md).")
+    ap = argparse.ArgumentParser(
+        description="Run sequence -> structure -> features pipeline (see DATA_PROCESSING.md).",
+        epilog=(
+            "JSON presets: use `--config PATH` / `-c PATH` before other flags (repeatable; later files override). "
+            "CLI flags override merged JSON. See configs/pipeline_defaults.json and configs/windowed_*.json."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ap.add_argument(
         "--mode",
         type=str,
@@ -140,34 +147,33 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="window_stride",
         help="Sliding window stride (default: 1). Requires --window-min-len and --window-max-len.",
     )
+    ap.add_argument(
+        "--window-expand-canonical",
+        action="store_true",
+        help=(
+            "With window min/max: fold each window separately (canonical_seqs.txt = all windows). "
+            "Default without this flag: ESMFold/ESM2 on full parents in canonical_seqs.txt; "
+            "window_map.csv plus inputs/canonical_windows_expanded.txt list windows (e.g. for SVM)."
+        ),
+    )
     return ap
-
-
-def _config_file_arg_defaults(config_path: str | None) -> dict:
-    if not config_path:
-        return {}
-    raw = json.loads(Path(config_path).read_text(encoding="utf-8"))
-    out = dict(raw)
-    if "input_path" in out:
-        out["input"] = out.pop("input_path")
-    return out
 
 
 def main() -> int:
     pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--config", "-c", type=str, default=None)
+    pre.add_argument(
+        "--config",
+        "-c",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="JSON defaults for pipeline flags (repeatable; later files override earlier).",
+    )
     pre_args, rest = pre.parse_known_args()
-    defaults = _config_file_arg_defaults(pre_args.config)
+    defaults = merge_pipeline_config_paths(pre_args.config)
     parser = _build_parser()
     if defaults:
         parser.set_defaults(**defaults)
-    parser.add_argument(
-        "--config",
-        "-c",
-        type=str,
-        default=None,
-        help="JSON object with defaults for pipeline flags (use input_path or input, work_dir, booleans, etc.). CLI overrides the file.",
-    )
     args = parser.parse_args(rest)
     wm, wx = args.window_min_len, args.window_max_len
     if (wm is None) != (wx is None):
