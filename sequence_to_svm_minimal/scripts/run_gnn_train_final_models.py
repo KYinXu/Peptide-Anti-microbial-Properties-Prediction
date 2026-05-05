@@ -2,6 +2,8 @@
 """
 Train single GNN models (no CV) for each architecture/feature config,
 and save checkpoints ready for use with `data_evaluation/compare_model_predictions.py`.
+Each ``*.pt`` is accompanied by ``<same_stem>_gnn_meta.json`` (layout / hyperparameters)
+so inference does not depend on matching ``compare_models.json`` node toggles.
 
 Typical usage after ``run_data_pipeline`` (writes ``<input_dir>/generated/``):
 
@@ -51,6 +53,7 @@ from gnn.platt import (
 )
 from gnn.train import run_training, evaluate
 from gnn.extra_feature_scaler import ExtraFeatureRobustScaler, save_extra_feature_scaler
+from gnn.checkpoint_meta import save_peptide_gnn_meta
 from configs.load_config import argv_without_config_flags, load_gnn_final_train_bundle
 
 
@@ -365,7 +368,21 @@ def train_single_model(
     model_name = f"{arch}_ready_{feature_name.replace('+', '_plus_')}.pt"
     ckpt_path = out_dir / model_name
     torch.save(model.state_dict(), ckpt_path)
+    _meta_ng = node_feature_groups if node_feature_groups is not None else NodeFeatureGroups()
+    meta_written = save_peptide_gnn_meta(
+        ckpt_path,
+        architecture=arch,
+        node_feature_groups=_meta_ng,
+        hidden_channels=args.hidden_channels,
+        num_layers=args.num_layers,
+        dropout=args.dropout,
+        pooling="mean_max",
+        geo_feature_dim=geo_dim,
+        esm2_raw_dim=esm2_raw,
+        esm2_hidden_dim=args.esm2_hidden_dim,
+    )
     print(f"Saved checkpoint: {ckpt_path}")
+    print(f"Saved GNN layout meta: {meta_written}", flush=True)
     if tabular_scaler is not None:
         scaler_path = ckpt_path.with_name(ckpt_path.stem + "_tabular_scaler.joblib")
         save_extra_feature_scaler(tabular_scaler, str(scaler_path))
@@ -423,8 +440,15 @@ def resolve_final_train_paths(args: argparse.Namespace, training_defaults: dict)
 
 def parse_args():
     cfg_path, argv_rest = argv_without_config_flags(sys.argv[1:])
-    training_defaults, feature_sets, arch_list, node_groups_cfg = load_gnn_final_train_bundle(cfg_path)
+    (
+        training_defaults,
+        feature_sets,
+        arch_list,
+        node_groups_cfg,
+        train_feature_sets_default,
+    ) = load_gnn_final_train_bundle(cfg_path)
     feat_keys = list(feature_sets.keys())
+    default_feature_sets = train_feature_sets_default if train_feature_sets_default is not None else feat_keys
 
     ap = argparse.ArgumentParser(
         description="Train single GNN models (no CV) for test-time inference.",
@@ -467,7 +491,17 @@ def parse_args():
         help="Optional override for esm2_decoy_csv when not using --esm2_csv.",
     )
     ap.add_argument("--architectures", type=str, nargs="+", default=arch_list, choices=arch_list)
-    ap.add_argument("--feature_sets", type=str, nargs="+", default=feat_keys, choices=feat_keys)
+    ap.add_argument(
+        "--feature_sets",
+        type=str,
+        nargs="+",
+        default=default_feature_sets,
+        choices=feat_keys,
+        help=(
+            "Tabular extras paired with the graph (see config feature_sets). "
+            "Default: all keys in feature_sets, or train_feature_sets from the config if set."
+        ),
+    )
     ap.add_argument(
         "--models",
         type=str,
@@ -475,8 +509,8 @@ def parse_args():
         default=None,
         help=(
             "Optional explicit model selections as ARCH:FEATURE (e.g. "
-            "gat:ESM gat:QSAR). If set, --architectures and "
-            "--feature_sets are ignored."
+            "gat:ESM gat:QSAR). If set, --architectures, --feature_sets, "
+            "and config train_feature_sets are ignored."
         ),
     )
     ap.add_argument("--epochs", type=int, default=training_defaults["epochs"])

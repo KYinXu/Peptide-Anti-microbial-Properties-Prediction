@@ -1,5 +1,5 @@
 {
-  "_documentation": "Defaults for scripts/run_gnn_train_final_models.py (override with CLI). node_feature_groups: onehot, pdb_continuous, vae_table (graph x), esm2_residue (per-residue .pt on nodes); CLI --node-groups tokens no_vae, no_onehot, no_pdb, no_esm2.",
+  "_documentation": "Defaults for scripts/run_gnn_train_final_models.py (override with CLI). node_feature_groups: onehot, pdb_continuous, vae_table (graph x), esm2_residue (per-residue .pt on nodes); CLI --node-groups tokens no_vae, no_onehot, no_pdb, no_esm2. Optional train_feature_sets: non-empty list of keys from feature_sets; when set, only those modes are trained unless you pass --feature_sets or --models on the CLI.",
   "csv_path": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/geometric_features_clustered.csv",
   "pdb_dir": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced",
   "qsar_csv": "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/qsar12_descriptors.csv",
@@ -24,6 +24,7 @@
     "esm2_residue": false
   },
   "architectures": ["gcn", "gat", "egnn"],
+  "train_feature_sets": ["ESM"],
   "feature_sets": {
     "ESM": {"use_geo": false, "use_qsar": false},
     "Geo": {"use_geo": true, "use_qsar": false},

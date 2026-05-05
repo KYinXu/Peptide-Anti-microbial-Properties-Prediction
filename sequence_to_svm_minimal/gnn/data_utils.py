@@ -119,6 +119,46 @@ def node_input_dim(groups: Optional[NodeFeatureGroups] = None) -> int:
     return n
 
 
+def node_feature_groups_for_base_dim(base_dim: int) -> NodeFeatureGroups:
+    """
+    Recover ``NodeFeatureGroups`` (onehot / pdb_continuous / vae_table only) from the
+    width of ``data.x``. With the built-in block sizes, every sum is unique so this
+    is well-defined for standard checkpoints.
+    """
+    for oh in (False, True):
+        for pdb in (False, True):
+            for vae in (False, True):
+                g = NodeFeatureGroups(
+                    onehot=oh,
+                    pdb_continuous=pdb,
+                    vae_table=vae,
+                    esm2_residue=False,
+                )
+                if node_input_dim(g) == base_dim:
+                    return NodeFeatureGroups(
+                        onehot=oh,
+                        pdb_continuous=pdb,
+                        vae_table=vae,
+                        esm2_residue=False,
+                    )
+    dims = sorted(
+        {
+            node_input_dim(
+                NodeFeatureGroups(
+                    onehot=a, pdb_continuous=b, vae_table=c, esm2_residue=False
+                )
+            )
+            for a in (False, True)
+            for b in (False, True)
+            for c in (False, True)
+        }
+    )
+    raise ValueError(
+        f"No coarse node-feature block combination yields data.x width {base_dim}. "
+        f"Valid widths for (onehot,pdb,vae) toggles: {dims}"
+    )
+
+
 def node_feature_groups_from_cli(spec: str) -> Optional[NodeFeatureGroups]:
     """Parse comma-separated tokens: no_vae, no_onehot, no_pdb, no_esm2 / no_esm2_residue. Empty string -> None (all on)."""
     if not (spec or "").strip():

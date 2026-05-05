@@ -52,6 +52,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from configs.load_config import argv_without_config_flags, load_compare_models_config, repo_root
+from gnn.checkpoint_meta import resolve_node_layout_for_checkpoint
 from gnn.data_utils import (
     NodeFeatureGroups,
     node_feature_groups_from_cli,
@@ -583,13 +584,14 @@ def _run_gnn_predictions(csv_path: str,
     sd0 = torch.load(model_path, map_location="cpu", weights_only=True)
     esm2_raw_ckpt = esm2_raw_dim_from_state_dict(sd0)
     esm2_h_ckpt = esm2_hidden_dim_from_state_dict(sd0)
-    eff_ng = node_feature_groups if node_feature_groups is not None else NodeFeatureGroups()
-    if esm2_raw_ckpt > 0 and not eff_ng.esm2_residue:
-        raise SystemExit(
-            "This checkpoint uses per-residue ESM2 on graph nodes, but node_feature_groups.esm2_residue is false "
-            "(or --node-groups includes no_esm2). Enable esm2_residue in configs/compare_models.json or match "
-            "training settings."
-        )
+    ng_infer, in_base_ckpt, layout_notes = resolve_node_layout_for_checkpoint(
+        model_path,
+        sd0,
+        architecture,
+        user_node_groups=node_feature_groups,
+    )
+    for msg in layout_notes:
+        print(f"  {msg}", flush=True)
     cin = _classifier_input_dim_from_state_dict(sd0)
     pool = _pool_dim_for_gnn_classifier(hidden, pooling)
     geo_dim_ckpt = cin - pool
@@ -648,7 +650,7 @@ def _run_gnn_predictions(csv_path: str,
         tabular_scaler_path=scaler_path,
         esm2_residue_dir=esm2_residue_dir if esm2_raw_ckpt > 0 else None,
         canonical_seqs_path=canon_path,
-        node_feature_groups=node_feature_groups,
+        node_feature_groups=ng_infer,
     )
 
     if use_geo and len(dataset) > 0 and hasattr(dataset[0], "geo_features"):
@@ -660,10 +662,16 @@ def _run_gnn_predictions(csv_path: str,
             )
 
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    in_ch = int(dataset[0].x.shape[1])
+    if len(dataset) > 0:
+        xw = int(dataset[0].x.shape[1])
+        if xw != in_base_ckpt:
+            raise SystemExit(
+                f"Node feature width mismatch: checkpoint implies data.x width {in_base_ckpt}, "
+                f"dataset produced {xw}."
+            )
     model = PeptideGNN(
         architecture=architecture,
-        in_channels=in_ch,
+        in_channels=in_base_ckpt,
         hidden_channels=hidden,
         num_layers=num_layers,
         num_classes=2,
@@ -1002,9 +1010,10 @@ def main():
     )
     _nfg = node_feature_groups if node_feature_groups is not None else NodeFeatureGroups()
     print(
-        f"GNN node feature groups: onehot={_nfg.onehot} pdb_continuous={_nfg.pdb_continuous} "
+        f"GNN node feature groups (config hint): onehot={_nfg.onehot} pdb_continuous={_nfg.pdb_continuous} "
         f"vae_table={_nfg.vae_table} esm2_residue={_nfg.esm2_residue} "
-        f"(graph x width {node_input_dim(node_feature_groups)})",
+        f"(graph x width {node_input_dim(node_feature_groups)}); each checkpoint uses *_gnn_meta.json or "
+        f"inferred weights.",
         flush=True,
     )
 

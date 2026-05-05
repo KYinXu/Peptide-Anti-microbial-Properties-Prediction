@@ -123,16 +123,42 @@ COMPARE_MODELS_PATH_KEYS = frozenset(
 
 def load_gnn_final_train_bundle(
     config_path: str | None = None,
-) -> tuple[dict, dict[str, dict], list[str], dict | None]:
+) -> tuple[dict, dict[str, dict], list[str], dict | None, list[str] | None]:
     path = config_path or str(repo_root() / "configs/gnn_final_train.json")
     raw = load_json(path)
     data = dict(raw)
     data.pop("_documentation", None)
     architectures = list(data.pop("architectures", ["gcn", "gat", "egnn"]))
     feature_sets = dict(data.pop("feature_sets", {}))
+    train_feature_sets = data.pop("train_feature_sets", None)
     node_feature_groups = data.pop("node_feature_groups", None)
     training = resolve_path_keys(data, GNN_FINAL_PATH_KEYS)
-    return training, feature_sets, architectures, node_feature_groups
+
+    if train_feature_sets is not None:
+        if not isinstance(train_feature_sets, list) or not train_feature_sets:
+            raise ValueError(
+                f"{path}: train_feature_sets must be a non-empty list of names "
+                f"that appear as keys in feature_sets."
+            )
+        if not all(isinstance(x, str) for x in train_feature_sets):
+            raise TypeError(f"{path}: train_feature_sets must be a list of strings.")
+        unknown = [x for x in train_feature_sets if x not in feature_sets]
+        if unknown:
+            raise ValueError(
+                f"{path}: train_feature_sets contains unknown entries {unknown!r}. "
+                f"Valid keys: {list(feature_sets.keys())}"
+            )
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for name in train_feature_sets:
+            if name not in seen:
+                seen.add(name)
+                ordered.append(name)
+        train_feature_sets = ordered
+    else:
+        train_feature_sets = None
+
+    return training, feature_sets, architectures, node_feature_groups, train_feature_sets
 
 
 def load_gnn_comparison_bundle(

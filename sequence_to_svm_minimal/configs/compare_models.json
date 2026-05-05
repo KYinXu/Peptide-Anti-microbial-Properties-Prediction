@@ -1,5 +1,5 @@
 {
-  "_documentation": "Defaults for scripts/data_evaluation/compare_model_predictions.py. Paths relative to sequence_to_svm_minimal/. node_feature_groups must match how the .pt checkpoints were trained; override with --node-groups if needed.",
+  "_documentation": "Defaults for scripts/data_evaluation/compare_model_predictions.py. Paths relative to sequence_to_svm_minimal/. For GNN, node layout is taken from <stem>_gnn_meta.json next to each .pt (written by run_gnn_train_final_models) or inferred from weight shapes; node_feature_groups here is only a hint—mismatches log a note and the checkpoint wins. Override toggles with --node-groups if you need to match a legacy run without meta.",
   "geo_csv": "data/test/CPPs/geometric_features.csv",
   "pdb_dir": "data/test/CPPs/structures/sequences",
   "qsar_csv": "data/test/CPPs/qsar12_descriptors.csv",
