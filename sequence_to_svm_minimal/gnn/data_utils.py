@@ -409,6 +409,51 @@ def compute_edges(
     return edge_index, edge_attr
 
 
+def _build_peptide_graph_data(
+    aa_sequence: List[str],
+    ca_coords: np.ndarray,
+    plddt_values: np.ndarray,
+    label: int,
+    peptide_id: str | None,
+    distance_threshold: float,
+    geometric_features: Optional[np.ndarray],
+    node_feature_keep_indices: Optional[List[int]],
+    node_feature_groups: Optional[NodeFeatureGroups],
+) -> Data:
+    n_residues = len(aa_sequence)
+    if n_residues < 2:
+        raise ValueError(f"Peptide too short: {n_residues} residues")
+    x = compute_node_features(aa_sequence, plddt_values, n_residues, groups=node_feature_groups)
+    if node_feature_keep_indices is not None:
+        x = x[:, node_feature_keep_indices]
+
+    edge_index, edge_attr = compute_edges(ca_coords, distance_threshold)
+    pos = torch.tensor(ca_coords, dtype=torch.float32)
+
+    data = Data(
+        x=x,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        pos=pos,
+        y=torch.tensor([label], dtype=torch.long),
+        num_nodes=n_residues,
+    )
+
+    if geometric_features is not None:
+        data.geo_features = torch.tensor(geometric_features, dtype=torch.float32).unsqueeze(0)
+
+    if peptide_id:
+        data.peptide_id = peptide_id
+    seq_joined = "".join(aa_sequence)
+    if any(c not in AA_TO_IDX for c in seq_joined):
+        raise ValueError(
+            f"PDB sequence contains non-standard residue letters ({seq_joined[:40]!r}…)"
+        )
+    data.sequence = seq_joined
+
+    return data
+
+
 def pdb_to_graph(
     pdb_path: str,
     label: int,
@@ -428,44 +473,55 @@ def pdb_to_graph(
     (length ``NODE_INPUT_DIM``) to retain after ``compute_node_features``.
     """
     aa_sequence, ca_coords, plddt_values = parse_pdb(pdb_path)
-    n_residues = len(aa_sequence)
-    if n_residues < 2:
-        raise ValueError(f"Peptide too short: {n_residues} residues")
-    x = compute_node_features(aa_sequence, plddt_values, n_residues, groups=node_feature_groups)
-    if node_feature_keep_indices is not None:
-        x = x[:, node_feature_keep_indices]
-    
-    # Compute edges
-    edge_index, edge_attr = compute_edges(ca_coords, distance_threshold)
-    
-    # Store coordinates for EGNN
-    pos = torch.tensor(ca_coords, dtype=torch.float32)
-    
-    # Create Data object
-    data = Data(
-        x=x,
-        edge_index=edge_index,
-        edge_attr=edge_attr,
-        pos=pos,
-        y=torch.tensor([label], dtype=torch.long),
-        num_nodes=n_residues
+    return _build_peptide_graph_data(
+        aa_sequence,
+        ca_coords,
+        plddt_values,
+        label,
+        peptide_id,
+        distance_threshold,
+        geometric_features,
+        node_feature_keep_indices,
+        node_feature_groups,
     )
-    
-    # Add optional geometric features
-    if geometric_features is not None:
-        data.geo_features = torch.tensor(geometric_features, dtype=torch.float32).unsqueeze(0)
-    
-    # Add metadata
-    if peptide_id:
-        data.peptide_id = peptide_id
-    seq_joined = ''.join(aa_sequence)
-    if any(c not in AA_TO_IDX for c in seq_joined):
-        raise ValueError(
-            f"PDB {pdb_path!r} contains non-standard residue letters in parsed sequence"
-        )
-    data.sequence = seq_joined
 
-    return data
+
+def pdb_to_graph_window(
+    pdb_path: str,
+    residue_start: int,
+    residue_length: int,
+    label: int,
+    peptide_id: str | None = None,
+    distance_threshold: float = 8.0,
+    geometric_features: Optional[np.ndarray] = None,
+    node_feature_keep_indices: Optional[List[int]] = None,
+    node_feature_groups: Optional[NodeFeatureGroups] = None,
+) -> Data:
+    """
+    Graph from a contiguous slice of a parent PDB (0-based ``residue_start``, length
+    ``residue_length``), aligned with ``window_map.csv`` ``start`` / ``length`` fields.
+    """
+    aa_sequence, ca_coords, plddt_values = parse_pdb(pdb_path)
+    n = len(aa_sequence)
+    end = residue_start + residue_length
+    if residue_start < 0 or residue_length < 2 or end > n:
+        raise ValueError(
+            f"Invalid window [{residue_start}:{end}) for PDB with {n} residues: {pdb_path!r}"
+        )
+    aa_slice = aa_sequence[residue_start:end]
+    ca_slice = ca_coords[residue_start:end]
+    plddt_slice = plddt_values[residue_start:end]
+    return _build_peptide_graph_data(
+        aa_slice,
+        ca_slice,
+        plddt_slice,
+        label,
+        peptide_id,
+        distance_threshold,
+        geometric_features,
+        node_feature_keep_indices,
+        node_feature_groups,
+    )
 
 
 def _is_missing_pdb_file_value(pdb_file: object) -> bool:
@@ -677,7 +733,10 @@ class PeptideGraphDataset(Dataset):
         
         # Load metadata
         self.df = pd.read_csv(csv_path)
-        
+        self._window_mode = all(
+            c in self.df.columns for c in ("window_start", "window_length", "parent_id")
+        )
+
         # Default geometric feature columns (pLDDT excluded to avoid leakage)
         if geometric_feature_cols is None:
             self.geo_cols = [
@@ -733,23 +792,45 @@ class PeptideGraphDataset(Dataset):
             if self.tabular_scaler is not None:
                 raw = self.tabular_scaler.transform_vector(raw)
             geo_feats = raw.astype(np.float32)
-        
-        data = pdb_to_graph(
-            str(pdb_path),
-            label,
-            peptide_id=row['peptide_id'],
-            distance_threshold=self.distance_threshold,
-            geometric_features=geo_feats,
-            node_feature_keep_indices=self.node_feature_keep_indices,
-            node_feature_groups=self.node_feature_groups,
-        )
+
+        if self._window_mode:
+            w_start = int(row["window_start"])
+            w_len = int(row["window_length"])
+            data = pdb_to_graph_window(
+                str(pdb_path),
+                w_start,
+                w_len,
+                label,
+                peptide_id=str(row["peptide_id"]),
+                distance_threshold=self.distance_threshold,
+                geometric_features=geo_feats,
+                node_feature_keep_indices=self.node_feature_keep_indices,
+                node_feature_groups=self.node_feature_groups,
+            )
+        else:
+            data = pdb_to_graph(
+                str(pdb_path),
+                label,
+                peptide_id=row["peptide_id"],
+                distance_threshold=self.distance_threshold,
+                geometric_features=geo_feats,
+                node_feature_keep_indices=self.node_feature_keep_indices,
+                node_feature_groups=self.node_feature_groups,
+            )
         if self.esm2_residue_dir is not None and wants_esm2_residue_nodes(self.node_feature_groups):
-            try:
-                esm = load_esm2_per_residue_tensor(self.esm2_residue_dir, row["peptide_id"])
-            except FileNotFoundError:
-                if self._esm2_window_resolver is None:
-                    raise
-                esm = self._esm2_window_resolver.slice_window_tensor(row.get("sequence", ""))
+            if self._window_mode:
+                w_start = int(row["window_start"])
+                w_len = int(row["window_length"])
+                parent_key = row["parent_id"]
+                full = load_esm2_per_residue_tensor(self.esm2_residue_dir, parent_key)
+                esm = full[w_start : w_start + w_len].clone()
+            else:
+                try:
+                    esm = load_esm2_per_residue_tensor(self.esm2_residue_dir, row["peptide_id"])
+                except FileNotFoundError:
+                    if self._esm2_window_resolver is None:
+                        raise
+                    esm = self._esm2_window_resolver.slice_window_tensor(row.get("sequence", ""))
             if int(esm.shape[0]) != int(data.num_nodes):
                 raise ValueError(
                     f"ESM2 length {esm.shape[0]} != graph nodes {data.num_nodes} "

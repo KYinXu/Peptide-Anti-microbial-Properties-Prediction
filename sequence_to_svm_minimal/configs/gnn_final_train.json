@@ -21,7 +21,7 @@
     "onehot": true,
     "pdb_continuous": false,
     "vae_table": true,
-    "esm2_residue": false
+    "esm2_residue": true
   },
   "architectures": ["gcn", "gat", "egnn"],
   "train_feature_sets": ["ESM"],
