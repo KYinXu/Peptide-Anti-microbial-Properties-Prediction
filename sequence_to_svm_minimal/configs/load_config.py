@@ -96,8 +96,6 @@ GNN_FINAL_PATH_KEYS = frozenset(
         "pdb_dir",
         "qsar_csv",
         "esm2_csv",
-        "esm2_amp_csv",
-        "esm2_decoy_csv",
     }
 )
 
@@ -124,41 +122,73 @@ COMPARE_MODELS_PATH_KEYS = frozenset(
 def load_gnn_final_train_bundle(
     config_path: str | None = None,
 ) -> tuple[dict, dict[str, dict], list[str], dict | None, list[str] | None]:
+    """Load ``gnn_final_train.json``: path defaults, ``post_message_passing_tabular_presets``, optional defaults list."""
     path = config_path or str(repo_root() / "configs/gnn_final_train.json")
     raw = load_json(path)
     data = dict(raw)
     data.pop("_documentation", None)
     architectures = list(data.pop("architectures", ["gcn", "gat", "egnn"]))
-    feature_sets = dict(data.pop("feature_sets", {}))
-    train_feature_sets = data.pop("train_feature_sets", None)
+    raw_presets = data.pop("post_message_passing_tabular_presets", None)
+    if raw_presets is None:
+        raw_presets = data.pop("feature_sets", None)
+    if raw_presets is None:
+        raw_presets = {}
+    if not isinstance(raw_presets, dict):
+        raise TypeError(f"{path}: post_message_passing_tabular_presets must be a JSON object.")
+
+    post_mp_tabular_presets: dict[str, dict] = {}
+    for name, cfg in raw_presets.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"{path}: invalid preset name {name!r}")
+        if not isinstance(cfg, dict):
+            raise TypeError(f"{path}: preset {name!r} must be a JSON object.")
+        slim = {k: cfg[k] for k in ("use_geo", "use_qsar") if k in cfg}
+        if set(slim.keys()) != {"use_geo", "use_qsar"}:
+            raise ValueError(
+                f"{path}: preset {name!r} must include boolean use_geo and use_qsar "
+                f"(optional 'about' text is ignored by the trainer)."
+            )
+        if not all(isinstance(slim[k], bool) for k in ("use_geo", "use_qsar")):
+            raise TypeError(f"{path}: preset {name!r} use_geo/use_qsar must be booleans.")
+        post_mp_tabular_presets[name] = slim
+
+    default_presets = data.pop("feature_sets_default", None)
+    if default_presets is None:
+        default_presets = data.pop("train_feature_sets", None)
+    if default_presets is None:
+        default_presets = data.pop("default_post_mp_tabular_presets", None)
     node_feature_groups = data.pop("node_feature_groups", None)
     training = resolve_path_keys(data, GNN_FINAL_PATH_KEYS)
 
-    if train_feature_sets is not None:
-        if not isinstance(train_feature_sets, list) or not train_feature_sets:
+    if default_presets is not None:
+        if not isinstance(default_presets, list) or not default_presets:
             raise ValueError(
-                f"{path}: train_feature_sets must be a non-empty list of names "
-                f"that appear as keys in feature_sets."
+                f"{path}: feature_sets_default (or train_feature_sets / default_post_mp_tabular_presets) "
+                f"must be a non-empty list of names that appear in the preset catalog "
+                f"(feature_sets or post_message_passing_tabular_presets)."
             )
-        if not all(isinstance(x, str) for x in train_feature_sets):
-            raise TypeError(f"{path}: train_feature_sets must be a list of strings.")
-        unknown = [x for x in train_feature_sets if x not in feature_sets]
+        if not all(isinstance(x, str) for x in default_presets):
+            raise TypeError(
+                f"{path}: feature_sets_default / train_feature_sets / default_post_mp_tabular_presets "
+                f"must be a list of strings."
+            )
+        unknown = [x for x in default_presets if x not in post_mp_tabular_presets]
         if unknown:
             raise ValueError(
-                f"{path}: train_feature_sets contains unknown entries {unknown!r}. "
-                f"Valid keys: {list(feature_sets.keys())}"
+                f"{path}: default preset list contains unknown entries {unknown!r}. "
+                f"Valid names: {list(post_mp_tabular_presets.keys())}"
             )
         seen: set[str] = set()
         ordered: list[str] = []
-        for name in train_feature_sets:
+        for name in default_presets:
             if name not in seen:
                 seen.add(name)
                 ordered.append(name)
-        train_feature_sets = ordered
+        default_presets = ordered
     else:
-        train_feature_sets = None
+        default_presets = None
 
-    return training, feature_sets, architectures, node_feature_groups, train_feature_sets
+    return training, post_mp_tabular_presets, architectures, node_feature_groups, default_presets
 
 
 def load_gnn_comparison_bundle(
