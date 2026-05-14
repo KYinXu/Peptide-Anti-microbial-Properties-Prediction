@@ -3,9 +3,41 @@
 from __future__ import annotations
 
 import json
+import re
+import sys
 from pathlib import Path
 
 MANIFEST_NAME = "pipeline_manifest.json"
+
+
+def normalize_manifest_path(p: str | Path) -> Path:
+    """
+    Map paths stored in pipeline_manifest.json across WSL ↔ Windows.
+
+    Manifests often record Linux paths like ``/mnt/c/Users/...``. On native Windows,
+    ``Path(...).resolve()`` can turn those into invalid ``C:\\mnt\\c\\...``. This
+    normalizes first, then callers typically call ``.resolve()``.
+    """
+    s = str(p).strip()
+    if sys.platform.startswith("win"):
+        if s.startswith("/mnt/") and len(s) >= 7 and s[5].isalpha() and s[6:7] == "/":
+            drive = s[5].upper()
+            rest = s[7:].replace("/", "\\")
+            return Path(f"{drive}:\\{rest}")
+        m = re.match(r"^([A-Za-z]):\\mnt\\([a-z])\\(.*)$", s)
+        if m:
+            return Path(f"{m.group(1).upper()}:\\{m.group(3)}")
+        return Path(s)
+    m = re.match(r"^([A-Za-z]):[\\/](.*)$", s)
+    if m:
+        drive = m.group(1).lower()
+        rest = m.group(2).replace("\\", "/")
+        return Path(f"/mnt/{drive}/{rest}")
+    return Path(s)
+
+
+def _resolve_manifest_path_str(raw: str) -> str:
+    return str(normalize_manifest_path(raw).expanduser().resolve())
 
 
 def resolve_generated_workspace(path: Path | str) -> Path:
@@ -47,16 +79,17 @@ def gnn_final_training_paths_from_work_dir(work_dir: Path) -> dict[str, str]:
             f"Manifest {work_dir / MANIFEST_NAME} missing or empty keys: {missing}. "
             "Run the full pipeline without --skip-qsar / --skip-esm2 for final GNN training."
         )
-    esm2_csv = Path(m["esm2_embeddings"]).resolve()
-    per_res = m.get("esm2_per_residue")
-    if not per_res:
-        per_res = str(esm2_csv.parent / "esm2_per_residue")
+    esm2_csv = Path(_resolve_manifest_path_str(str(m["esm2_embeddings"])))
+    if m.get("esm2_per_residue"):
+        esm2_res_dir = _resolve_manifest_path_str(str(m["esm2_per_residue"]))
+    else:
+        esm2_res_dir = str((esm2_csv.parent / "esm2_per_residue").resolve())
     return {
-        "csv_path": str(Path(m["geometric_features"]).resolve()),
-        "pdb_dir": str(Path(m["structures_dir"]).resolve()),
-        "qsar_csv": str(Path(m["qsar12_descriptors"]).resolve()),
+        "csv_path": _resolve_manifest_path_str(str(m["geometric_features"])),
+        "pdb_dir": _resolve_manifest_path_str(str(m["structures_dir"])),
+        "qsar_csv": _resolve_manifest_path_str(str(m["qsar12_descriptors"])),
         "esm2_csv": str(esm2_csv),
-        "esm2_residue_dir": str(Path(per_res).resolve()),
+        "esm2_residue_dir": esm2_res_dir,
     }
 
 
@@ -69,6 +102,6 @@ def gnn_legacy_training_paths_from_work_dir(work_dir: Path) -> dict[str, str]:
             f"Manifest {work_dir / MANIFEST_NAME} missing or empty keys: {missing}."
         )
     return {
-        "csv_path": str(Path(m["geometric_features"]).resolve()),
-        "pdb_dir": str(Path(m["structures_dir"]).resolve()),
+        "csv_path": _resolve_manifest_path_str(str(m["geometric_features"])),
+        "pdb_dir": _resolve_manifest_path_str(str(m["structures_dir"])),
     }
