@@ -12,11 +12,12 @@ Typical usage after ``run_data_pipeline`` (writes ``<input_dir>/generated/``):
 You may also pass the parent of ``generated/``; the script resolves ``generated/``
 when the manifest lives there. Omit the path to use ``configs/gnn_final_train.json`` (or ``--config``) / explicit CSV flags.
 
-Configs mirror `run_gnn_comparison.py`:
-- ESM (graph + per-residue ESM2 on nodes; no pooled ESM in the MLP)
-- Geo (graph + Geo20 + per-residue ESM2)
-- QSAR (graph + QSAR12 + per-residue ESM2)
-- Combined (graph + Geo20 + QSAR12 + per-residue ESM2)
+Configs define ``post_message_passing_tabular_presets`` (CSV columns fused after global pooling, before the classifier MLP). Node-level inputs (before pooling) come from ``node_feature_groups`` / ``--node-groups``. Example preset names:
+
+- **ESM** — no extra tabular vector after pooling (graph embedding only; per-residue ESM on nodes is separate).
+- **Geo** — append global geometric (Geo20) columns after pooling.
+- **QSAR** — append QSAR12 columns after pooling.
+- **Combined** — append Geo20 + QSAR12 after pooling.
 """
 from __future__ import annotations
 
@@ -71,47 +72,26 @@ def _normalize_core_id(series: pd.Series) -> pd.Series:
     return s
 
 
-def _load_esm2_table(esm2_csv: str | None, esm2_amp_csv: str | None, esm2_decoy_csv: str | None):
-    """Load ESM2 embeddings from a combined CSV or AMP/DECOY CSV pair."""
-    if esm2_csv:
-        df = pd.read_csv(esm2_csv)
-        if "peptide_id" in df.columns:
-            id_col = "peptide_id"
-        elif "seqIndex" in df.columns:
-            id_col = "seqIndex"
-        else:
-            raise ValueError("ESM2 CSV must contain 'peptide_id' or 'seqIndex'")
-        emb_cols = [c for c in df.columns if c.startswith("esm2_dim_")]
-        if not emb_cols:
-            raise ValueError("No ESM2 embedding columns found (expected prefix 'esm2_dim_')")
-        out = df[[id_col] + emb_cols].copy()
-        out["core_id"] = _normalize_core_id(out[id_col])
-        return out[["core_id"] + emb_cols], emb_cols
-
-    if esm2_amp_csv and esm2_decoy_csv:
-        amp_df = pd.read_csv(esm2_amp_csv)
-        decoy_df = pd.read_csv(esm2_decoy_csv)
-        for d in (amp_df, decoy_df):
-            if "seqIndex" not in d.columns:
-                raise ValueError("ESM2 AMP/DECOY CSVs must contain 'seqIndex'")
-        emb_cols = [c for c in amp_df.columns if c.startswith("esm2_dim_")]
-        if not emb_cols:
-            raise ValueError("No ESM2 embedding columns found (expected prefix 'esm2_dim_')")
-        amp = amp_df[["seqIndex"] + emb_cols].copy()
-        decoy = decoy_df[["seqIndex"] + emb_cols].copy()
-        amp["core_id"] = _normalize_core_id(amp["seqIndex"])
-        decoy["core_id"] = _normalize_core_id(decoy["seqIndex"])
-        merged = pd.concat([amp[["core_id"] + emb_cols], decoy[["core_id"] + emb_cols]], axis=0, ignore_index=True)
-        return merged.drop_duplicates(subset=["core_id"]), emb_cols
-
-    return None, []
+def _load_esm2_table(esm2_csv: str | None):
+    """Load ESM2 embeddings from a single merged CSV (peptide_id or seqIndex + esm2_dim_*)."""
+    if not esm2_csv:
+        return None, []
+    df = pd.read_csv(esm2_csv)
+    if "peptide_id" in df.columns:
+        id_col = "peptide_id"
+    elif "seqIndex" in df.columns:
+        id_col = "seqIndex"
+    else:
+        raise ValueError("ESM2 CSV must contain 'peptide_id' or 'seqIndex'")
+    emb_cols = [c for c in df.columns if c.startswith("esm2_dim_")]
+    if not emb_cols:
+        raise ValueError("No ESM2 embedding columns found (expected prefix 'esm2_dim_')")
+    out = df[[id_col] + emb_cols].copy()
+    out["core_id"] = _normalize_core_id(out[id_col])
+    return out[["core_id"] + emb_cols], emb_cols
 
 
-def load_data_with_features(csv_path: str,
-                            qsar_csv: str,
-                            esm2_csv: str | None = None,
-                            esm2_amp_csv: str | None = None,
-                            esm2_decoy_csv: str | None = None):
+def load_data_with_features(csv_path: str, qsar_csv: str, esm2_csv: str | None = None):
     """Load geometric CSV and merge QSAR and optional ESM2 embeddings."""
     geo_df = pd.read_csv(csv_path)
     qsar_df = pd.read_csv(qsar_csv)
@@ -133,8 +113,7 @@ def load_data_with_features(csv_path: str,
 
     merged_df = geo_df.merge(qsar_df[["peptide_id"] + qsar_cols], on="peptide_id", how="left")
 
-    esm2_cols = []
-    esm2_df, esm2_cols = _load_esm2_table(esm2_csv, esm2_amp_csv, esm2_decoy_csv)
+    esm2_df, esm2_cols = _load_esm2_table(esm2_csv)
     if esm2_df is not None:
         merged_df["core_id"] = _normalize_core_id(merged_df["peptide_id"])
         merged_df = merged_df.merge(esm2_df, on="core_id", how="left")
@@ -429,26 +408,44 @@ def resolve_final_train_paths(args: argparse.Namespace, training_defaults: dict)
             args.esm2_residue_dir = bundle["esm2_residue_dir"]
         elif bundle and bundle.get("esm2_csv"):
             args.esm2_residue_dir = str(Path(bundle["esm2_csv"]).parent / "esm2_per_residue")
-    if (
-        args.esm2_csv is None
-        and getattr(args, "esm2_amp_csv", None) is None
-        and getattr(args, "esm2_decoy_csv", None) is None
-    ):
-        if bundle:
-            args.esm2_csv = bundle["esm2_csv"]
+        else:
+
+            def _first_resolved_path(*keys: str) -> Path | None:
+                for key in keys:
+                    val = getattr(args, key, None)
+                    if val:
+                        return Path(val).resolve()
+                    tv = training_defaults.get(key)
+                    if tv:
+                        return Path(tv).resolve()
+                return None
+
+            anchor = _first_resolved_path(
+                "esm2_csv",
+                "qsar_csv",
+                "csv_path",
+            )
+            if anchor is not None:
+                args.esm2_residue_dir = str((anchor.parent / "esm2_per_residue").resolve())
+    if args.esm2_csv is None and bundle:
+        args.esm2_csv = bundle["esm2_csv"]
 
 
 def parse_args():
     cfg_path, argv_rest = argv_without_config_flags(sys.argv[1:])
     (
         training_defaults,
-        feature_sets,
+        post_mp_tabular_presets,
         arch_list,
         node_groups_cfg,
-        train_feature_sets_default,
+        default_post_mp_tabular_presets,
     ) = load_gnn_final_train_bundle(cfg_path)
-    feat_keys = list(feature_sets.keys())
-    default_feature_sets = train_feature_sets_default if train_feature_sets_default is not None else feat_keys
+    preset_names = list(post_mp_tabular_presets.keys())
+    default_post_mp = (
+        default_post_mp_tabular_presets
+        if default_post_mp_tabular_presets is not None
+        else preset_names
+    )
 
     ap = argparse.ArgumentParser(
         description="Train single GNN models (no CV) for test-time inference.",
@@ -476,30 +473,24 @@ def parse_args():
         "--esm2_csv",
         type=str,
         default=None,
-        help="Single merged ESM2 CSV (seqIndex or peptide_id + esm2_dim_*). Overrides config esm2 paths when set.",
-    )
-    ap.add_argument(
-        "--esm2_amp_csv",
-        type=str,
-        default=None,
-        help="Optional override for esm2_amp_csv when not using --esm2_csv.",
-    )
-    ap.add_argument(
-        "--esm2_decoy_csv",
-        type=str,
-        default=None,
-        help="Optional override for esm2_decoy_csv when not using --esm2_csv.",
+        help="Merged ESM2 CSV (peptide_id or seqIndex + esm2_dim_*). Overrides config when set.",
     )
     ap.add_argument("--architectures", type=str, nargs="+", default=arch_list, choices=arch_list)
     ap.add_argument(
-        "--feature_sets",
+        "--post-mp-tabular-presets",
+        "--feature-sets",
         type=str,
         nargs="+",
-        default=default_feature_sets,
-        choices=feat_keys,
+        default=default_post_mp,
+        dest="post_mp_tabular_presets",
+        metavar="PRESET",
+        choices=preset_names,
         help=(
-            "Tabular extras paired with the graph (see config feature_sets). "
-            "Default: all keys in feature_sets, or train_feature_sets from the config if set."
+            "Which post-message-passing tabular presets to train (names from config "
+            "post_message_passing_tabular_presets). Each preset selects Geo20 and/or QSAR12 "
+            "columns concatenated after graph pooling. Default: "
+            "default_post_mp_tabular_presets from config, or all preset names. "
+            "--feature-sets is a deprecated alias."
         ),
     )
     ap.add_argument(
@@ -508,9 +499,10 @@ def parse_args():
         nargs="+",
         default=None,
         help=(
-            "Optional explicit model selections as ARCH:FEATURE (e.g. "
-            "gat:ESM gat:QSAR). If set, --architectures, --feature_sets, "
-            "and config train_feature_sets are ignored."
+            "Optional explicit model selections as ARCH:PRESET (e.g. "
+            "gat:ESM gat:QSAR) where PRESET is a key from post_message_passing_tabular_presets. "
+            "If set, --architectures, --post-mp-tabular-presets, and config "
+            "default_post_mp_tabular_presets are ignored."
         ),
     )
     ap.add_argument("--epochs", type=int, default=training_defaults["epochs"])
@@ -574,7 +566,7 @@ def parse_args():
         ),
     )
     args = ap.parse_args(argv_rest)
-    return args, training_defaults, feature_sets, arch_list, node_groups_cfg
+    return args, training_defaults, post_mp_tabular_presets, arch_list, node_groups_cfg
 
 
 def get_device(name: str) -> torch.device:
@@ -593,34 +585,34 @@ def _node_groups_as_dict(g: NodeFeatureGroups | None) -> dict[str, bool]:
     }
 
 
-def _collect_unique_training_pairs(args, feature_sets, architectures):
+def _collect_unique_training_pairs(args, post_mp_tabular_presets, architectures):
     selected_pairs = []
     if args.models:
         for item in args.models:
             if ":" not in item:
                 raise ValueError(
-                    f"Invalid --models entry '{item}'. Expected format ARCH:FEATURE "
-                    f"(e.g. gat:Graph-only)."
+                    f"Invalid --models entry '{item}'. Expected format ARCH:PRESET "
+                    f"(e.g. gat:ESM)."
                 )
-            arch, feature_name = item.split(":", 1)
+            arch, preset_name = item.split(":", 1)
             arch = arch.strip().lower()
-            feature_name = feature_name.strip()
+            preset_name = preset_name.strip()
 
             if arch not in architectures:
                 raise ValueError(
                     f"Unknown architecture '{arch}' in --models. "
                     f"Choose from: {architectures}"
                 )
-            if feature_name not in feature_sets:
+            if preset_name not in post_mp_tabular_presets:
                 raise ValueError(
-                    f"Unknown feature set '{feature_name}' in --models. "
-                    f"Choose from: {list(feature_sets.keys())}"
+                    f"Unknown post-MP tabular preset '{preset_name}' in --models. "
+                    f"Choose from: {list(post_mp_tabular_presets.keys())}"
                 )
-            selected_pairs.append((arch, feature_name))
+            selected_pairs.append((arch, preset_name))
     else:
-        for feature_name in args.feature_sets:
+        for preset_name in args.post_mp_tabular_presets:
             for arch in args.architectures:
-                selected_pairs.append((arch, feature_name))
+                selected_pairs.append((arch, preset_name))
 
     unique_pairs = []
     seen = set()
@@ -633,7 +625,7 @@ def _collect_unique_training_pairs(args, feature_sets, architectures):
 
 
 def main():
-    args, training_defaults, feature_sets, architectures, node_groups_cfg = parse_args()
+    args, training_defaults, post_mp_tabular_presets, architectures, node_groups_cfg = parse_args()
     resolve_final_train_paths(args, training_defaults)
     set_seed(args.seed)
     device = get_device(args.device)
@@ -644,7 +636,7 @@ def main():
         else node_feature_groups_from_config_value(node_groups_cfg)
     )
 
-    print("Device:", device)
+    print("Device:", device, flush=True)
     print(
         "Node feature groups:",
         _node_groups_as_dict(node_feature_groups),
@@ -659,38 +651,23 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=False)
     print("Output dir:", out_dir, flush=True)
 
-    unique_pairs = _collect_unique_training_pairs(args, feature_sets, architectures)
+    unique_pairs = _collect_unique_training_pairs(args, post_mp_tabular_presets, architectures)
     needs_merged_esm2 = wants_esm2_residue_nodes(node_feature_groups)
 
     if needs_merged_esm2:
-        if args.esm2_csv is not None:
-            esm2_csv_path = args.esm2_csv
-            esm2_amp_path = None
-            esm2_decoy_path = None
-        else:
-            esm2_csv_path = training_defaults.get("esm2_csv")
-            esm2_amp_path = (
-                args.esm2_amp_csv if args.esm2_amp_csv is not None else training_defaults.get("esm2_amp_csv")
-            )
-            esm2_decoy_path = (
-                args.esm2_decoy_csv if args.esm2_decoy_csv is not None else training_defaults.get("esm2_decoy_csv")
-            )
+        esm2_csv_path = args.esm2_csv if args.esm2_csv is not None else training_defaults.get("esm2_csv")
     else:
         esm2_csv_path = None
-        esm2_amp_path = None
-        esm2_decoy_path = None
 
     merged_df, qsar_cols, esm2_cols = load_data_with_features(
         args.csv_path,
         args.qsar_csv,
         esm2_csv_path,
-        esm2_amp_path,
-        esm2_decoy_path,
     )
     if needs_merged_esm2 and not esm2_cols:
         raise ValueError(
             "Per-residue ESM2 is enabled (node_feature_groups.esm2_residue) but no esm2_dim_* columns were merged. "
-            "Check esm2_csv / esm2_amp_csv / esm2_decoy_csv in configs/gnn_final_train.json or pass overrides."
+            "Check esm2_csv in configs/gnn_final_train.json or pass --esm2_csv."
         )
     rdir = Path(args.esm2_residue_dir) if args.esm2_residue_dir else None
     if needs_merged_esm2 and (rdir is None or not rdir.is_dir()):
@@ -712,11 +689,11 @@ def main():
         "models": [],
     }
 
-    for arch, feature_name in unique_pairs:
-        f_cfg = feature_sets[feature_name]
+    for arch, preset_name in unique_pairs:
+        f_cfg = post_mp_tabular_presets[preset_name]
         ckpt_path, metrics, platt_path = train_single_model(
             arch=arch,
-            feature_name=feature_name,
+            feature_name=preset_name,
             feature_cfg=f_cfg,
             df=merged_df,
             qsar_cols=qsar_cols,
@@ -728,7 +705,8 @@ def main():
         )
         entry = {
             "architecture": arch,
-            "feature_set": feature_name,
+            "post_mp_tabular_preset": preset_name,
+            "feature_set": preset_name,
             "checkpoint": ckpt_path,
             "metrics": {k: float(v) for k, v in metrics.items()},
         }

@@ -112,43 +112,23 @@ def _normalize_manifest_path(p: str) -> Path:
     return Path(s)
 
 
-def _load_esm2_features(esm2_csv: str | None, esm2_amp_csv: str | None, esm2_decoy_csv: str | None):
-    """Load ESM2 embeddings from a single CSV or AMP/DECOY CSV pair."""
-    if esm2_csv:
-        df = pd.read_csv(esm2_csv)
-        if "peptide_id" in df.columns:
-            id_col = "peptide_id"
-        elif "seqIndex" in df.columns:
-            id_col = "seqIndex"
-        else:
-            raise ValueError("ESM2 CSV must contain 'peptide_id' or 'seqIndex'")
-        esm2_cols = [c for c in df.columns if c.startswith("esm2_dim_")]
-        if not esm2_cols:
-            raise ValueError("No ESM2 columns found in ESM2 CSV (expected prefix 'esm2_dim_').")
-        out = df[[id_col] + esm2_cols].copy()
-        out["core_id"] = _normalize_core_id(out[id_col])
-        return out[["core_id"] + esm2_cols], esm2_cols
-
-    if esm2_amp_csv and esm2_decoy_csv:
-        amp_df = pd.read_csv(esm2_amp_csv)
-        decoy_df = pd.read_csv(esm2_decoy_csv)
-        for d in (amp_df, decoy_df):
-            if "seqIndex" not in d.columns:
-                raise ValueError("ESM2 AMP/DECOY CSV must contain 'seqIndex'.")
-        esm2_cols = [c for c in amp_df.columns if c.startswith("esm2_dim_")]
-        if not esm2_cols:
-            raise ValueError("No ESM2 columns found in AMP/DECOY CSVs (expected prefix 'esm2_dim_').")
-
-        amp = amp_df[["seqIndex"] + esm2_cols].copy()
-        decoy = decoy_df[["seqIndex"] + esm2_cols].copy()
-        amp["core_id"] = _normalize_core_id(amp["seqIndex"])
-        decoy["core_id"] = _normalize_core_id(decoy["seqIndex"])
-
-        merged = pd.concat([amp[["core_id"] + esm2_cols], decoy[["core_id"] + esm2_cols]], axis=0, ignore_index=True)
-        merged = merged.drop_duplicates(subset=["core_id"])
-        return merged, esm2_cols
-
-    return None, []
+def _load_esm2_features(esm2_csv: str | None):
+    """Load ESM2 embeddings from a single merged CSV (peptide_id or seqIndex + esm2_dim_*)."""
+    if not esm2_csv:
+        return None, []
+    df = pd.read_csv(esm2_csv)
+    if "peptide_id" in df.columns:
+        id_col = "peptide_id"
+    elif "seqIndex" in df.columns:
+        id_col = "seqIndex"
+    else:
+        raise ValueError("ESM2 CSV must contain 'peptide_id' or 'seqIndex'")
+    esm2_cols = [c for c in df.columns if c.startswith("esm2_dim_")]
+    if not esm2_cols:
+        raise ValueError("No ESM2 columns found in ESM2 CSV (expected prefix 'esm2_dim_').")
+    out = df[[id_col] + esm2_cols].copy()
+    out["core_id"] = _normalize_core_id(out[id_col])
+    return out[["core_id"] + esm2_cols], esm2_cols
 
 
 def main():
@@ -173,24 +153,7 @@ def main():
         / "spliced"
         / "qsar12_descriptors.csv"
     )
-    default_esm2_amp = (
-        base_dir
-        / "data"
-        / "gnn_training_dataset"
-        / "alpha_and_beta_combined"
-        / "generated"
-        / "spliced"
-        / "esm2_amp.csv"
-    )
-    default_esm2_decoy = (
-        base_dir
-        / "data"
-        / "gnn_training_dataset"
-        / "alpha_and_beta_combined"
-        / "generated"
-        / "spliced"
-        / "esm2_decoy.csv"
-    )
+    default_esm2_merged = default_geo.parent / "esm2_embeddings.csv"
     default_out_dir = base_dir / "results" / "svm"
 
     ap = argparse.ArgumentParser(description="Train SVM for use with compare_model_predictions.py")
@@ -202,7 +165,7 @@ def main():
         help=(
             "Pipeline generated/ directory or parent containing generated/. "
             "When provided, geo/qsar/esm2 paths default to pipeline_manifest.json "
-            "(overridden by explicit --geo_csv/--qsar_csv/--esm2_* flags)."
+            "(overridden by explicit --geo_csv/--qsar_csv/--esm2_csv flags)."
         ),
     )
     ap.add_argument(
@@ -226,12 +189,12 @@ def main():
             "'qsar12+esm2' trains the newer fused SVM (default)."
         ),
     )
-    ap.add_argument("--esm2_csv", type=str, default=None,
-                    help="Optional single ESM2 CSV with peptide_id/seqIndex + esm2_dim_*")
-    ap.add_argument("--esm2_amp_csv", type=str, default=str(default_esm2_amp),
-                    help="AMP ESM2 CSV (used if --esm2_csv not provided)")
-    ap.add_argument("--esm2_decoy_csv", type=str, default=str(default_esm2_decoy),
-                    help="DECOY ESM2 CSV (used if --esm2_csv not provided)")
+    ap.add_argument(
+        "--esm2_csv",
+        type=str,
+        default=str(default_esm2_merged),
+        help="Merged ESM2 CSV with peptide_id or seqIndex + esm2_dim_* (required for qsar12+esm2 unless using pipeline manifest defaults).",
+    )
     ap.add_argument("--out_dir", type=str, default=str(default_out_dir), help="Output directory for SVM .pkl and Z-score file")
     ap.add_argument("--kernel", type=str, default="rbf", choices=["rbf", "linear"], help="SVM kernel")
     args = ap.parse_args()
@@ -263,19 +226,12 @@ def main():
         if args.qsar_csv == str(default_qsar):
             args.qsar_csv = str(_normalize_manifest_path(m["qsar12_descriptors"]).resolve())
         if args.svm_feature_set == "qsar12+esm2":
-            if (
-                args.esm2_csv is None
-                and args.esm2_amp_csv == str(default_esm2_amp)
-                and args.esm2_decoy_csv == str(default_esm2_decoy)
-            ):
-                # Prefer the manifest merged embeddings CSV (with peptide_id).
+            if args.esm2_csv == str(default_esm2_merged):
                 args.esm2_csv = str(_normalize_manifest_path(m["esm2_embeddings"]).resolve())
 
     geo_csv = Path(args.geo_csv)
     qsar_csv = Path(args.qsar_csv)
     esm2_csv = Path(args.esm2_csv) if args.esm2_csv else None
-    esm2_amp_csv = Path(args.esm2_amp_csv) if args.esm2_amp_csv else None
-    esm2_decoy_csv = Path(args.esm2_decoy_csv) if args.esm2_decoy_csv else None
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -285,7 +241,7 @@ def main():
     print(f"Geo CSV : {geo_csv}")
     print(f"QSAR CSV: {qsar_csv}")
     if args.svm_feature_set == "qsar12+esm2":
-        print(f"ESM2 CSV: {esm2_csv if esm2_csv else f'{esm2_amp_csv} + {esm2_decoy_csv}'}")
+        print(f"ESM2 CSV: {esm2_csv}")
     else:
         print("ESM2 CSV: (not used; --svm_feature_set=qsar12)")
     print(f"Out dir : {out_dir}")
@@ -324,15 +280,11 @@ def main():
     feature_cols = list(qsar_cols)
     if args.svm_feature_set == "qsar12+esm2":
         # Merge ESM2 embeddings via normalized core IDs (strip AMP_/DECOY_ prefixes)
-        esm2_df, esm2_cols = _load_esm2_features(
-            str(esm2_csv) if esm2_csv else None,
-            str(esm2_amp_csv) if esm2_amp_csv else None,
-            str(esm2_decoy_csv) if esm2_decoy_csv else None,
-        )
+        esm2_df, esm2_cols = _load_esm2_features(str(esm2_csv) if esm2_csv else None)
         if esm2_df is None or not esm2_cols:
             raise ValueError(
                 "ESM2 embeddings are required for --svm_feature_set=qsar12+esm2 but were not loaded. "
-                "Provide --esm2_csv or --esm2_amp_csv/--esm2_decoy_csv, or switch to --svm_feature_set=qsar12."
+                "Provide --esm2_csv pointing to a merged embeddings table, or switch to --svm_feature_set=qsar12."
             )
         train_df["core_id"] = _normalize_core_id(train_df["peptide_id"])
         train_df = train_df.merge(esm2_df, on="core_id", how="left")

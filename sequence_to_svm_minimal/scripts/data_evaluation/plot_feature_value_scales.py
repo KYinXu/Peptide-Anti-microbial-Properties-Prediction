@@ -23,8 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 DEFAULT_GEO_CSV = "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/geometric_features_clustered.csv"
 DEFAULT_QSAR_CSV = "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/qsar12_descriptors.csv"
-DEFAULT_ESM2_AMP = "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/esm2_amp.csv"
-DEFAULT_ESM2_DECOY = "data/gnn_training_dataset/alpha_and_beta_combined/generated/spliced/esm2_decoy.csv"
+DEFAULT_ESM2_CSV = str(Path(DEFAULT_GEO_CSV).parent / "esm2_embeddings.csv")
 
 GEO_COLS = [
     "radius_gyration",
@@ -73,54 +72,29 @@ def _normalize_core_id(series: pd.Series) -> pd.Series:
 
 def _load_esm2_table(
     esm2_csv: str | None,
-    esm2_amp_csv: str | None,
-    esm2_decoy_csv: str | None,
     esm_prefix: str,
 ) -> tuple[pd.DataFrame | None, list[str]]:
-    if esm2_csv:
-        df = pd.read_csv(esm2_csv)
-        if "peptide_id" in df.columns:
-            id_col = "peptide_id"
-        elif "seqIndex" in df.columns:
-            id_col = "seqIndex"
-        else:
-            raise ValueError("ESM2 CSV must contain 'peptide_id' or 'seqIndex'")
-        emb_cols = [c for c in df.columns if c.startswith(esm_prefix)]
-        if not emb_cols:
-            raise ValueError(f"No embedding columns with prefix {esm_prefix!r}")
-        out = df[[id_col] + emb_cols].copy()
-        out["core_id"] = _normalize_core_id(out[id_col])
-        return out[["core_id"] + emb_cols], emb_cols
-
-    if esm2_amp_csv and esm2_decoy_csv:
-        amp_df = pd.read_csv(esm2_amp_csv)
-        decoy_df = pd.read_csv(esm2_decoy_csv)
-        for d in (amp_df, decoy_df):
-            if "seqIndex" not in d.columns:
-                raise ValueError("ESM2 AMP/DECOY CSVs must contain 'seqIndex'")
-        emb_cols = [c for c in amp_df.columns if c.startswith(esm_prefix)]
-        if not emb_cols:
-            raise ValueError(f"No embedding columns with prefix {esm_prefix!r}")
-        amp = amp_df[["seqIndex"] + emb_cols].copy()
-        decoy = decoy_df[["seqIndex"] + emb_cols].copy()
-        amp["core_id"] = _normalize_core_id(amp["seqIndex"])
-        decoy["core_id"] = _normalize_core_id(decoy["seqIndex"])
-        merged = pd.concat(
-            [amp[["core_id"] + emb_cols], decoy[["core_id"] + emb_cols]],
-            axis=0,
-            ignore_index=True,
-        )
-        return merged.drop_duplicates(subset=["core_id"]), emb_cols
-
-    return None, []
+    if not esm2_csv:
+        return None, []
+    df = pd.read_csv(esm2_csv)
+    if "peptide_id" in df.columns:
+        id_col = "peptide_id"
+    elif "seqIndex" in df.columns:
+        id_col = "seqIndex"
+    else:
+        raise ValueError("ESM2 CSV must contain 'peptide_id' or 'seqIndex'")
+    emb_cols = [c for c in df.columns if c.startswith(esm_prefix)]
+    if not emb_cols:
+        raise ValueError(f"No embedding columns with prefix {esm_prefix!r}")
+    out = df[[id_col] + emb_cols].copy()
+    out["core_id"] = _normalize_core_id(out[id_col])
+    return out[["core_id"] + emb_cols], emb_cols
 
 
 def load_merged_features(
     csv_path: Path,
     qsar_csv: Path,
     esm2_csv: str | None,
-    esm2_amp_csv: str | None,
-    esm2_decoy_csv: str | None,
     esm_prefix: str,
 ) -> tuple[pd.DataFrame, list[str], list[str]]:
     geo_df = pd.read_csv(csv_path)
@@ -128,9 +102,7 @@ def load_merged_features(
     merged_df = geo_df.merge(
         qsar_df[["peptide_id"] + QSAR_COLS], on="peptide_id", how="left"
     )
-    esm2_df, esm2_cols = _load_esm2_table(
-        esm2_csv, esm2_amp_csv, esm2_decoy_csv, esm_prefix
-    )
+    esm2_df, esm2_cols = _load_esm2_table(esm2_csv, esm_prefix)
     if esm2_df is not None:
         merged_df["core_id"] = _normalize_core_id(merged_df["peptide_id"])
         merged_df = merged_df.merge(esm2_df, on="core_id", how="left")
@@ -299,9 +271,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Plot Geo / QSAR / ESM2 raw value scale comparison.")
     ap.add_argument("--geo_csv", type=str, default=DEFAULT_GEO_CSV)
     ap.add_argument("--qsar_csv", type=str, default=DEFAULT_QSAR_CSV)
-    ap.add_argument("--esm2_csv", type=str, default=None, help="Single merged ESM2 table (optional)")
-    ap.add_argument("--esm2_amp_csv", type=str, default=DEFAULT_ESM2_AMP)
-    ap.add_argument("--esm2_decoy_csv", type=str, default=DEFAULT_ESM2_DECOY)
+    ap.add_argument(
+        "--esm2_csv",
+        type=str,
+        default=DEFAULT_ESM2_CSV,
+        help="Merged ESM2 table (peptide_id or seqIndex + embedding columns); ignored with --no_esm2",
+    )
     ap.add_argument("--no_esm2", action="store_true", help="Skip ESM2 merge (Geo + QSAR only)")
     ap.add_argument(
         "--esm_prefix",
@@ -317,19 +292,12 @@ def main() -> int:
 
     geo_path = (ROOT / args.geo_csv).resolve()
     qsar_path = (ROOT / args.qsar_csv).resolve()
-    esm2_csv = args.esm2_csv
-    esm_amp = None if args.no_esm2 else str((ROOT / args.esm2_amp_csv).resolve())
-    esm_decoy = None if args.no_esm2 else str((ROOT / args.esm2_decoy_csv).resolve())
-    if args.esm2_csv:
-        esm2_csv = str((ROOT / args.esm2_csv).resolve())
-        esm_amp = esm_decoy = None
+    esm2_path = None if args.no_esm2 else str((ROOT / args.esm2_csv).resolve())
 
     merged, qsar_cols, esm2_cols = load_merged_features(
         geo_path,
         qsar_path,
-        esm2_csv,
-        esm_amp,
-        esm_decoy,
+        esm2_path,
         args.esm_prefix,
     )
 
