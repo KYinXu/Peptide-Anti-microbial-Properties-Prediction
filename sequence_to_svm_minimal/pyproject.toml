@@ -12,4 +12,4 @@ license = { text = "Proprietary" }
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["peptide_pipeline*"]
+include = ["peptide_pipeline*", "proteome_candidate_generator*"]
