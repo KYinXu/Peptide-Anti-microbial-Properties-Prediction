@@ -1,4 +1,6 @@
 import argparse
+from pathlib import Path
+
 import pandas as pd
 import sys
 
@@ -120,7 +122,10 @@ def _filter_any_p_amp_over_threshold(df, prob_cols, threshold):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Print a compact summary of candidates above a probability threshold."
+        description=(
+            "Filter model comparison CSV rows above a P(AMP) threshold. "
+            "Prints a compact table; optionally writes all matching rows to a new CSV."
+        )
     )
     parser.add_argument("input_csv", help="Path to the comparison CSV file")
     parser.add_argument("--threshold", type=float, default=0.9, help="Probability threshold (default: 0.9)")
@@ -130,9 +135,21 @@ def main():
         help="Only include *_prob_AMP columns whose name contains this substring (default: empty = all models). Example: Geo for GNN/geo models only.",
     )
     parser.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        default=None,
+        help="Write all columns for matching rows to this CSV path.",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Do not print the formatted table (summary line still printed).",
+    )
+    parser.add_argument(
         "--include-sequence",
         action="store_true",
-        help="Include the sequence column (default: off, to reduce clutter).",
+        help="Include the sequence column in the printed table (default: off, to reduce clutter).",
     )
     parser.add_argument("--seq-max-len", type=int, default=36, help="Max characters for sequence column (default: 36)")
     parser.add_argument("--decimals", type=int, default=3, help="Decimal places for probabilities (default: 3)")
@@ -173,6 +190,11 @@ def main():
         print(f"  Models:  all  (columns ending with {SUFFIX_PROB})")
     print(f"  Filter:  any model P(AMP) (*{SUFFIX_PROB})  >  {args.threshold}")
     print(f"  Rows:    {len(filtered_df)}")
+    if args.output:
+        out_path = Path(args.output).expanduser().resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        filtered_df.to_csv(out_path, index=False)
+        print(f"  Wrote:   {out_path}")
     print()
 
     if filtered_df.empty:
@@ -180,14 +202,15 @@ def main():
         print()
         return
 
-    _format_table(
-        filtered_df,
-        summary_cols,
-        prob_cols=prob_cols,
-        seq_max_len=args.seq_max_len,
-        decimals=args.decimals,
-    )
-    print()
+    if not args.quiet:
+        _format_table(
+            filtered_df,
+            summary_cols,
+            prob_cols=prob_cols,
+            seq_max_len=args.seq_max_len,
+            decimals=args.decimals,
+        )
+        print()
 
 
 if __name__ == "__main__":
