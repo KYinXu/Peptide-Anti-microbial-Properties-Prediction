@@ -10,6 +10,7 @@ from pathlib import Path
 
 from proteome_candidate_generator.cleavage import ProteinCleavageSites
 from proteome_candidate_generator.fasta import ProteinRecord
+from proteome_candidate_generator.pddp_scoring import SequenceScorer
 from proteome_candidate_generator.progress import progress_iter
 
 HYDROPHOBIC_AA = frozenset("AILMFVPG")
@@ -32,6 +33,10 @@ class CandidatePeptide:
     left_cleavage_probability: float
     right_cleavage_probability: float
     predicted_cleavage_probability: float
+    pddp_score: float | None = None
+    score_threshold: float | None = None
+    passes_score_threshold: bool | None = None
+    passes_cationic_cterm: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -40,6 +45,9 @@ class CandidateStats:
     duplicate_sequences: int
     failed_filters: int
     retained: int
+    score_filtered: int = 0
+    overlap_removed: int = 0
+    cterm_filtered: int = 0
 
 
 def net_charge(sequence: str) -> int:
@@ -59,6 +67,10 @@ def hydrophobic_moment(sequence: str, *, angle_degrees: float = 100.0) -> float:
         x_total += value * math.cos(index * angle)
         y_total += value * math.sin(index * angle)
     return math.sqrt((x_total * x_total) + (y_total * y_total)) / len(sequence)
+
+
+def has_cationic_cterm(sequence: str, residues: str = "KRH") -> bool:
+    return bool(sequence) and sequence[-1] in set(residues.upper())
 
 
 def _boundaries(
@@ -95,6 +107,44 @@ def _iter_raw_candidates(
             if length < min_len:
                 continue
             yield start, end, record.sequence[start:end]
+
+
+def _base_candidate(
+    *,
+    sequence: str,
+    source_protein_id: str,
+    start: int,
+    end: int,
+    sites: ProteinCleavageSites,
+    rank_score: float,
+    pddp_score: float | None = None,
+    score_threshold: float | None = None,
+    passes_score_threshold: bool | None = None,
+    passes_cationic_cterm: bool | None = None,
+) -> CandidatePeptide:
+    charge = net_charge(sequence)
+    hydro = hydrophobicity(sequence)
+    left_prob = _boundary_probability(sites, start)
+    right_prob = _boundary_probability(sites, end)
+    return CandidatePeptide(
+        peptide_id="",
+        sequence=sequence,
+        source_protein_id=source_protein_id,
+        start=start,
+        end=end,
+        length=len(sequence),
+        net_charge=charge,
+        hydrophobicity=hydro,
+        hydrophobic_moment=hydrophobic_moment(sequence),
+        rank_score=rank_score,
+        left_cleavage_probability=left_prob,
+        right_cleavage_probability=right_prob,
+        predicted_cleavage_probability=min(left_prob, right_prob),
+        pddp_score=pddp_score,
+        score_threshold=score_threshold,
+        passes_score_threshold=passes_score_threshold,
+        passes_cationic_cterm=passes_cationic_cterm,
+    )
 
 
 def generate_candidates(
@@ -139,23 +189,13 @@ def generate_candidates(
                 failed_filters += 1
                 continue
             moment = hydrophobic_moment(sequence)
-            left_prob = _boundary_probability(sites, start)
-            right_prob = _boundary_probability(sites, end)
-            predicted_prob = min(left_prob, right_prob)
-            candidate = CandidatePeptide(
-                peptide_id="",
+            candidate = _base_candidate(
                 sequence=sequence,
                 source_protein_id=record.protein_id,
                 start=start,
                 end=end,
-                length=len(sequence),
-                net_charge=charge,
-                hydrophobicity=hydro,
-                hydrophobic_moment=moment,
+                sites=sites,
                 rank_score=charge * moment,
-                left_cleavage_probability=left_prob,
-                right_cleavage_probability=right_prob,
-                predicted_cleavage_probability=predicted_prob,
             )
             counter += 1
             if top_n is None:
@@ -177,6 +217,120 @@ def generate_candidates(
         retained=len(final),
     )
     return final, stats
+
+
+def generate_paper_candidates(
+    records: list[ProteinRecord],
+    sites_by_protein: dict[str, ProteinCleavageSites],
+    *,
+    min_len: int,
+    max_len: int,
+    scorer: SequenceScorer,
+    score_threshold: float,
+    require_cationic_cterm: bool,
+    cationic_cterm_residues: str,
+    include_terminal_boundaries: bool,
+    show_progress: bool = False,
+) -> tuple[list[CandidatePeptide], CandidateStats]:
+    retained: list[CandidatePeptide] = []
+    expanded = score_filtered = 0
+
+    record_iter = records
+    if show_progress:
+        record_iter = progress_iter(records, desc="Expanding and paper-scoring candidates", total=len(records))
+    for record in record_iter:
+        sites = sites_by_protein.get(record.protein_id)
+        if sites is None:
+            continue
+        for start, end, sequence in _iter_raw_candidates(
+            record,
+            sites,
+            min_len=min_len,
+            max_len=max_len,
+            include_terminal_boundaries=include_terminal_boundaries,
+        ):
+            expanded += 1
+            score = scorer.score_sequence(sequence)
+            if score <= score_threshold:
+                score_filtered += 1
+                continue
+            retained.append(
+                _base_candidate(
+                    sequence=sequence,
+                    source_protein_id=record.protein_id,
+                    start=start,
+                    end=end,
+                    sites=sites,
+                    rank_score=score,
+                    pddp_score=score,
+                    score_threshold=score_threshold,
+                    passes_score_threshold=True,
+                    passes_cationic_cterm=None,
+                )
+            )
+
+    non_overlapping, overlap_removed = _remove_overlapping_lower_scores(retained)
+    final_candidates = non_overlapping
+    cterm_filtered = 0
+    if require_cationic_cterm:
+        filtered: list[CandidatePeptide] = []
+        for candidate in final_candidates:
+            passed = has_cationic_cterm(candidate.sequence, cationic_cterm_residues)
+            candidate = _replace_candidate(candidate, passes_cationic_cterm=passed)
+            if passed:
+                filtered.append(candidate)
+            else:
+                cterm_filtered += 1
+        final_candidates = filtered
+    else:
+        final_candidates = [
+            _replace_candidate(candidate, passes_cationic_cterm=None)
+            for candidate in final_candidates
+        ]
+
+    final_candidates.sort(key=lambda row: (row.pddp_score or float("-inf")), reverse=True)
+    final = [_with_peptide_id(candidate, index + 1) for index, candidate in enumerate(final_candidates)]
+    stats = CandidateStats(
+        expanded=expanded,
+        duplicate_sequences=0,
+        failed_filters=score_filtered + cterm_filtered,
+        retained=len(final),
+        score_filtered=score_filtered,
+        overlap_removed=overlap_removed,
+        cterm_filtered=cterm_filtered,
+    )
+    return final, stats
+
+
+def _remove_overlapping_lower_scores(candidates: list[CandidatePeptide]) -> tuple[list[CandidatePeptide], int]:
+    selected: list[CandidatePeptide] = []
+    removed = 0
+    by_protein: dict[str, list[CandidatePeptide]] = {}
+    for candidate in candidates:
+        by_protein.setdefault(candidate.source_protein_id, []).append(candidate)
+    for protein_candidates in by_protein.values():
+        chosen: list[CandidatePeptide] = []
+        for candidate in sorted(
+            protein_candidates,
+            key=lambda row: (row.pddp_score or float("-inf"), row.predicted_cleavage_probability, row.length),
+            reverse=True,
+        ):
+            if any(_overlaps(candidate, existing) for existing in chosen):
+                removed += 1
+                continue
+            chosen.append(candidate)
+        selected.extend(chosen)
+    return selected, removed
+
+
+def _overlaps(left: CandidatePeptide, right: CandidatePeptide) -> bool:
+    return left.source_protein_id == right.source_protein_id and left.start < right.end and right.start < left.end
+
+
+def _replace_candidate(candidate: CandidatePeptide, **updates: object) -> CandidatePeptide:
+    values = asdict(candidate)
+    values.update(updates)
+    return CandidatePeptide(**values)
 
 
 def _with_peptide_id(candidate: CandidatePeptide, index: int) -> CandidatePeptide:

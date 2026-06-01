@@ -10,6 +10,7 @@ from pathlib import Path
 
 from proteome_candidate_generator.candidates import (
     generate_candidates,
+    generate_paper_candidates,
     write_candidates_table,
     write_pipeline_txt,
 )
@@ -20,9 +21,16 @@ from proteome_candidate_generator.cleavage import (
 )
 from proteome_candidate_generator.fasta import BatchFile, ProteinRecord, preprocess_fasta, read_valid_proteins
 from proteome_candidate_generator.pepsickle_runner import build_tasks, run_tasks
+from proteome_candidate_generator.pddp_scoring import (
+    compute_nonzero_mean_threshold,
+    is_mapp_database,
+    load_known_amp_sequences,
+    load_mapp_reference_scorer,
+    load_score_matrix,
+)
 
 DEFAULT_INPUT = Path("data/proteomes/uniprotkb_UP000005640_2026_05_13.fasta")
-DEFAULT_OUTPUT = Path("data/proteomes/generated")
+DEFAULT_OUTPUT = Path("data/proteomes")
 MODELS = ("constitutive", "immunoproteasome")
 
 
@@ -39,17 +47,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--pepsickle-bin", default="pepsickle")
+    parser.add_argument("--protocol", choices=["current", "paper_pddp"], default="current")
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--batch-size", type=int, default=1000)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--limit-proteins", type=int, default=None)
-    parser.add_argument("--min-len", type=int, default=8)
-    parser.add_argument("--max-len", type=int, default=30)
-    parser.add_argument("--min-charge", type=int, default=2)
-    parser.add_argument("--min-hydrophobicity", type=float, default=0.30)
-    parser.add_argument("--top-n", type=int, default=400000)
+    parser.add_argument("--min-len", type=int, default=None)
+    parser.add_argument("--max-len", type=int, default=None)
+    parser.add_argument("--min-charge", type=int, default=None)
+    parser.add_argument("--min-hydrophobicity", type=float, default=None)
+    parser.add_argument("--top-n", type=int, default=None)
+    parser.add_argument("--amp-score-matrix", type=Path, default=None)
+    parser.add_argument("--mapp-database", type=Path, default=None)
+    parser.add_argument("--known-amps", type=Path, nargs="*", default=None)
+    parser.add_argument("--amp-score-threshold", type=float, default=None)
+    parser.add_argument("--require-cationic-cterm", action="store_true")
+    parser.add_argument("--cationic-cterm-residues", default="KRH")
     parser.add_argument(
         "--no-terminal-boundaries",
         action="store_true",
@@ -67,11 +82,26 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        _apply_protocol_defaults(args)
         _validate_args(args)
         return _dispatch(args)
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
+
+
+def _apply_protocol_defaults(args: argparse.Namespace) -> None:
+    if args.protocol == "paper_pddp":
+        args.min_len = 10 if args.min_len is None else args.min_len
+        args.max_len = 50 if args.max_len is None else args.max_len
+        args.min_charge = 0 if args.min_charge is None else args.min_charge
+        args.min_hydrophobicity = 0.0 if args.min_hydrophobicity is None else args.min_hydrophobicity
+        return
+    args.min_len = 8 if args.min_len is None else args.min_len
+    args.max_len = 30 if args.max_len is None else args.max_len
+    args.min_charge = 2 if args.min_charge is None else args.min_charge
+    args.min_hydrophobicity = 0.30 if args.min_hydrophobicity is None else args.min_hydrophobicity
+    args.top_n = 400000 if args.top_n is None else args.top_n
 
 
 def _dispatch(args: argparse.Namespace) -> int:
@@ -101,6 +131,20 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--min-hydrophobicity must be between 0 and 1")
     if args.top_n is not None and args.top_n <= 0:
         raise ValueError("--top-n must be positive")
+    if args.protocol == "paper_pddp":
+        if args.amp_score_matrix is None and args.mapp_database is None:
+            raise ValueError("--protocol paper_pddp requires --amp-score-matrix or --mapp-database")
+        if args.amp_score_matrix is not None and args.mapp_database is not None:
+            raise ValueError("Use only one of --amp-score-matrix or --mapp-database")
+        if (
+            args.amp_score_matrix is not None
+            and not is_mapp_database(args.amp_score_matrix)
+            and args.amp_score_threshold is None
+            and not args.known_amps
+        ):
+            raise ValueError("--amp-score-matrix requires --known-amps or --amp-score-threshold")
+        if not args.cationic_cterm_residues:
+            raise ValueError("--cationic-cterm-residues cannot be empty")
     if str(args.pepsickle_bin).startswith("/path/to/"):
         raise ValueError(
             "--pepsickle-bin is still a placeholder. Activate the pepsickle "
@@ -109,7 +153,7 @@ def _validate_args(args: argparse.Namespace) -> None:
 
 
 def _layout(output_dir: Path) -> dict[str, Path]:
-    root = output_dir.resolve()
+    root = output_dir.resolve() / "generated"
     return {
         "root": root,
         "batches": root / "inputs" / "batches",
@@ -168,10 +212,23 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
         limit=args.limit_proteins,
         show_progress=not args.no_progress,
     )
-    output_paths = _pepsickle_output_paths(_discover_batches(paths["batches"]), paths["pepsickle"])
+    batches = _discover_batches(paths["batches"])
+    if not batches:
+        raise FileNotFoundError(
+            f"No batch FASTA files found under {paths['batches']}. "
+            "Run the `preprocess` step first, or run the full `all` command."
+        )
+    output_paths = _pepsickle_output_paths(batches, paths["pepsickle"])
+    if not output_paths:
+        raise FileNotFoundError(
+            f"No expected pepsickle outputs could be derived from batches under {paths['batches']}."
+        )
     missing = [path for path, _ in output_paths if not path.exists()]
     if missing:
-        raise FileNotFoundError(f"Missing pepsickle outputs; first missing file: {missing[0]}")
+        raise FileNotFoundError(
+            f"Missing pepsickle outputs under {paths['pepsickle']}; first missing file: {missing[0]}. "
+            "Run `run-pepsickle`, or run the full `all` command."
+        )
     lengths = {record.protein_id: len(record.sequence) for record in records}
     sites = load_union_from_outputs(
         output_paths,
@@ -180,17 +237,45 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
         show_progress=not args.no_progress,
     )
     write_sites_jsonl(sites, paths["sites"])
-    candidates, candidate_stats = generate_candidates(
-        records,
-        sites,
-        min_len=args.min_len,
-        max_len=args.max_len,
-        min_charge=args.min_charge,
-        min_hydrophobicity=args.min_hydrophobicity,
-        top_n=args.top_n,
-        include_terminal_boundaries=not args.no_terminal_boundaries,
-        show_progress=not args.no_progress,
-    )
+    scoring_metadata: dict[str, object] = {"protocol": args.protocol}
+    if args.protocol == "paper_pddp":
+        scorer, threshold, threshold_source, known_amp_count = _build_paper_scorer(args)
+        candidates, candidate_stats = generate_paper_candidates(
+            records,
+            sites,
+            min_len=args.min_len,
+            max_len=args.max_len,
+            scorer=scorer,
+            score_threshold=threshold,
+            require_cationic_cterm=args.require_cationic_cterm,
+            cationic_cterm_residues=args.cationic_cterm_residues,
+            include_terminal_boundaries=not args.no_terminal_boundaries,
+            show_progress=not args.no_progress,
+        )
+        scoring_metadata.update(
+            {
+                "amp_score_matrix": str(args.amp_score_matrix),
+                "mapp_database": str(args.mapp_database) if args.mapp_database else None,
+                "known_amps": [str(path) for path in (args.known_amps or [])],
+                "known_amp_count": known_amp_count,
+                "amp_score_threshold": threshold,
+                "amp_score_threshold_source": threshold_source,
+                "require_cationic_cterm": args.require_cationic_cterm,
+                "cationic_cterm_residues": args.cationic_cterm_residues,
+            }
+        )
+    else:
+        candidates, candidate_stats = generate_candidates(
+            records,
+            sites,
+            min_len=args.min_len,
+            max_len=args.max_len,
+            min_charge=args.min_charge,
+            min_hydrophobicity=args.min_hydrophobicity,
+            top_n=args.top_n,
+            include_terminal_boundaries=not args.no_terminal_boundaries,
+            show_progress=not args.no_progress,
+        )
     table_path = write_candidates_table(candidates, paths["final_table"], output_format=args.output_format)
     write_pipeline_txt(candidates, paths["final_txt"])
     _update_manifest(
@@ -198,6 +283,7 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
         {
             "input_stats": stats,
             "candidate_generation": asdict(candidate_stats),
+            "candidate_protocol": scoring_metadata,
             "outputs": {
                 "cleavage_sites": str(paths["sites"]),
                 "final_table": str(table_path),
@@ -206,6 +292,29 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
         },
     )
     print(f"Wrote {len(candidates)} final candidates to {table_path}")
+
+
+def _build_paper_scorer(args: argparse.Namespace):
+    if args.mapp_database is not None:
+        scorer = load_mapp_reference_scorer(args.mapp_database)
+        threshold = 0.0 if args.amp_score_threshold is None else args.amp_score_threshold
+        return scorer, threshold, "mapp_treatment_total", 0
+
+    if is_mapp_database(args.amp_score_matrix):
+        scorer = load_mapp_reference_scorer(args.amp_score_matrix)
+        threshold = 0.0 if args.amp_score_threshold is None else args.amp_score_threshold
+        return scorer, threshold, "mapp_treatment_total_from_amp_score_matrix_arg", 0
+
+    score_matrix = load_score_matrix(args.amp_score_matrix)
+    threshold = args.amp_score_threshold
+    threshold_source = "cli"
+    known_amp_count = 0
+    if threshold is None:
+        known_amp_sequences = load_known_amp_sequences(args.known_amps or [])
+        known_amp_count = len(known_amp_sequences)
+        threshold = compute_nonzero_mean_threshold(known_amp_sequences, score_matrix)
+        threshold_source = "known_amps_nonzero_mean"
+    return score_matrix, threshold, threshold_source, known_amp_count
 
 
 def _run_validate(args: argparse.Namespace) -> None:

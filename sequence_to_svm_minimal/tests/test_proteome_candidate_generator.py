@@ -13,17 +13,51 @@ if str(ROOT) not in sys.path:
 
 from proteome_candidate_generator.candidates import (
     generate_candidates,
+    generate_paper_candidates,
+    has_cationic_cterm,
     hydrophobicity,
     net_charge,
     write_candidates_csv,
     write_pipeline_txt,
 )
+from proteome_candidate_generator.cli import _layout
+from proteome_candidate_generator.cli import _build_paper_scorer
+from proteome_candidate_generator.cli import _run_build_candidates
 from proteome_candidate_generator.cleavage import parse_pepsickle_tsv, union_sites
 from proteome_candidate_generator.fasta import ProteinRecord, read_valid_proteins
+from proteome_candidate_generator.pddp_scoring import (
+    compute_nonzero_mean_threshold,
+    is_mapp_database,
+    load_known_amp_sequences,
+    load_mapp_reference_scorer,
+    load_score_matrix,
+)
 from proteome_candidate_generator.pepsickle_runner import BatchFile, build_task
 
 
 class TestProteomeCandidateGenerator(unittest.TestCase):
+    def test_layout_places_artifacts_under_generated_subdirectory(self) -> None:
+        paths = _layout(Path("data/proteomes/paper_pddp"))
+        self.assertEqual(paths["root"].name, "generated")
+        self.assertEqual(paths["root"].parent.name, "paper_pddp")
+        self.assertEqual(paths["final_txt"].name, "final_candidates.txt")
+
+    def test_build_candidates_requires_generated_batches(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fasta = root / "input.fasta"
+            fasta.write_text(">p1\nRRKAAAILLLGGDD\n", encoding="utf-8")
+
+            class Args:
+                input = fasta
+                output_dir = root / "run"
+                limit_proteins = None
+                no_progress = True
+                threshold = 0.5
+
+            with self.assertRaisesRegex(FileNotFoundError, "Run the `preprocess` step first"):
+                _run_build_candidates(Args())
+
     def test_pepsickle_command_omits_threshold_flag(self) -> None:
         task = build_task(
             BatchFile(index=1, path=Path("batch_00001.fasta"), n_records=1),
@@ -130,11 +164,107 @@ class TestProteomeCandidateGenerator(unittest.TestCase):
         self.assertIn("peptide_id,sequence,source_protein_id", csv_text)
         self.assertEqual(txt_text.strip(), "PEP_1 RRKAAAIL")
 
+    def test_paper_scoring_threshold_excludes_zero_scores(self) -> None:
+        matrix = _write_score_matrix({aa: 1.0 for aa in "ACDEFGHIKLMNPQRSTVWY"})
+        score_matrix = load_score_matrix(matrix)
+        with tempfile.TemporaryDirectory() as td:
+            known = Path(td) / "known.txt"
+            known.write_text("amp1 AAAAA\namp2 CCCCC\n", encoding="utf-8")
+            sequences = load_known_amp_sequences([known])
+        self.assertEqual(sequences, ["AAAAA", "CCCCC"])
+        self.assertEqual(compute_nonzero_mean_threshold(sequences, score_matrix), 5.0)
+
+    def test_paper_candidate_generation_score_overlap_and_cterm(self) -> None:
+        records = [ProteinRecord("p1", "MMMMMMMMMMAAAAAAAAAAKCCCCCCCCCCR")]
+        sites = union_sites(
+            [
+                parse_pepsickle_tsv(
+                    _write_tsv(
+                        "position\tresidue\tcleav_prob\tcleaved\tprotein_id\n"
+                        "10\tM\t0.9\tTrue\tp1\n"
+                        "20\tA\t0.9\tTrue\tp1\n"
+                        "32\tR\t0.9\tTrue\tp1\n"
+                    ),
+                    model_name="constitutive",
+                    threshold=0.5,
+                )
+            ],
+            {"p1": len(records[0].sequence)},
+        )
+        matrix = load_score_matrix(_write_score_matrix({"A": 1.0, "C": 2.0, "K": 3.0, "R": 4.0}))
+        candidates, stats = generate_paper_candidates(
+            records,
+            sites,
+            min_len=10,
+            max_len=50,
+            scorer=matrix,
+            score_threshold=10.0,
+            require_cationic_cterm=True,
+            cationic_cterm_residues="KR",
+            include_terminal_boundaries=False,
+        )
+        self.assertEqual(len(candidates), 1)
+        self.assertTrue(candidates[0].sequence.endswith("R"))
+        self.assertEqual(candidates[0].peptide_id, "PEP_1")
+        self.assertGreater(candidates[0].pddp_score, 10.0)
+        self.assertTrue(candidates[0].passes_cationic_cterm)
+        self.assertEqual(stats.score_filtered, 1)
+        self.assertEqual(stats.overlap_removed, 1)
+        self.assertEqual(stats.cterm_filtered, 0)
+        self.assertTrue(has_cationic_cterm("AAAAK", "KR"))
+
+    def test_mapp_database_can_score_exact_sequence_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            mapp = Path(td) / "MAPP_database.csv"
+            mapp.write_text(
+                "Sequence,Leading razor protein,Start position,End position,Gene names,Treatment\n"
+                "AAAAK,P1,1,5,GENE,Wt-alpha6:0;KO-alpha6:25;KO-iso:5\n"
+                "CCCCR,P2,1,5,GENE,Wt-alpha6:0;KO-alpha6:0;KO-iso:0\n",
+                encoding="utf-8",
+            )
+            scorer = load_mapp_reference_scorer(mapp)
+            self.assertTrue(is_mapp_database(mapp))
+        self.assertEqual(scorer.score_sequence("AAAAK"), 30.0)
+        self.assertEqual(scorer.score_sequence("CCCCR"), 0.0)
+        self.assertEqual(scorer.score_sequence("RRRRR"), 0.0)
+
+    def test_mapp_database_is_accepted_from_amp_score_matrix_argument(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            mapp = Path(td) / "MAPP_database.csv"
+            mapp.write_text(
+                "Sequence,Leading razor protein,Start position,End position,Gene names,Treatment\n"
+                "AAAAK,P1,1,5,GENE,Wt-alpha6:0;KO-alpha6:25;KO-iso:5\n",
+                encoding="utf-8",
+            )
+
+            class Args:
+                mapp_database = None
+                amp_score_matrix = mapp
+                amp_score_threshold = None
+                known_amps = None
+
+            scorer, threshold, source, known_count = _build_paper_scorer(Args())
+        self.assertEqual(scorer.score_sequence("AAAAK"), 30.0)
+        self.assertEqual(threshold, 0.0)
+        self.assertEqual(source, "mapp_treatment_total_from_amp_score_matrix_arg")
+        self.assertEqual(known_count, 0)
+
 
 def _write_tsv(text: str) -> Path:
     handle = tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False, encoding="utf-8")
     with handle:
         handle.write(text)
+    return Path(handle.name)
+
+
+def _write_score_matrix(overrides: dict[str, float]) -> Path:
+    handle = tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8")
+    aas = "ACDEFGHIKLMNPQRSTVWY"
+    with handle:
+        handle.write("position," + ",".join(aas) + "\n")
+        for pos in range(1, 11):
+            values = [str(overrides.get(aa, 0.0)) for aa in aas]
+            handle.write(f"{pos}," + ",".join(values) + "\n")
     return Path(handle.name)
 
 

@@ -4,6 +4,8 @@ Generate AMP-like peptide candidates from a proteome FASTA using pepsickle cleav
 
 This folder is intentionally separate from `peptide_pipeline/`. It creates a filtered sequence-only candidate set first, then hands the final subset to the existing feature/model pipeline.
 
+`--output-dir` is the parent run directory. All generated artifacts are written under `<output-dir>/generated/`, which is covered by the repository gitignore.
+
 ## Requirements
 
 Run commands from `sequence_to_svm_minimal`.
@@ -27,7 +29,7 @@ Without `pyarrow`, `--output-format auto` writes CSV.
 ```bash
 python -m proteome_candidate_generator \
   --input data/proteomes/uniprotkb_UP000005640_2026_05_13.fasta \
-  --output-dir data/proteomes/generated \
+  --output-dir data/proteomes \
   --top-n 400000 \
   --resume
 ```
@@ -43,6 +45,53 @@ The default command is `all`, which runs:
 7. Hydrophobic-moment ranking and top-N selection.
 8. Metadata and pipeline-compatible output writing.
 
+## Paper-Aligned PDDP Mode
+
+Use `--protocol paper_pddp` to follow the published PDDP-style selection flow more closely:
+
+1. Pepsickle cleavage prediction on the human proteome.
+2. Fragment expansion using 10-50 aa peptides.
+3. AMP activity contribution scoring from a supplied score matrix.
+4. Thresholding by the mean nonzero score of known AMPs, or by an explicit threshold.
+5. Removal of lower-scoring overlapping peptides per source protein.
+6. Optional cationic C-terminus filtering.
+
+The paper’s AMP scoring algorithm is data-driven, so this mode requires the amino-acid contribution score matrix used for that method. The matrix can be long format (`position,amino_acid,score`) or wide format (`position,A,C,D,...`). Known AMP files may be FASTA, TXT, CSV, or TSV; sequence columns named `sequence`, `seq`, or `peptide` are detected when present.
+
+```bash
+python -m proteome_candidate_generator all \
+  --protocol paper_pddp \
+  --input data/proteomes/uniprotkb_UP000005640_2026_05_13.fasta \
+  --output-dir data/proteomes/paper_pddp \
+  --amp-score-matrix data/proteomes/reference/amp_contribution_matrix.csv \
+  --known-amps data/proteomes/reference/known_amps.fasta \
+  --require-cationic-cterm \
+  --resume
+```
+
+If you already know the threshold (for example `5` from the paper), pass it directly:
+
+```bash
+python -m proteome_candidate_generator build-candidates \
+  --protocol paper_pddp \
+  --input data/proteomes/uniprotkb_UP000005640_2026_05_13.fasta \
+  --output-dir data/proteomes/paper_pddp \
+  --amp-score-matrix data/proteomes/reference/amp_contribution_matrix.csv \
+  --amp-score-threshold 5 \
+  --require-cationic-cterm
+```
+
+If `MAPP_database.csv` is the only paper-provided data available, use it directly as the experimental reference. This mode keeps exact sequence matches to the MAPP peptide list and uses the summed `Treatment` intensities as the score:
+
+```bash
+python -m proteome_candidate_generator build-candidates \
+  --protocol paper_pddp \
+  --input data/proteomes/uniprotkb_UP000005640_2026_05_13.fasta \
+  --output-dir data/proteomes/paper_pddp \
+  --mapp-database data/proteomes/MAPP_database.csv \
+  --require-cationic-cterm
+```
+
 ## Stage Commands
 
 Preprocess only:
@@ -50,7 +99,7 @@ Preprocess only:
 ```bash
 python -m proteome_candidate_generator preprocess \
   --input data/proteomes/uniprotkb_UP000005640_2026_05_13.fasta \
-  --output-dir data/proteomes/generated
+  --output-dir data/proteomes
 ```
 
 Run or resume pepsickle calls:
@@ -58,7 +107,7 @@ Run or resume pepsickle calls:
 ```bash
 python -m proteome_candidate_generator run-pepsickle \
   --input data/proteomes/uniprotkb_UP000005640_2026_05_13.fasta \
-  --output-dir data/proteomes/generated \
+  --output-dir data/proteomes \
   --workers 4 \
   --resume
 ```
@@ -68,7 +117,7 @@ Build candidates from existing pepsickle outputs:
 ```bash
 python -m proteome_candidate_generator build-candidates \
   --input data/proteomes/uniprotkb_UP000005640_2026_05_13.fasta \
-  --output-dir data/proteomes/generated \
+  --output-dir data/proteomes \
   --top-n 400000
 ```
 
@@ -77,7 +126,7 @@ Validate pepsickle on a tiny run:
 ```bash
 python -m proteome_candidate_generator validate \
   --input data/proteomes/uniprotkb_UP000005640_2026_05_13.fasta \
-  --output-dir data/proteomes/generated/validate \
+  --output-dir data/proteomes/validate \
   --limit-proteins 1 \
   --force
 ```
@@ -94,6 +143,13 @@ python -m proteome_candidate_generator validate \
 - `--min-charge 2`: minimum `count(R,K) - count(D,E)`.
 - `--min-hydrophobicity 0.30`: minimum fraction of `A,I,L,M,F,V,P,G`.
 - `--top-n 400000`: keep the highest-ranked peptides after hard filters.
+- `--protocol current|paper_pddp`: use the existing heuristic workflow or the paper-aligned PDDP workflow.
+- `--amp-score-matrix`: contribution score matrix required for `--protocol paper_pddp`.
+- `--mapp-database`: MAPP peptide spreadsheet with a `Sequence` column; used as an exact-match reference when no score matrix is available.
+- `--known-amps`: known AMP sequence files used to compute the nonzero mean score threshold.
+- `--amp-score-threshold`: explicit score threshold override for paper mode.
+- `--require-cationic-cterm`: require the C-terminal residue to be cationic in paper mode.
+- `--cationic-cterm-residues KRH`: residues considered cationic at the C-terminus.
 - `--no-terminal-boundaries`: do not add protein termini as fragment boundaries.
 - `--output-format auto|csv|parquet`: choose metadata table format.
 - `--no-progress`: disable progress bars/status messages for long-running stages.
@@ -102,7 +158,7 @@ Pepsickle constitutive and immunoproteasome runs are invoked as `-m in-vitro -p 
 
 ## Output Layout
 
-Default output directory:
+Default generated output directory:
 
 ```text
 data/proteomes/generated/
@@ -134,6 +190,10 @@ data/proteomes/generated/
 - `left_cleavage_probability`
 - `right_cleavage_probability`
 - `predicted_cleavage_probability`
+- `pddp_score`
+- `score_threshold`
+- `passes_score_threshold`
+- `passes_cationic_cterm`
 
 Coordinates are zero-based Python slice boundaries in the final table. Pepsickle `position` values are interpreted as 1-based residue positions and converted to boundaries between residues.
 
