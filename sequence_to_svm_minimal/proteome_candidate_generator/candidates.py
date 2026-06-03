@@ -229,6 +229,7 @@ def generate_paper_candidates(
     score_threshold: float,
     require_cationic_cterm: bool,
     cationic_cterm_residues: str,
+    overlap_policy: str,
     include_terminal_boundaries: bool,
     show_progress: bool = False,
 ) -> tuple[list[CandidatePeptide], CandidateStats]:
@@ -269,7 +270,7 @@ def generate_paper_candidates(
                 )
             )
 
-    non_overlapping, overlap_removed = _remove_overlapping_lower_scores(retained)
+    non_overlapping, overlap_removed = _apply_overlap_policy(retained, overlap_policy)
     final_candidates = non_overlapping
     cterm_filtered = 0
     if require_cationic_cterm:
@@ -302,7 +303,42 @@ def generate_paper_candidates(
     return final, stats
 
 
+def _apply_overlap_policy(candidates: list[CandidatePeptide], policy: str) -> tuple[list[CandidatePeptide], int]:
+    if policy == "keep_all":
+        return candidates, 0
+    if policy == "top_score":
+        return _remove_overlapping_candidates(
+            candidates,
+            sort_key=lambda row: (
+                row.pddp_score or float("-inf"),
+                row.predicted_cleavage_probability,
+                row.length,
+            ),
+        )
+    if policy == "longest":
+        return _remove_overlapping_candidates(
+            candidates,
+            sort_key=lambda row: (
+                row.length,
+                row.pddp_score or float("-inf"),
+                row.predicted_cleavage_probability,
+            ),
+        )
+    raise ValueError(f"Unknown overlap policy: {policy}")
+
+
 def _remove_overlapping_lower_scores(candidates: list[CandidatePeptide]) -> tuple[list[CandidatePeptide], int]:
+    return _remove_overlapping_candidates(
+        candidates,
+        sort_key=lambda row: (
+            row.pddp_score or float("-inf"),
+            row.predicted_cleavage_probability,
+            row.length,
+        ),
+    )
+
+
+def _remove_overlapping_candidates(candidates, *, sort_key) -> tuple[list[CandidatePeptide], int]:
     selected: list[CandidatePeptide] = []
     removed = 0
     by_protein: dict[str, list[CandidatePeptide]] = {}
@@ -312,7 +348,7 @@ def _remove_overlapping_lower_scores(candidates: list[CandidatePeptide]) -> tupl
         chosen: list[CandidatePeptide] = []
         for candidate in sorted(
             protein_candidates,
-            key=lambda row: (row.pddp_score or float("-inf"), row.predicted_cleavage_probability, row.length),
+            key=sort_key,
             reverse=True,
         ):
             if any(_overlaps(candidate, existing) for existing in chosen):

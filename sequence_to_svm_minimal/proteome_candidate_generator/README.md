@@ -150,6 +150,7 @@ python -m proteome_candidate_generator validate \
 - `--amp-score-threshold`: explicit score threshold override for paper mode.
 - `--require-cationic-cterm`: require the C-terminal residue to be cationic in paper mode.
 - `--cationic-cterm-residues KRH`: residues considered cationic at the C-terminus.
+- `--overlap-policy top_score|longest|keep_all`: choose how paper mode handles overlapping MAPP/score-positive peptides.
 - `--no-terminal-boundaries`: do not add protein termini as fragment boundaries.
 - `--output-format auto|csv|parquet`: choose metadata table format.
 - `--no-progress`: disable progress bars/status messages for long-running stages.

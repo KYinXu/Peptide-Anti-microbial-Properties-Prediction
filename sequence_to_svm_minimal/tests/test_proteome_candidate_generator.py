@@ -201,6 +201,7 @@ class TestProteomeCandidateGenerator(unittest.TestCase):
             score_threshold=10.0,
             require_cationic_cterm=True,
             cationic_cterm_residues="KR",
+            overlap_policy="top_score",
             include_terminal_boundaries=False,
         )
         self.assertEqual(len(candidates), 1)
@@ -212,6 +213,39 @@ class TestProteomeCandidateGenerator(unittest.TestCase):
         self.assertEqual(stats.overlap_removed, 1)
         self.assertEqual(stats.cterm_filtered, 0)
         self.assertTrue(has_cationic_cterm("AAAAK", "KR"))
+
+    def test_paper_candidate_generation_can_keep_all_overlaps(self) -> None:
+        records = [ProteinRecord("p1", "MMMMMMMMMMAAAAAAAAAAKCCCCCCCCCCR")]
+        sites = union_sites(
+            [
+                parse_pepsickle_tsv(
+                    _write_tsv(
+                        "position\tresidue\tcleav_prob\tcleaved\tprotein_id\n"
+                        "10\tM\t0.9\tTrue\tp1\n"
+                        "20\tA\t0.9\tTrue\tp1\n"
+                        "32\tR\t0.9\tTrue\tp1\n"
+                    ),
+                    model_name="constitutive",
+                    threshold=0.5,
+                )
+            ],
+            {"p1": len(records[0].sequence)},
+        )
+        matrix = load_score_matrix(_write_score_matrix({"A": 1.0, "C": 2.0, "K": 3.0, "R": 4.0}))
+        candidates, stats = generate_paper_candidates(
+            records,
+            sites,
+            min_len=10,
+            max_len=50,
+            scorer=matrix,
+            score_threshold=10.0,
+            require_cationic_cterm=False,
+            cationic_cterm_residues="KR",
+            overlap_policy="keep_all",
+            include_terminal_boundaries=False,
+        )
+        self.assertEqual(len(candidates), 2)
+        self.assertEqual(stats.overlap_removed, 0)
 
     def test_mapp_database_can_score_exact_sequence_matches(self) -> None:
         with tempfile.TemporaryDirectory() as td:

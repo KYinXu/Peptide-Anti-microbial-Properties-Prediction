@@ -66,6 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--require-cationic-cterm", action="store_true")
     parser.add_argument("--cationic-cterm-residues", default="KRH")
     parser.add_argument(
+        "--overlap-policy",
+        choices=["top_score", "longest", "keep_all"],
+        default="top_score",
+        help="How paper mode handles overlapping peptides from the same source protein.",
+    )
+    parser.add_argument(
         "--no-terminal-boundaries",
         action="store_true",
         help="Do not add protein N/C termini as candidate fragment boundaries.",
@@ -249,6 +255,7 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
             score_threshold=threshold,
             require_cationic_cterm=args.require_cationic_cterm,
             cationic_cterm_residues=args.cationic_cterm_residues,
+            overlap_policy=args.overlap_policy,
             include_terminal_boundaries=not args.no_terminal_boundaries,
             show_progress=not args.no_progress,
         )
@@ -262,6 +269,7 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
                 "amp_score_threshold_source": threshold_source,
                 "require_cationic_cterm": args.require_cationic_cterm,
                 "cationic_cterm_residues": args.cationic_cterm_residues,
+                "overlap_policy": args.overlap_policy,
             }
         )
     else:
@@ -371,3 +379,7 @@ def _update_manifest(path: Path, updates: dict[str, object]) -> None:
         data = {}
     data.update(updates)
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
