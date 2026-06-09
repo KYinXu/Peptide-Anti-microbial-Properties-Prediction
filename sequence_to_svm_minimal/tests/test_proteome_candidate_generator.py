@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+<<<<<<< HEAD
+=======
+import json
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
 import sys
 import tempfile
 import unittest
@@ -20,9 +24,21 @@ from proteome_candidate_generator.candidates import (
     write_candidates_csv,
     write_pipeline_txt,
 )
+<<<<<<< HEAD
 from proteome_candidate_generator.cli import _layout
 from proteome_candidate_generator.cli import _build_paper_scorer
 from proteome_candidate_generator.cli import _run_build_candidates
+=======
+from proteome_candidate_generator.cli import (
+    _apply_protocol_defaults,
+    _build_paper_scorer,
+    _layout,
+    _normalize_args,
+    _run_build_candidates,
+)
+from proteome_candidate_generator.config import parser_defaults
+from configs.load_config import flatten_pepsickle_config
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
 from proteome_candidate_generator.cleavage import parse_pepsickle_tsv, union_sites
 from proteome_candidate_generator.fasta import ProteinRecord, read_valid_proteins
 from proteome_candidate_generator.pddp_scoring import (
@@ -54,6 +70,30 @@ class TestProteomeCandidateGenerator(unittest.TestCase):
                 limit_proteins = None
                 no_progress = True
                 threshold = 0.5
+<<<<<<< HEAD
+=======
+                require_standard_aa_20 = True
+                cleavage_models = ("constitutive", "immunoproteasome")
+                protocol = "current"
+                min_len = 8
+                max_len = 30
+                min_charge = 2
+                min_hydrophobicity = 0.30
+                top_n = 400000
+                include_terminal_boundaries = True
+                dedupe_sequences = True
+                positive_charge_residues = "RK"
+                negative_charge_residues = "DE"
+                hydrophobic_residues = "AILMFVPG"
+                hydrophobic_moment_angle_degrees = 100.0
+                output_format = "auto"
+                require_cationic_cterm = False
+                cationic_cterm_residues = "KRH"
+                overlap_policy = "top_score"
+                amp_score_matrix = None
+                mapp_database = None
+                known_amps = None
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
 
             with self.assertRaisesRegex(FileNotFoundError, "Run the `preprocess` step first"):
                 _run_build_candidates(Args())
@@ -76,6 +116,101 @@ class TestProteomeCandidateGenerator(unittest.TestCase):
         self.assertEqual(records, [ProteinRecord("p1", "ACDE"), ProteinRecord("p3", "RRKK")])
         self.assertEqual(stats["skipped_invalid"], 1)
 
+<<<<<<< HEAD
+=======
+    def test_fasta_can_keep_nonstandard_residues_when_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "input.fasta"
+            path.write_text(">p1\nACXU\n", encoding="utf-8")
+            records, stats = read_valid_proteins(path, require_standard_aa_20=False)
+        self.assertEqual(records, [ProteinRecord("p1", "ACXU")])
+        self.assertEqual(stats["skipped_invalid"], 0)
+
+    def test_candidate_generation_can_keep_duplicate_sequences(self) -> None:
+        records = [
+            ProteinRecord("p1", "RRKAAAILLLGGDD"),
+            ProteinRecord("p2", "RRKAAAILLLGGEE"),
+        ]
+        groups = [
+            parse_pepsickle_tsv(
+                _write_tsv(
+                    "position\tresidue\tcleav_prob\tcleaved\tprotein_id\n"
+                    "8\tL\t0.90\tTrue\tp1\n"
+                    "8\tL\t0.95\tTrue\tp2\n"
+                ),
+                model_name="constitutive",
+                threshold=0.5,
+            )
+        ]
+        sites = union_sites(groups, {"p1": len(records[0].sequence), "p2": len(records[1].sequence)})
+        candidates, stats = generate_candidates(
+            records,
+            sites,
+            min_len=8,
+            max_len=8,
+            min_charge=2,
+            min_hydrophobicity=0.30,
+            top_n=10,
+            include_terminal_boundaries=True,
+            dedupe_sequences=False,
+        )
+        self.assertEqual(len(candidates), 2)
+        self.assertEqual(stats.duplicate_sequences, 0)
+
+    def test_pepsickle_config_flattens_sections(self) -> None:
+        flat = flatten_pepsickle_config(
+            {
+                "_documentation": "ignored",
+                "input": "a.fasta",
+                "preprocessing": {"batch_size": 500, "require_standard_aa_20": False},
+                "filtering": {"top_n": None, "min_charge": 0},
+            }
+        )
+        self.assertEqual(
+            flat,
+            {
+                "input": "a.fasta",
+                "batch_size": 500,
+                "require_standard_aa_20": False,
+                "top_n": None,
+                "min_charge": 0,
+            },
+        )
+
+    def test_parser_defaults_preserves_null_top_n(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "cfg.json"
+            cfg.write_text(
+                json.dumps({"filtering": {"top_n": None, "min_charge": 0}}),
+                encoding="utf-8",
+            )
+            defaults = parser_defaults([cfg])
+        self.assertIsNone(defaults["top_n"])
+        self.assertEqual(defaults["min_charge"], 0)
+
+    def test_parser_defaults_loads_length_and_charge_filters(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg = Path(td) / "cfg.json"
+            cfg.write_text(
+                json.dumps(
+                    {
+                        "filtering": {
+                            "min_len": 10,
+                            "max_len": 50,
+                            "min_charge": 0,
+                            "min_hydrophobicity": 0.0,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            defaults = parser_defaults([cfg])
+        self.assertEqual(defaults["min_len"], 10)
+        self.assertEqual(defaults["max_len"], 50)
+        self.assertEqual(defaults["min_charge"], 0)
+        self.assertEqual(defaults["min_hydrophobicity"], 0.0)
+
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
     def test_pepsickle_tsv_union_uses_max_probability(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             first = Path(td) / "const.tsv"
@@ -136,6 +271,40 @@ class TestProteomeCandidateGenerator(unittest.TestCase):
         self.assertGreater(candidates[0].rank_score, 0)
         self.assertEqual(stats.duplicate_sequences, 1)
 
+<<<<<<< HEAD
+=======
+    def test_dedupe_applies_only_after_filters_pass(self) -> None:
+        records = [
+            ProteinRecord("p1", "DDDDDDDDDDDDDDDD"),
+            ProteinRecord("p2", "RRKAAAILLLGGDD"),
+        ]
+        groups = [
+            parse_pepsickle_tsv(
+                _write_tsv(
+                    "position\tresidue\tcleav_prob\tcleaved\tprotein_id\n"
+                    "8\tL\t0.90\tTrue\tp1\n"
+                    "8\tL\t0.95\tTrue\tp2\n"
+                ),
+                model_name="constitutive",
+                threshold=0.5,
+            )
+        ]
+        sites = union_sites(groups, {"p1": len(records[0].sequence), "p2": len(records[1].sequence)})
+        candidates, stats = generate_candidates(
+            records,
+            sites,
+            min_len=8,
+            max_len=8,
+            min_charge=2,
+            min_hydrophobicity=0.30,
+            top_n=10,
+            include_terminal_boundaries=True,
+        )
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].source_protein_id, "p2")
+        self.assertEqual(stats.duplicate_sequences, 0)
+
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
     def test_metrics_and_output_formatting(self) -> None:
         self.assertEqual(net_charge("RRKDDEE"), -1)
         self.assertAlmostEqual(hydrophobicity("AILR"), 0.75)

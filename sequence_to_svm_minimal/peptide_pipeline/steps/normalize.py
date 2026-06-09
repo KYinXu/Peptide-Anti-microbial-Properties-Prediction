@@ -1,4 +1,4 @@
-"""Txt / FASTA → canonical SVM-style lines (ESMFold / ESM-2 compatible)."""
+"""Txt / FASTA / CSV -> canonical SVM-style lines (ESMFold / ESM-2 compatible)."""
 
 from __future__ import annotations
 
@@ -29,12 +29,13 @@ def normalize_to_canonical(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     suffix = input_path.suffix.lower()
+    input_format = "fasta" if suffix in (".fa", ".fasta", ".faa") else "csv" if suffix == ".csv" else "txt"
     stats = {
         "n_written": 0,
         "n_skipped_len": 0,
         "n_skipped_empty": 0,
         "n_skipped_invalid": 0,
-        "format": "fasta" if suffix in (".fa", ".fasta", ".faa") else "txt",
+        "format": input_format,
     }
 
     inv: dict = {}

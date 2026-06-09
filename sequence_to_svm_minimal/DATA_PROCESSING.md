@@ -11,7 +11,7 @@ Orchestrates the default **unlabeled** path in one command: normalize input → 
 - **Input:** `--input` path to a **txt** (one sequence per line, or `index sequence` / `id sequence` per line; `#` lines skipped) or **FASTA** (`.fa`/`.fasta`).
 - **Defaults:** clustering is **auto-enabled in `--mode train`** (can override with `--no-cluster`), and **off in `--mode blind`** (can override with `--with-cluster`). QSAR and ESM2 run unless `--skip-qsar` / `--skip-esm2`.
 - **Outputs (typical):** `inputs/canonical_seqs.txt`, `structures/` (PDBs + `results_log.csv`), `geometric_features.csv`, `qsar12_descriptors.csv`, `esm2_embeddings.csv` (with `peptide_id` added for merges). With `--with-cluster`: `geometric_features_clustered.csv` and QSAR built from that file.
-- **Optional:** `--with-svm` (+ `--svm-aaindex`, `--svm-model-pkl`, `--svm-scaler-csv`), `--train-legacy-gnn`, `--train-final-gnn` (invokes `run_gnn_train_final_models.py` with the workspace directory as the positional `GENERATED` argument). See `python scripts/run_data_pipeline.py --help`.
+- **Optional:** `--run-compare` (invokes `compare_model_predictions.py`; models from `configs/compare_models.json` / `--checkpoints-base`), `--train-legacy-gnn`, `--train-final-gnn`. See `python scripts/run_data_pipeline.py --help`.
 - **JSON presets:** `--config PATH` / `-c PATH` may be repeated (later files override earlier); CLI overrides merged JSON. Starter files live under `configs/` (`pipeline_defaults.json`, `windowed_20_35_stride1.json`, etc.).
 - **Run from** the `sequence_to_svm_minimal` directory.
 

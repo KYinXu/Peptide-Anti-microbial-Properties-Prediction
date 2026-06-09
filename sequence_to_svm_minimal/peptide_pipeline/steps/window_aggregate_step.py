@@ -21,7 +21,10 @@ def _safe_float(x: object) -> float:
 def step_window_aggregate(
     ctx: RunContext,
     cfg: RunConfig,
+<<<<<<< HEAD
     svm_preds: Path | None,
+=======
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
 ) -> None:
     if not cfg.uses_windowing():
         return
@@ -36,11 +39,14 @@ def step_window_aggregate(
 
     joined = df.copy()
 
+<<<<<<< HEAD
     if svm_preds is not None and svm_preds.is_file():
         svm = pd.read_csv(svm_preds)
         if "seqIndex" in svm.columns:
             joined = joined.merge(svm, on="seqIndex", how="left")
 
+=======
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
     comp = ctx.work_dir / "model_comparison_latest.csv"
     if comp.is_file():
         mc = pd.read_csv(comp)
@@ -56,6 +62,7 @@ def step_window_aggregate(
     for parent_id, g in joined.groupby("parent_id", sort=True):
         g2 = g.reset_index(drop=True)
         row: dict = {"parent_id": parent_id, "n_windows": int(len(g2))}
+<<<<<<< HEAD
         if "P(+1)" in g2.columns:
             s = pd.to_numeric(g2["P(+1)"], errors="coerce")
             arr = s.to_numpy(dtype=float)
@@ -68,6 +75,8 @@ def step_window_aggregate(
                 row["svm_top_start"] = int(g2.iloc[imax]["start"])
                 row["svm_top_length"] = int(g2.iloc[imax]["length"])
                 row["svm_top_sequence"] = str(g2.iloc[imax]["sequence"])
+=======
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
         prob_cols = [c for c in g2.columns if c.endswith("_prob_AMP")]
         for col in prob_cols:
             s = pd.to_numeric(g2[col], errors="coerce")

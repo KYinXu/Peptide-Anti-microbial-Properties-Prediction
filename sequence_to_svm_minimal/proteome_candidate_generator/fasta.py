@@ -31,11 +31,19 @@ class PreprocessResult:
     stats: dict[str, int]
 
 
+<<<<<<< HEAD
 def canonical_standard_sequence(seq: str) -> str | None:
     clean = seq.replace(" ", "").replace("\t", "").upper()
     if not clean:
         return None
     if any(aa not in STANDARD_AA_20 for aa in clean):
+=======
+def canonical_standard_sequence(seq: str, *, require_standard_aa_20: bool = True) -> str | None:
+    clean = seq.replace(" ", "").replace("\t", "").upper()
+    if not clean:
+        return None
+    if require_standard_aa_20 and any(aa not in STANDARD_AA_20 for aa in clean):
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
         return None
     return clean
 
@@ -64,6 +72,10 @@ def read_valid_proteins(
     path: Path,
     *,
     limit: int | None = None,
+<<<<<<< HEAD
+=======
+    require_standard_aa_20: bool = True,
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
     show_progress: bool = False,
 ) -> tuple[list[ProteinRecord], dict[str, int]]:
     records: list[ProteinRecord] = []
@@ -75,7 +87,11 @@ def read_valid_proteins(
         if limit is not None and stats["total"] >= limit:
             break
         stats["total"] += 1
+<<<<<<< HEAD
         sequence = canonical_standard_sequence(raw.sequence)
+=======
+        sequence = canonical_standard_sequence(raw.sequence, require_standard_aa_20=require_standard_aa_20)
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
         if sequence is None:
             stats["skipped_invalid"] += 1
             continue
@@ -113,9 +129,21 @@ def preprocess_fasta(
     *,
     batch_size: int,
     limit: int | None = None,
+<<<<<<< HEAD
     show_progress: bool = False,
 ) -> PreprocessResult:
     records, stats = read_valid_proteins(input_path, limit=limit, show_progress=show_progress)
+=======
+    require_standard_aa_20: bool = True,
+    show_progress: bool = False,
+) -> PreprocessResult:
+    records, stats = read_valid_proteins(
+        input_path,
+        limit=limit,
+        require_standard_aa_20=require_standard_aa_20,
+        show_progress=show_progress,
+    )
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
     batches = write_batches(records, batches_dir, batch_size=batch_size)
     stats["batches"] = len(batches)
     return PreprocessResult(records=records, batches=batches, stats=stats)

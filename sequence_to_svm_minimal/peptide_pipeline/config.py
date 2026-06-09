@@ -32,11 +32,18 @@ class RunConfig:
     cluster_run_cdhit: bool = False
     cdhit_path: str = "cd-hit"
     cdhit_identity: float = 0.40
+<<<<<<< HEAD
     with_svm: bool = False
     svm_aaindex: str | None = None
     svm_model_pkl: str | None = None
     svm_scaler_csv: str | None = None
     svm_output_dir: str | None = None
+=======
+    features_only: bool = False
+    run_compare: bool = False
+    checkpoints_base: str | None = None
+    compare_models: str = "all"
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
     esm2_device: str | None = None
     esm2_max_length: int = 400
     train_legacy_gnn: bool = False
@@ -75,6 +82,13 @@ class RunConfig:
         amp_in = getattr(args, "amp_input", None)
         decoy_in = getattr(args, "decoy_input", None)
         inp = getattr(args, "input", None)
+<<<<<<< HEAD
+=======
+        positional_in = getattr(args, "input_positional", None)
+        if inp and positional_in:
+            raise ValueError("Use either positional input or --input, not both")
+        inp = inp or positional_in
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
 
         if raw_mode is None:
             if amp_in or decoy_in:
@@ -132,11 +146,18 @@ class RunConfig:
             cluster_run_cdhit=args.cluster_run_cdhit,
             cdhit_path=args.cdhit_path,
             cdhit_identity=args.cdhit_identity,
+<<<<<<< HEAD
             with_svm=args.with_svm,
             svm_aaindex=args.svm_aaindex,
             svm_model_pkl=args.svm_model_pkl,
             svm_scaler_csv=args.svm_scaler_csv,
             svm_output_dir=args.svm_output_dir,
+=======
+            features_only=bool(getattr(args, "features_only", False)),
+            run_compare=bool(getattr(args, "run_compare", False)),
+            checkpoints_base=getattr(args, "checkpoints_base", None),
+            compare_models=str(getattr(args, "compare_models", "all")),
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
             esm2_device=args.esm2_device,
             esm2_max_length=args.esm2_max_length,
             train_legacy_gnn=args.train_legacy_gnn,

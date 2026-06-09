@@ -123,6 +123,14 @@ def load_input(path: Path) -> Tuple[List[str], List[str]]:
             part = line.split('\t', 1)
             ids.append(part[0].strip())
             seqs.append(part[1].strip())
+        elif ' ' in line:
+            part = line.split(None, 1)
+            if len(part) == 2 and part[1] and all(c.isalpha() for c in part[1].upper() if c.isalpha()):
+                ids.append(part[0].strip())
+                seqs.append(part[1].strip())
+            else:
+                ids.append(f"seq_{i+1}")
+                seqs.append(line)
         else:
             ids.append(f"seq_{i+1}")
             seqs.append(line)

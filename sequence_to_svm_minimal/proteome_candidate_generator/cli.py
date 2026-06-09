@@ -17,10 +17,19 @@ from proteome_candidate_generator.candidates import (
 from proteome_candidate_generator.cleavage import (
     inspect_pepsickle_schema,
     load_union_from_outputs,
+<<<<<<< HEAD
     write_sites_jsonl,
 )
 from proteome_candidate_generator.fasta import BatchFile, ProteinRecord, preprocess_fasta, read_valid_proteins
 from proteome_candidate_generator.pepsickle_runner import build_tasks, run_tasks
+=======
+    read_sites_jsonl,
+    write_sites_jsonl,
+)
+from proteome_candidate_generator.fasta import BatchFile, ProteinRecord, preprocess_fasta, read_valid_proteins
+from proteome_candidate_generator.config import ResidueMetrics, parser_defaults
+from proteome_candidate_generator.pepsickle_runner import PROTEASOME_MODELS, build_tasks, run_tasks
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
 from proteome_candidate_generator.pddp_scoring import (
     compute_nonzero_mean_threshold,
     is_mapp_database,
@@ -31,12 +40,24 @@ from proteome_candidate_generator.pddp_scoring import (
 
 DEFAULT_INPUT = Path("data/proteomes/uniprotkb_UP000005640_2026_05_13.fasta")
 DEFAULT_OUTPUT = Path("data/proteomes")
+<<<<<<< HEAD
 MODELS = ("constitutive", "immunoproteasome")
+=======
+DEFAULT_CLEAVAGE_MODELS = ("constitutive", "immunoproteasome")
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate AMP-like peptides from proteome pepsickle cleavage predictions.",
+<<<<<<< HEAD
+=======
+        epilog=(
+            "JSON presets: use `--config PATH` / `-c PATH` before other flags (repeatable; later files override). "
+            "CLI flags override merged JSON. See configs/pepsickle_pipeline.json."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
     )
     parser.add_argument(
         "command",
@@ -54,11 +75,67 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--limit-proteins", type=int, default=None)
+<<<<<<< HEAD
     parser.add_argument("--min-len", type=int, default=None)
     parser.add_argument("--max-len", type=int, default=None)
     parser.add_argument("--min-charge", type=int, default=None)
     parser.add_argument("--min-hydrophobicity", type=float, default=None)
     parser.add_argument("--top-n", type=int, default=None)
+=======
+    parser.add_argument(
+        "--require-standard-aa-20",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Skip FASTA records containing non-standard amino acids (default: true).",
+    )
+    parser.add_argument(
+        "--min-len",
+        type=int,
+        default=None,
+        help="Minimum peptide length (aa). Omit or null = protocol default (current: 8, paper_pddp: 10).",
+    )
+    parser.add_argument(
+        "--max-len",
+        type=int,
+        default=None,
+        help="Maximum peptide length (aa). Omit or null = protocol default (current: 30, paper_pddp: 50).",
+    )
+    parser.add_argument(
+        "--min-charge",
+        type=int,
+        default=None,
+        help="Minimum net charge (R+K minus D+E). Omit or null = protocol default (current: 2, paper_pddp: 0).",
+    )
+    parser.add_argument(
+        "--min-hydrophobicity",
+        type=float,
+        default=None,
+        help="Minimum hydrophobic residue fraction. Omit or null = protocol default (current: 0.30, paper_pddp: 0.0).",
+    )
+    parser.add_argument(
+        "--top-n",
+        type=int,
+        default=None,
+        help="Keep only the top N peptides by rank score after filtering. Omit or null = keep all.",
+    )
+    parser.add_argument(
+        "--dedupe-sequences",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Keep one copy of each unique peptide sequence (default: true).",
+    )
+    parser.add_argument(
+        "--cleavage-models",
+        nargs="+",
+        choices=tuple(PROTEASOME_MODELS),
+        default=list(DEFAULT_CLEAVAGE_MODELS),
+        help="Pepsickle proteasome models to run and union (default: constitutive immunoproteasome).",
+    )
+    parser.add_argument("--positive-charge-residues", default="RK")
+    parser.add_argument("--negative-charge-residues", default="DE")
+    parser.add_argument("--hydrophobic-residues", default="AILMFVPG")
+    parser.add_argument("--hydrophobic-moment-angle-degrees", type=float, default=100.0)
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
     parser.add_argument("--amp-score-matrix", type=Path, default=None)
     parser.add_argument("--mapp-database", type=Path, default=None)
     parser.add_argument("--known-amps", type=Path, nargs="*", default=None)
@@ -72,9 +149,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="How paper mode handles overlapping peptides from the same source protein.",
     )
     parser.add_argument(
+<<<<<<< HEAD
         "--no-terminal-boundaries",
         action="store_true",
         help="Do not add protein N/C termini as candidate fragment boundaries.",
+=======
+        "--include-terminal-boundaries",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Add protein N/C termini as candidate fragment boundaries (default: true).",
+    )
+    parser.add_argument(
+        "--no-terminal-boundaries",
+        action="store_true",
+        help="Deprecated alias for --no-include-terminal-boundaries.",
+    )
+    parser.add_argument(
+        "--reuse-cleavage-sites",
+        action="store_true",
+        help="Skip pepsickle TSV parsing when generated/cleavage_sites.jsonl already exists.",
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
     )
     parser.add_argument("--output-format", choices=["auto", "csv", "parquet"], default="auto")
     parser.add_argument(
@@ -86,8 +180,28 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+<<<<<<< HEAD
     args = build_parser().parse_args(argv)
     try:
+=======
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument(
+        "--config",
+        "-c",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="JSON defaults (repeatable; later files override earlier).",
+    )
+    pre_args, rest = pre.parse_known_args(argv)
+    parser = build_parser()
+    defaults = parser_defaults(pre_args.config)
+    if defaults:
+        parser.set_defaults(**defaults)
+    args = parser.parse_args(rest)
+    try:
+        _normalize_args(args)
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
         _apply_protocol_defaults(args)
         _validate_args(args)
         return _dispatch(args)
@@ -96,6 +210,24 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
+<<<<<<< HEAD
+=======
+def _normalize_args(args: argparse.Namespace) -> None:
+    if getattr(args, "no_terminal_boundaries", False):
+        args.include_terminal_boundaries = False
+    elif not hasattr(args, "include_terminal_boundaries") or args.include_terminal_boundaries is None:
+        args.include_terminal_boundaries = True
+    if isinstance(args.cleavage_models, list):
+        args.cleavage_models = tuple(args.cleavage_models)
+    if not args.positive_charge_residues:
+        raise ValueError("--positive-charge-residues cannot be empty")
+    if not args.negative_charge_residues:
+        raise ValueError("--negative-charge-residues cannot be empty")
+    if not args.hydrophobic_residues:
+        raise ValueError("--hydrophobic-residues cannot be empty")
+
+
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
 def _apply_protocol_defaults(args: argparse.Namespace) -> None:
     if args.protocol == "paper_pddp":
         args.min_len = 10 if args.min_len is None else args.min_len
@@ -107,7 +239,10 @@ def _apply_protocol_defaults(args: argparse.Namespace) -> None:
     args.max_len = 30 if args.max_len is None else args.max_len
     args.min_charge = 2 if args.min_charge is None else args.min_charge
     args.min_hydrophobicity = 0.30 if args.min_hydrophobicity is None else args.min_hydrophobicity
+<<<<<<< HEAD
     args.top_n = 400000 if args.top_n is None else args.top_n
+=======
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
 
 
 def _dispatch(args: argparse.Namespace) -> int:
@@ -135,8 +270,17 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--min-len must be positive and <= --max-len")
     if args.min_hydrophobicity < 0 or args.min_hydrophobicity > 1:
         raise ValueError("--min-hydrophobicity must be between 0 and 1")
+<<<<<<< HEAD
     if args.top_n is not None and args.top_n <= 0:
         raise ValueError("--top-n must be positive")
+=======
+    if args.hydrophobic_moment_angle_degrees <= 0:
+        raise ValueError("--hydrophobic-moment-angle-degrees must be positive")
+    if args.top_n is not None and args.top_n <= 0:
+        raise ValueError("--top-n must be positive")
+    if not args.cleavage_models:
+        raise ValueError("--cleavage-models must list at least one model")
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
     if args.protocol == "paper_pddp":
         if args.amp_score_matrix is None and args.mapp_database is None:
             raise ValueError("--protocol paper_pddp requires --amp-score-matrix or --mapp-database")
@@ -178,6 +322,10 @@ def _run_preprocess(args: argparse.Namespace) -> tuple[list[ProteinRecord], list
         paths["batches"],
         batch_size=args.batch_size,
         limit=args.limit_proteins,
+<<<<<<< HEAD
+=======
+        require_standard_aa_20=args.require_standard_aa_20,
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
         show_progress=not args.no_progress,
     )
     _update_manifest(paths["manifest"], {"preprocessing": result.stats, "input": str(args.input)})
@@ -190,7 +338,17 @@ def _run_pepsickle(args: argparse.Namespace) -> None:
     batches = _discover_batches(paths["batches"])
     if not batches:
         raise FileNotFoundError(f"No batch FASTA files found under {paths['batches']}")
+<<<<<<< HEAD
     tasks = build_tasks(batches, paths["pepsickle"], pepsickle_bin=args.pepsickle_bin, threshold=args.threshold)
+=======
+    tasks = build_tasks(
+        batches,
+        paths["pepsickle"],
+        pepsickle_bin=args.pepsickle_bin,
+        threshold=args.threshold,
+        model_names=args.cleavage_models,
+    )
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
     print(f"Running {len(tasks)} pepsickle task(s) with {args.workers} worker(s).", flush=True)
     results = run_tasks(
         tasks,
@@ -216,6 +374,10 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
     records, stats = read_valid_proteins(
         args.input,
         limit=args.limit_proteins,
+<<<<<<< HEAD
+=======
+        require_standard_aa_20=args.require_standard_aa_20,
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
         show_progress=not args.no_progress,
     )
     batches = _discover_batches(paths["batches"])
@@ -224,7 +386,11 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
             f"No batch FASTA files found under {paths['batches']}. "
             "Run the `preprocess` step first, or run the full `all` command."
         )
+<<<<<<< HEAD
     output_paths = _pepsickle_output_paths(batches, paths["pepsickle"])
+=======
+    output_paths = _pepsickle_output_paths(batches, paths["pepsickle"], args.cleavage_models)
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
     if not output_paths:
         raise FileNotFoundError(
             f"No expected pepsickle outputs could be derived from batches under {paths['batches']}."
@@ -236,6 +402,7 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
             "Run `run-pepsickle`, or run the full `all` command."
         )
     lengths = {record.protein_id: len(record.sequence) for record in records}
+<<<<<<< HEAD
     sites = load_union_from_outputs(
         output_paths,
         lengths=lengths,
@@ -244,6 +411,21 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
     )
     write_sites_jsonl(sites, paths["sites"])
     scoring_metadata: dict[str, object] = {"protocol": args.protocol}
+=======
+    if args.reuse_cleavage_sites and paths["sites"].exists():
+        print(f"Reusing cleavage sites from {paths['sites']}", flush=True)
+        sites = read_sites_jsonl(paths["sites"], lengths=lengths)
+    else:
+        sites = load_union_from_outputs(
+            output_paths,
+            lengths=lengths,
+            threshold=args.threshold,
+            show_progress=not args.no_progress,
+        )
+        write_sites_jsonl(sites, paths["sites"])
+    scoring_metadata: dict[str, object] = {"protocol": args.protocol}
+    residue_metrics = ResidueMetrics.from_args(args)
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
     if args.protocol == "paper_pddp":
         scorer, threshold, threshold_source, known_amp_count = _build_paper_scorer(args)
         candidates, candidate_stats = generate_paper_candidates(
@@ -256,7 +438,12 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
             require_cationic_cterm=args.require_cationic_cterm,
             cationic_cterm_residues=args.cationic_cterm_residues,
             overlap_policy=args.overlap_policy,
+<<<<<<< HEAD
             include_terminal_boundaries=not args.no_terminal_boundaries,
+=======
+            include_terminal_boundaries=args.include_terminal_boundaries,
+            residue_metrics=residue_metrics,
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
             show_progress=not args.no_progress,
         )
         scoring_metadata.update(
@@ -281,7 +468,13 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
             min_charge=args.min_charge,
             min_hydrophobicity=args.min_hydrophobicity,
             top_n=args.top_n,
+<<<<<<< HEAD
             include_terminal_boundaries=not args.no_terminal_boundaries,
+=======
+            include_terminal_boundaries=args.include_terminal_boundaries,
+            dedupe_sequences=args.dedupe_sequences,
+            residue_metrics=residue_metrics,
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
             show_progress=not args.no_progress,
         )
     table_path = write_candidates_table(candidates, paths["final_table"], output_format=args.output_format)
@@ -330,7 +523,15 @@ def _run_validate(args: argparse.Namespace) -> None:
     _run_preprocess(args)
     _run_pepsickle(args)
     paths = _layout(args.output_dir)
+<<<<<<< HEAD
     outputs = _pepsickle_output_paths(_discover_batches(paths["batches"]), paths["pepsickle"])
+=======
+    outputs = _pepsickle_output_paths(
+        _discover_batches(paths["batches"]),
+        paths["pepsickle"],
+        args.cleavage_models,
+    )
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
     if not outputs:
         raise RuntimeError("No pepsickle outputs were produced")
     schema = inspect_pepsickle_schema(outputs[0][0])
@@ -352,11 +553,23 @@ def _count_fasta_records(path: Path) -> int:
         return sum(1 for line in handle if line.startswith(">"))
 
 
+<<<<<<< HEAD
 def _pepsickle_output_paths(batches: list[BatchFile], pepsickle_dir: Path) -> list[tuple[Path, str]]:
     return [
         (pepsickle_dir / f"{batch.path.stem}.{model}.tsv", model)
         for batch in batches
         for model in MODELS
+=======
+def _pepsickle_output_paths(
+    batches: list[BatchFile],
+    pepsickle_dir: Path,
+    model_names: tuple[str, ...],
+) -> list[tuple[Path, str]]:
+    return [
+        (pepsickle_dir / f"{batch.path.stem}.{model}.tsv", model)
+        for batch in batches
+        for model in model_names
+>>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
     ]
 
 

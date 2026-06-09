@@ -90,6 +90,44 @@ def resolve_path_keys(d: dict, keys: frozenset[str]) -> dict:
     return out
 
 
+def resolve_path_list(values: list[str]) -> list[str]:
+    root = repo_root()
+    return [resolve_path_str(item, root) if isinstance(item, str) else item for item in values]
+
+
+PEPSICKLE_CONFIG_SECTIONS = frozenset(
+    {
+        "preprocessing",
+        "pepsickle",
+        "fragment_expansion",
+        "filtering",
+        "paper_pddp",
+        "output",
+    }
+)
+
+
+def flatten_pepsickle_config(raw: dict) -> dict:
+    out: dict = {}
+    for key, value in raw.items():
+        if str(key).startswith("_"):
+            continue
+        if key in PEPSICKLE_CONFIG_SECTIONS and isinstance(value, dict):
+            out.update(value)
+        else:
+            out[key] = value
+    return out
+
+
+def merge_pepsickle_config_paths(paths: list[str | Path] | None) -> dict:
+    if not paths:
+        return {}
+    merged: dict = {}
+    for path in paths:
+        merged.update(flatten_pepsickle_config(load_json(path)))
+    return merged
+
+
 GNN_FINAL_PATH_KEYS = frozenset(
     {
         "csv_path",
@@ -211,3 +249,30 @@ def load_compare_models_config(config_path: str | None = None) -> dict:
     data = dict(raw)
     data.pop("_documentation", None)
     return resolve_path_keys(data, COMPARE_MODELS_PATH_KEYS)
+
+
+def _compare_models_overlay_dict(path: str | Path) -> dict:
+    raw = load_json(path)
+    data = {k: v for k, v in raw.items() if not str(k).startswith("_")}
+    path_vals = {k: data[k] for k in data if k in COMPARE_MODELS_PATH_KEYS}
+    out = resolve_path_keys(path_vals, COMPARE_MODELS_PATH_KEYS)
+    for k, v in data.items():
+        if k not in COMPARE_MODELS_PATH_KEYS:
+            out[k] = v
+    return out
+
+
+def load_compare_models_windowed_config(config_path: str | None = None) -> dict:
+    """
+    Defaults for ``compare_model_predictions_windowed.py``.
+
+    Starts from ``compare_models.json``, then applies ``compare_models_windowed.json``
+    when present, then an optional ``--config`` path (same layering as the pipeline).
+    """
+    cfg = load_compare_models_config(str(repo_root() / "configs/compare_models.json"))
+    overlay = repo_root() / "configs/compare_models_windowed.json"
+    if overlay.is_file():
+        cfg.update(_compare_models_overlay_dict(overlay))
+    if config_path:
+        cfg.update(_compare_models_overlay_dict(config_path))
+    return cfg

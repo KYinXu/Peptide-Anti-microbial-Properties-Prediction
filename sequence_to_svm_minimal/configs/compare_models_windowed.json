@@ -1,0 +1,5 @@
+{
+  "_documentation": "Optional overrides for compare_model_predictions_windowed.py. Model checkpoints, SVM paths, GNN architecture, and node_feature_groups inherit from compare_models.json unless listed here.",
+
+  "qsar_mode": "parent"
+}

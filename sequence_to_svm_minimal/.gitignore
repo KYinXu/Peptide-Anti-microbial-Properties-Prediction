@@ -27,6 +27,8 @@ models/checkpoints/*.pth
 data/mic_datasets/*.csv
 data/mic_datasets/*.tsv
 !data/mic_datasets/.gitkeep
+data/proteomes/original_paper/
+data/test/mass_spec/
 
 # ESMFold cache (can be regenerated)
 cache/esmfold_cache/*.pdb
