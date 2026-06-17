@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 import json
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 import sys
 import tempfile
 import unittest
@@ -25,6 +28,7 @@ from proteome_candidate_generator.candidates import (
     write_pipeline_txt,
 )
 <<<<<<< HEAD
+<<<<<<< HEAD
 from proteome_candidate_generator.cli import _layout
 from proteome_candidate_generator.cli import _build_paper_scorer
 from proteome_candidate_generator.cli import _run_build_candidates
@@ -39,6 +43,11 @@ from proteome_candidate_generator.cli import (
 from proteome_candidate_generator.config import parser_defaults
 from configs.load_config import flatten_pepsickle_config
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+from proteome_candidate_generator.cli import _layout
+from proteome_candidate_generator.cli import _build_paper_scorer
+from proteome_candidate_generator.cli import _run_build_candidates
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 from proteome_candidate_generator.cleavage import parse_pepsickle_tsv, union_sites
 from proteome_candidate_generator.fasta import ProteinRecord, read_valid_proteins
 from proteome_candidate_generator.pddp_scoring import (
@@ -71,6 +80,7 @@ class TestProteomeCandidateGenerator(unittest.TestCase):
                 no_progress = True
                 threshold = 0.5
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
                 require_standard_aa_20 = True
                 cleavage_models = ("constitutive", "immunoproteasome")
@@ -94,6 +104,8 @@ class TestProteomeCandidateGenerator(unittest.TestCase):
                 mapp_database = None
                 known_amps = None
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 
             with self.assertRaisesRegex(FileNotFoundError, "Run the `preprocess` step first"):
                 _run_build_candidates(Args())
@@ -116,6 +128,7 @@ class TestProteomeCandidateGenerator(unittest.TestCase):
         self.assertEqual(records, [ProteinRecord("p1", "ACDE"), ProteinRecord("p3", "RRKK")])
         self.assertEqual(stats["skipped_invalid"], 1)
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 =======
     def test_fasta_can_keep_nonstandard_residues_when_disabled(self) -> None:
@@ -211,6 +224,8 @@ class TestProteomeCandidateGenerator(unittest.TestCase):
         self.assertEqual(defaults["min_hydrophobicity"], 0.0)
 
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     def test_pepsickle_tsv_union_uses_max_probability(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             first = Path(td) / "const.tsv"
@@ -272,6 +287,7 @@ class TestProteomeCandidateGenerator(unittest.TestCase):
         self.assertEqual(stats.duplicate_sequences, 1)
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
     def test_dedupe_applies_only_after_filters_pass(self) -> None:
         records = [
@@ -305,6 +321,8 @@ class TestProteomeCandidateGenerator(unittest.TestCase):
         self.assertEqual(stats.duplicate_sequences, 0)
 
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     def test_metrics_and_output_formatting(self) -> None:
         self.assertEqual(net_charge("RRKDDEE"), -1)
         self.assertAlmostEqual(hydrophobicity("AILR"), 0.75)

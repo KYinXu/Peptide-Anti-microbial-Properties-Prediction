@@ -13,16 +13,22 @@ Example (from ``sequence_to_svm_minimal``)::
 
   python scripts/data_evaluation/compare_model_predictions_windowed.py path/to/generated \\
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
       --gnn-checkpoints-dir checkpoints/latest
 
   python scripts/data_evaluation/compare_model_predictions_windowed.py path/to/generated \\
       --max-windows 200 --gnn-checkpoints-dir checkpoints/latest
+<<<<<<< HEAD
 =======
       --checkpoints-base checkpoints/latest
 
 Model defaults inherit from ``configs/compare_models.json``; optional overrides in
 ``configs/compare_models_windowed.json``.
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 """
 from __future__ import annotations
 
@@ -41,10 +47,14 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 from configs.load_config import argv_without_config_flags, load_compare_models_config
 =======
 from configs.load_config import argv_without_config_flags, load_compare_models_windowed_config
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+from configs.load_config import argv_without_config_flags, load_compare_models_config
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 
 
 def _load_cmpred():
@@ -224,6 +234,9 @@ def _build_window_master(
 
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 def main() -> int:
     cfg_path, argv_rest = argv_without_config_flags(sys.argv[1:])
     cfg = load_compare_models_config(cfg_path)
@@ -231,6 +244,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description="GNN/SVM comparison on pipeline sliding windows (window_map.csv).",
         epilog="Run from sequence_to_svm_minimal. Requires inputs/window_map.csv in GENERATED.",
+<<<<<<< HEAD
 =======
 def _lookup_qsar_row(qsar_by_pid: pd.DataFrame, peptide_id: str, seq_index: int | None) -> pd.Series:
     keys = [str(peptide_id).strip()]
@@ -324,6 +338,8 @@ def main() -> int:
             "and --config PATH (later overrides earlier)."
         ),
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     )
     ap.add_argument(
         "generated",
@@ -349,6 +365,7 @@ def main() -> int:
     ap.add_argument("--gnn_pooling", type=str, default=cfg["gnn_pooling"])
     ap.add_argument("--batch_size", type=int, default=min(32, cfg.get("batch_size", 32)))
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
     ap.add_argument(
         "--compare-models",
@@ -358,16 +375,22 @@ def main() -> int:
         help="Which model families to run (default: all, or compare_models_windowed.json).",
     )
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     ap.add_argument("--max-windows", type=int, default=None, help="Process only the first N windows (debug)")
     ap.add_argument(
         "--qsar-mode",
         type=str,
         choices=["parent", "per-window"],
 <<<<<<< HEAD
+<<<<<<< HEAD
         default="parent",
 =======
         default=str(cfg.get("qsar_mode", "parent")),
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+        default="parent",
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
         help="parent: copy QSAR-12 from qsar12_descriptors by parent_id; per-window: recompute (slow)",
     )
     ap.add_argument("--no-gnn-platt", action="store_true")
@@ -385,16 +408,22 @@ def main() -> int:
         type=str,
         default=None,
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
         help="Optional descriptors.csv (e.g. svm_out/descriptors.csv) for QSAR-SVM block",
     )
     ap.add_argument("--svm_z_file", type=str, default=None)
     ap.add_argument("--svm_pkl", type=str, default=None)
+<<<<<<< HEAD
 =======
         help="QSAR descriptor CSV for SVM (default: generated/window_qsar12_descriptors.csv)",
     )
     ap.add_argument("--svm_z_file", type=str, default=cfg.get("svm_z_file"))
     ap.add_argument("--svm_pkl", type=str, default=cfg.get("svm_pkl"))
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 
     args = ap.parse_args(argv_rest)
 
@@ -407,6 +436,7 @@ def main() -> int:
         resolve_peptide_pdb_path,
     )
 <<<<<<< HEAD
+<<<<<<< HEAD
     from peptide_pipeline.manifest_paths import load_pipeline_manifest, resolve_generated_workspace
 =======
     from peptide_pipeline.manifest_paths import (
@@ -415,6 +445,9 @@ def main() -> int:
         resolve_generated_workspace,
     )
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+    from peptide_pipeline.manifest_paths import load_pipeline_manifest, resolve_generated_workspace
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 
     cmp = _load_cmpred()
 
@@ -441,6 +474,9 @@ def main() -> int:
         raise SystemExit("window_map.csv is empty.")
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     geo_path = Path(m["geometric_features"])
     qsar_path = Path(m["qsar12_descriptors"])
     pdb_dir = Path(m["structures_dir"])
@@ -449,6 +485,7 @@ def main() -> int:
         emb = Path(m["esm2_embeddings"])
         esm_dir = str((emb.parent / "esm2_per_residue").resolve())
     esm_dir = Path(esm_dir)
+<<<<<<< HEAD
 =======
     geo_key = m.get("geometric_features") or m.get("inference_samples")
     if not geo_key:
@@ -493,6 +530,8 @@ def main() -> int:
     run_svm = compare_models in ("all", "svm")
     run_gnn = compare_models in ("all", "gnn") and has_structures
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 
     geo_parent = pd.read_csv(geo_path)
     qsar_parent = pd.read_csv(qsar_path) if qsar_path.is_file() else pd.DataFrame()
@@ -501,12 +540,16 @@ def main() -> int:
         generated=str(ws),
         geo_csv=str(geo_path),
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
         pdb_dir=str(pdb_dir),
         qsar_csv=str(qsar_path) if qsar_path.is_file() else "",
         esm2_csv=str(Path(m["esm2_embeddings"])) if m.get("esm2_embeddings") else None,
         gnn_esm2_residue_dir=str(esm_dir),
         geometric_qsar_combined_csv=str(ws / "window_compare_geo_qsar_merged.csv"),
         svm_descriptor_csv=args.svm_descriptor_csv or "",
+<<<<<<< HEAD
 =======
         pdb_dir=str(pdb_dir) if pdb_dir is not None else "",
         qsar_csv=str(qsar_path) if qsar_path.is_file() else "",
@@ -517,6 +560,8 @@ def main() -> int:
         geometric_qsar_combined_csv=str(ws / "window_compare_geo_qsar_merged.csv"),
         svm_descriptor_csv="",
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
         svm_z_file=args.svm_z_file or "",
         svm_pkl=args.svm_pkl or "",
         architecture=args.architecture,
@@ -550,6 +595,9 @@ def main() -> int:
     print(f"Workspace: {ws}", flush=True)
     print(f"Windows: {len(wm)} rows in window_map.csv", flush=True)
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     with tempfile.TemporaryDirectory(prefix="win_geo_") as td:
         tmp_dir = Path(td)
         print("Building per-window tabular features (cropped PDB → Geo-20)…", flush=True)
@@ -567,6 +615,7 @@ def main() -> int:
             max_windows=args.max_windows,
             tmp_dir=tmp_dir,
         )
+<<<<<<< HEAD
 =======
 
     if features_only_ws or not run_gnn:
@@ -591,11 +640,14 @@ def main() -> int:
                 tmp_dir=tmp_dir,
             )
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 
     master_path = ws / "window_gnn_feature_master.csv"
     master.to_csv(master_path, index=False)
     print(f"Wrote {master_path} ({len(master)} rows)", flush=True)
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 =======
     window_qsar_path = ws / "window_qsar12_descriptors.csv"
@@ -611,6 +663,8 @@ def main() -> int:
         ns.svm_descriptor_csv = str(window_qsar_path.resolve())
 
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     gnn_master_path = Path(ns.geometric_qsar_combined_csv)
     master.to_csv(gnn_master_path, index=False)
 
@@ -635,6 +689,9 @@ def main() -> int:
     ]
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     for name, path, feat_mode in feature_models:
         if not path or not Path(path).exists():
             continue
@@ -671,6 +728,7 @@ def main() -> int:
 
     svm_seqindex_to_row: dict[str, int] | None = None
     if ns.svm_pkl and ns.svm_descriptor_csv and ns.svm_z_file:
+<<<<<<< HEAD
 =======
     if run_gnn:
         for name, path, feat_mode in feature_models:
@@ -710,6 +768,8 @@ def main() -> int:
     svm_id_to_row: dict[str, int] | None = None
     if run_svm and ns.svm_pkl and ns.svm_descriptor_csv and ns.svm_z_file:
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
         print("Running SVM…", flush=True)
         ids, preds, prob_amp, distance = cmp._load_svm_predictions(
             ns.svm_descriptor_csv, ns.svm_z_file, ns.svm_pkl
@@ -722,12 +782,18 @@ def main() -> int:
             "distance": distance,
         }
 <<<<<<< HEAD
+<<<<<<< HEAD
         svm_seqindex_to_row = {}
         for j, sid in enumerate(ids):
             svm_seqindex_to_row[str(sid).strip()] = j
 =======
         svm_id_to_row = {str(sid).strip(): j for j, sid in enumerate(ids)}
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+        svm_seqindex_to_row = {}
+        for j, sid in enumerate(ids):
+            svm_seqindex_to_row[str(sid).strip()] = j
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 
     if not results:
         print("No models ran (missing checkpoints or tabular columns).", flush=True)
@@ -736,6 +802,9 @@ def main() -> int:
     names = list(results.keys())
     score_z_by_model: dict[str, np.ndarray] = {}
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     for m in names:
         r = results[m]
         raw = cmp._raw_for_benchmark_z(m, r)
@@ -754,6 +823,7 @@ def main() -> int:
         else:
             z, _, _, _ = cmp._zscore_aligned_to_ids(canonical_ids, r["ids"], raw)
         score_z_by_model[m] = z
+<<<<<<< HEAD
 =======
     for mname in names:
         r = results[mname]
@@ -761,6 +831,8 @@ def main() -> int:
         z, _, _, _ = cmp._zscore_aligned_to_ids(canonical_ids, r["ids"], raw)
         score_z_by_model[mname] = z
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 
     out_rows: list[dict] = []
     for idx, pid in enumerate(canonical_ids):
@@ -777,6 +849,9 @@ def main() -> int:
         if "window_id" in master.columns:
             row["window_id"] = mr["window_id"]
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
         for m in names:
             r = results[m]
             i = None
@@ -811,6 +886,7 @@ def main() -> int:
                     row[f"{m}_logit_AMP"] = None
                     row[f"{m}_logit_nonAMP"] = None
                     row[f"{m}_logit_margin"] = None
+<<<<<<< HEAD
 =======
         seq_idx = int(mr["seqIndex"]) if "seqIndex" in master.columns else None
         for mname in names:
@@ -843,6 +919,8 @@ def main() -> int:
                     row[f"{mname}_logit_nonAMP"] = None
                     row[f"{mname}_logit_margin"] = None
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
         out_rows.append(row)
 
     out_df = pd.DataFrame(out_rows)

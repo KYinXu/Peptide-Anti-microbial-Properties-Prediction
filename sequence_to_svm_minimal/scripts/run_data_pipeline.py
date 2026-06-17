@@ -42,6 +42,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 <<<<<<< HEAD
+<<<<<<< HEAD
     ap.add_argument("--input", "-i", type=str, default=None, help="(blind) Txt-like sequences or FASTA")
     ap.add_argument("--amp-input", type=str, default=None, help="(train) AMP sequences (txt-like or FASTA)")
     ap.add_argument("--decoy-input", type=str, default=None, help="(train) Decoy sequences (txt-like or FASTA)")
@@ -51,6 +52,11 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--amp-input", type=str, default=None, help="(train) AMP sequences (TXT-like, FASTA, or CSV)")
     ap.add_argument("--decoy-input", type=str, default=None, help="(train) Decoy sequences (TXT-like, FASTA, or CSV)")
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+    ap.add_argument("--input", "-i", type=str, default=None, help="(blind) Txt-like sequences or FASTA")
+    ap.add_argument("--amp-input", type=str, default=None, help="(train) AMP sequences (txt-like or FASTA)")
+    ap.add_argument("--decoy-input", type=str, default=None, help="(train) Decoy sequences (txt-like or FASTA)")
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     ap.add_argument(
         "--work-dir",
         "-w",
@@ -98,11 +104,15 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--cdhit-identity", type=float, default=0.40)
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     ap.add_argument("--with-svm", action="store_true")
     ap.add_argument("--svm-aaindex", type=str, default=None)
     ap.add_argument("--svm-model-pkl", type=str, default=None)
     ap.add_argument("--svm-scaler-csv", type=str, default=None)
     ap.add_argument("--svm-output-dir", type=str, default=None, help="Default: work_dir/svm_out")
+<<<<<<< HEAD
 =======
     ap.add_argument(
         "--features-only",
@@ -141,6 +151,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Forwarded to compare_model_predictions (default: svm when using --features-only).",
     )
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 
     ap.add_argument("--esm2-device", type=str, choices=["cuda", "cpu"], default=None)
     ap.add_argument("--esm2-max-length", type=int, default=400)
@@ -239,11 +251,14 @@ def main() -> int:
             print("--window-min-len cannot be greater than --window-max-len.", file=sys.stderr)
             return 2
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
     if args.features_only and (args.train_legacy_gnn or args.train_final_gnn):
         print("--features-only cannot be combined with GNN training flags.", file=sys.stderr)
         return 2
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     cfg = RunConfig.from_args(args)
     return run_pipeline(cfg)
 

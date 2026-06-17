@@ -32,11 +32,15 @@ class PreprocessResult:
 
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 def canonical_standard_sequence(seq: str) -> str | None:
     clean = seq.replace(" ", "").replace("\t", "").upper()
     if not clean:
         return None
     if any(aa not in STANDARD_AA_20 for aa in clean):
+<<<<<<< HEAD
 =======
 def canonical_standard_sequence(seq: str, *, require_standard_aa_20: bool = True) -> str | None:
     clean = seq.replace(" ", "").replace("\t", "").upper()
@@ -44,6 +48,8 @@ def canonical_standard_sequence(seq: str, *, require_standard_aa_20: bool = True
         return None
     if require_standard_aa_20 and any(aa not in STANDARD_AA_20 for aa in clean):
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
         return None
     return clean
 
@@ -73,9 +79,12 @@ def read_valid_proteins(
     *,
     limit: int | None = None,
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
     require_standard_aa_20: bool = True,
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     show_progress: bool = False,
 ) -> tuple[list[ProteinRecord], dict[str, int]]:
     records: list[ProteinRecord] = []
@@ -88,10 +97,14 @@ def read_valid_proteins(
             break
         stats["total"] += 1
 <<<<<<< HEAD
+<<<<<<< HEAD
         sequence = canonical_standard_sequence(raw.sequence)
 =======
         sequence = canonical_standard_sequence(raw.sequence, require_standard_aa_20=require_standard_aa_20)
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+        sequence = canonical_standard_sequence(raw.sequence)
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
         if sequence is None:
             stats["skipped_invalid"] += 1
             continue
@@ -130,6 +143,7 @@ def preprocess_fasta(
     batch_size: int,
     limit: int | None = None,
 <<<<<<< HEAD
+<<<<<<< HEAD
     show_progress: bool = False,
 ) -> PreprocessResult:
     records, stats = read_valid_proteins(input_path, limit=limit, show_progress=show_progress)
@@ -144,6 +158,11 @@ def preprocess_fasta(
         show_progress=show_progress,
     )
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+    show_progress: bool = False,
+) -> PreprocessResult:
+    records, stats = read_valid_proteins(input_path, limit=limit, show_progress=show_progress)
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     batches = write_batches(records, batches_dir, batch_size=batch_size)
     stats["batches"] = len(batches)
     return PreprocessResult(records=records, batches=batches, stats=stats)

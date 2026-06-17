@@ -18,10 +18,14 @@ from proteome_candidate_generator.cleavage import (
     inspect_pepsickle_schema,
     load_union_from_outputs,
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     write_sites_jsonl,
 )
 from proteome_candidate_generator.fasta import BatchFile, ProteinRecord, preprocess_fasta, read_valid_proteins
 from proteome_candidate_generator.pepsickle_runner import build_tasks, run_tasks
+<<<<<<< HEAD
 =======
     read_sites_jsonl,
     write_sites_jsonl,
@@ -30,6 +34,8 @@ from proteome_candidate_generator.fasta import BatchFile, ProteinRecord, preproc
 from proteome_candidate_generator.config import ResidueMetrics, parser_defaults
 from proteome_candidate_generator.pepsickle_runner import PROTEASOME_MODELS, build_tasks, run_tasks
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 from proteome_candidate_generator.pddp_scoring import (
     compute_nonzero_mean_threshold,
     is_mapp_database,
@@ -41,15 +47,20 @@ from proteome_candidate_generator.pddp_scoring import (
 DEFAULT_INPUT = Path("data/proteomes/uniprotkb_UP000005640_2026_05_13.fasta")
 DEFAULT_OUTPUT = Path("data/proteomes")
 <<<<<<< HEAD
+<<<<<<< HEAD
 MODELS = ("constitutive", "immunoproteasome")
 =======
 DEFAULT_CLEAVAGE_MODELS = ("constitutive", "immunoproteasome")
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+MODELS = ("constitutive", "immunoproteasome")
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate AMP-like peptides from proteome pepsickle cleavage predictions.",
+<<<<<<< HEAD
 <<<<<<< HEAD
 =======
         epilog=(
@@ -58,6 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     )
     parser.add_argument(
         "command",
@@ -76,11 +89,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--limit-proteins", type=int, default=None)
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     parser.add_argument("--min-len", type=int, default=None)
     parser.add_argument("--max-len", type=int, default=None)
     parser.add_argument("--min-charge", type=int, default=None)
     parser.add_argument("--min-hydrophobicity", type=float, default=None)
     parser.add_argument("--top-n", type=int, default=None)
+<<<<<<< HEAD
 =======
     parser.add_argument(
         "--require-standard-aa-20",
@@ -136,6 +153,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hydrophobic-residues", default="AILMFVPG")
     parser.add_argument("--hydrophobic-moment-angle-degrees", type=float, default=100.0)
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     parser.add_argument("--amp-score-matrix", type=Path, default=None)
     parser.add_argument("--mapp-database", type=Path, default=None)
     parser.add_argument("--known-amps", type=Path, nargs="*", default=None)
@@ -149,6 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="How paper mode handles overlapping peptides from the same source protein.",
     )
     parser.add_argument(
+<<<<<<< HEAD
 <<<<<<< HEAD
         "--no-terminal-boundaries",
         action="store_true",
@@ -169,6 +189,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip pepsickle TSV parsing when generated/cleavage_sites.jsonl already exists.",
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+        "--no-terminal-boundaries",
+        action="store_true",
+        help="Do not add protein N/C termini as candidate fragment boundaries.",
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     )
     parser.add_argument("--output-format", choices=["auto", "csv", "parquet"], default="auto")
     parser.add_argument(
@@ -180,6 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+<<<<<<< HEAD
 <<<<<<< HEAD
     args = build_parser().parse_args(argv)
     try:
@@ -202,6 +228,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         _normalize_args(args)
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+    args = build_parser().parse_args(argv)
+    try:
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
         _apply_protocol_defaults(args)
         _validate_args(args)
         return _dispatch(args)
@@ -210,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 =======
 def _normalize_args(args: argparse.Namespace) -> None:
@@ -228,6 +259,8 @@ def _normalize_args(args: argparse.Namespace) -> None:
 
 
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 def _apply_protocol_defaults(args: argparse.Namespace) -> None:
     if args.protocol == "paper_pddp":
         args.min_len = 10 if args.min_len is None else args.min_len
@@ -240,9 +273,13 @@ def _apply_protocol_defaults(args: argparse.Namespace) -> None:
     args.min_charge = 2 if args.min_charge is None else args.min_charge
     args.min_hydrophobicity = 0.30 if args.min_hydrophobicity is None else args.min_hydrophobicity
 <<<<<<< HEAD
+<<<<<<< HEAD
     args.top_n = 400000 if args.top_n is None else args.top_n
 =======
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+    args.top_n = 400000 if args.top_n is None else args.top_n
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 
 
 def _dispatch(args: argparse.Namespace) -> int:
@@ -271,6 +308,7 @@ def _validate_args(args: argparse.Namespace) -> None:
     if args.min_hydrophobicity < 0 or args.min_hydrophobicity > 1:
         raise ValueError("--min-hydrophobicity must be between 0 and 1")
 <<<<<<< HEAD
+<<<<<<< HEAD
     if args.top_n is not None and args.top_n <= 0:
         raise ValueError("--top-n must be positive")
 =======
@@ -281,6 +319,10 @@ def _validate_args(args: argparse.Namespace) -> None:
     if not args.cleavage_models:
         raise ValueError("--cleavage-models must list at least one model")
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+    if args.top_n is not None and args.top_n <= 0:
+        raise ValueError("--top-n must be positive")
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     if args.protocol == "paper_pddp":
         if args.amp_score_matrix is None and args.mapp_database is None:
             raise ValueError("--protocol paper_pddp requires --amp-score-matrix or --mapp-database")
@@ -323,9 +365,12 @@ def _run_preprocess(args: argparse.Namespace) -> tuple[list[ProteinRecord], list
         batch_size=args.batch_size,
         limit=args.limit_proteins,
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
         require_standard_aa_20=args.require_standard_aa_20,
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
         show_progress=not args.no_progress,
     )
     _update_manifest(paths["manifest"], {"preprocessing": result.stats, "input": str(args.input)})
@@ -339,6 +384,7 @@ def _run_pepsickle(args: argparse.Namespace) -> None:
     if not batches:
         raise FileNotFoundError(f"No batch FASTA files found under {paths['batches']}")
 <<<<<<< HEAD
+<<<<<<< HEAD
     tasks = build_tasks(batches, paths["pepsickle"], pepsickle_bin=args.pepsickle_bin, threshold=args.threshold)
 =======
     tasks = build_tasks(
@@ -349,6 +395,9 @@ def _run_pepsickle(args: argparse.Namespace) -> None:
         model_names=args.cleavage_models,
     )
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+    tasks = build_tasks(batches, paths["pepsickle"], pepsickle_bin=args.pepsickle_bin, threshold=args.threshold)
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     print(f"Running {len(tasks)} pepsickle task(s) with {args.workers} worker(s).", flush=True)
     results = run_tasks(
         tasks,
@@ -375,9 +424,12 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
         args.input,
         limit=args.limit_proteins,
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
         require_standard_aa_20=args.require_standard_aa_20,
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
         show_progress=not args.no_progress,
     )
     batches = _discover_batches(paths["batches"])
@@ -387,10 +439,14 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
             "Run the `preprocess` step first, or run the full `all` command."
         )
 <<<<<<< HEAD
+<<<<<<< HEAD
     output_paths = _pepsickle_output_paths(batches, paths["pepsickle"])
 =======
     output_paths = _pepsickle_output_paths(batches, paths["pepsickle"], args.cleavage_models)
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+    output_paths = _pepsickle_output_paths(batches, paths["pepsickle"])
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     if not output_paths:
         raise FileNotFoundError(
             f"No expected pepsickle outputs could be derived from batches under {paths['batches']}."
@@ -403,6 +459,9 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
         )
     lengths = {record.protein_id: len(record.sequence) for record in records}
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     sites = load_union_from_outputs(
         output_paths,
         lengths=lengths,
@@ -411,6 +470,7 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
     )
     write_sites_jsonl(sites, paths["sites"])
     scoring_metadata: dict[str, object] = {"protocol": args.protocol}
+<<<<<<< HEAD
 =======
     if args.reuse_cleavage_sites and paths["sites"].exists():
         print(f"Reusing cleavage sites from {paths['sites']}", flush=True)
@@ -426,6 +486,8 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
     scoring_metadata: dict[str, object] = {"protocol": args.protocol}
     residue_metrics = ResidueMetrics.from_args(args)
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     if args.protocol == "paper_pddp":
         scorer, threshold, threshold_source, known_amp_count = _build_paper_scorer(args)
         candidates, candidate_stats = generate_paper_candidates(
@@ -439,11 +501,15 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
             cationic_cterm_residues=args.cationic_cterm_residues,
             overlap_policy=args.overlap_policy,
 <<<<<<< HEAD
+<<<<<<< HEAD
             include_terminal_boundaries=not args.no_terminal_boundaries,
 =======
             include_terminal_boundaries=args.include_terminal_boundaries,
             residue_metrics=residue_metrics,
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+            include_terminal_boundaries=not args.no_terminal_boundaries,
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
             show_progress=not args.no_progress,
         )
         scoring_metadata.update(
@@ -469,12 +535,16 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
             min_hydrophobicity=args.min_hydrophobicity,
             top_n=args.top_n,
 <<<<<<< HEAD
+<<<<<<< HEAD
             include_terminal_boundaries=not args.no_terminal_boundaries,
 =======
             include_terminal_boundaries=args.include_terminal_boundaries,
             dedupe_sequences=args.dedupe_sequences,
             residue_metrics=residue_metrics,
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+            include_terminal_boundaries=not args.no_terminal_boundaries,
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
             show_progress=not args.no_progress,
         )
     table_path = write_candidates_table(candidates, paths["final_table"], output_format=args.output_format)
@@ -524,6 +594,7 @@ def _run_validate(args: argparse.Namespace) -> None:
     _run_pepsickle(args)
     paths = _layout(args.output_dir)
 <<<<<<< HEAD
+<<<<<<< HEAD
     outputs = _pepsickle_output_paths(_discover_batches(paths["batches"]), paths["pepsickle"])
 =======
     outputs = _pepsickle_output_paths(
@@ -532,6 +603,9 @@ def _run_validate(args: argparse.Namespace) -> None:
         args.cleavage_models,
     )
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+    outputs = _pepsickle_output_paths(_discover_batches(paths["batches"]), paths["pepsickle"])
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     if not outputs:
         raise RuntimeError("No pepsickle outputs were produced")
     schema = inspect_pepsickle_schema(outputs[0][0])
@@ -554,11 +628,15 @@ def _count_fasta_records(path: Path) -> int:
 
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 def _pepsickle_output_paths(batches: list[BatchFile], pepsickle_dir: Path) -> list[tuple[Path, str]]:
     return [
         (pepsickle_dir / f"{batch.path.stem}.{model}.tsv", model)
         for batch in batches
         for model in MODELS
+<<<<<<< HEAD
 =======
 def _pepsickle_output_paths(
     batches: list[BatchFile],
@@ -570,6 +648,8 @@ def _pepsickle_output_paths(
         for batch in batches
         for model in model_names
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     ]
 
 

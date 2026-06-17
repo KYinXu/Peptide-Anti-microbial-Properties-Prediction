@@ -9,6 +9,9 @@ from peptide_pipeline.steps.exec import run_command
 
 def step_compare_model_predictions(ctx: RunContext, cfg: RunConfig) -> None:
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     """Run compare_model_predictions on the workspace (Platt on by default; see --no-gnn-platt)."""
     out_d = (
         Path(cfg.final_gnn_output_dir).resolve()
@@ -23,17 +26,23 @@ def step_compare_model_predictions(ctx: RunContext, cfg: RunConfig) -> None:
             if list(sd.glob("*.pt")):
                 out_d = sd
                 break
+<<<<<<< HEAD
 =======
     """Run compare_model_predictions on the workspace (models from compare config / checkpoints-base)."""
     compare_models = cfg.compare_models
     if cfg.features_only and compare_models == "all":
         compare_models = "svm"
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     cmd = [
         ctx.py,
         str(ctx.compare_script),
         str(ctx.work_dir),
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
         "--gnn-checkpoints-dir",
         str(out_d),
         "--architecture",
@@ -41,6 +50,7 @@ def step_compare_model_predictions(ctx: RunContext, cfg: RunConfig) -> None:
     ]
     if cfg.no_gnn_platt:
         cmd.append("--no-gnn-platt")
+<<<<<<< HEAD
 =======
         "--compare-models",
         compare_models,
@@ -66,5 +76,7 @@ def step_compare_model_predictions(ctx: RunContext, cfg: RunConfig) -> None:
     if cfg.train_final_gnn:
         cmd.extend(["--architecture", cfg.compare_gnn_architecture])
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     run_command(cmd, root=ctx.root, dry_run=cfg.dry_run)
     ctx.manifest["steps"].append({"name": "compare_model_predictions", "cmd": cmd})

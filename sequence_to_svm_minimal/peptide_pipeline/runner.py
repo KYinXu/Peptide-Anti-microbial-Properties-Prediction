@@ -11,6 +11,7 @@ from peptide_pipeline.config import RunConfig
 from peptide_pipeline.constants import CANONICAL_WINDOWS_SIDECAR
 from peptide_pipeline.context import RunContext
 <<<<<<< HEAD
+<<<<<<< HEAD
 from peptide_pipeline.steps.cluster_step import step_cluster
 =======
 from peptide_pipeline.inference_samples import (
@@ -20,6 +21,9 @@ from peptide_pipeline.inference_samples import (
 from peptide_pipeline.steps.cluster_step import step_cluster
 from peptide_pipeline.steps.comparison_step import step_compare_model_predictions
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+from peptide_pipeline.steps.cluster_step import step_cluster
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 from peptide_pipeline.steps.esm2_step import step_esm2
 from peptide_pipeline.steps.esmfold_step import step_esmfold
 from peptide_pipeline.steps.geometric_step import step_geometric
@@ -27,15 +31,21 @@ from peptide_pipeline.sequence_io import read_sequence_records, write_canonical
 from peptide_pipeline.steps.normalize import normalize_to_canonical
 from peptide_pipeline.steps.qsar_step import step_qsar
 <<<<<<< HEAD
+<<<<<<< HEAD
 from peptide_pipeline.steps.svm_step import step_svm
 from peptide_pipeline.steps.comparison_step import step_compare_model_predictions
 =======
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+from peptide_pipeline.steps.svm_step import step_svm
+from peptide_pipeline.steps.comparison_step import step_compare_model_predictions
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 from peptide_pipeline.steps.train_step import step_final_gnn, step_legacy_gnn
 from peptide_pipeline.steps.window_aggregate_step import step_window_aggregate
 from peptide_pipeline.windowing import expand_records_to_windows
 
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 =======
 def _write_window_map(ctx: RunContext, windows: list) -> Path:
@@ -176,6 +186,8 @@ def _finalize_manifest(ctx: RunContext, cfg: RunConfig) -> None:
 
 
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 def run_pipeline(cfg: RunConfig) -> int:
     inp = cfg.input_path.resolve()
     if not inp.is_file():
@@ -189,6 +201,9 @@ def run_pipeline(cfg: RunConfig) -> int:
 
     if not cfg.dry_run:
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
         if cfg.is_train_mode() and cfg.uses_windowing():
             print("--mode train does not support --window-min-len/--window-max-len.", file=sys.stderr)
             return 2
@@ -311,11 +326,14 @@ def run_pipeline(cfg: RunConfig) -> int:
             if st["n_written"] == 0:
                 print("No sequences after normalization.", file=sys.stderr)
                 return 1
+<<<<<<< HEAD
 =======
         err = _normalize_input(ctx, cfg, inp)
         if err is not None:
             return err
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     else:
         if cfg.is_train_mode():
             assert ctx.canonical_amp is not None and ctx.canonical_decoy is not None
@@ -337,6 +355,7 @@ def run_pipeline(cfg: RunConfig) -> int:
             else:
                 ctx.manifest["normalization"] = {"dry_run": True, "note": "normalize skipped; commands show intended paths"}
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 =======
     if cfg.features_only:
@@ -360,11 +379,16 @@ def run_pipeline(cfg: RunConfig) -> int:
         return 0
 
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     skip_esmfold = cfg.skip_if_exists and (ctx.structures_dir / "results_log.csv").is_file()
     if not skip_esmfold:
         step_esmfold(ctx, cfg)
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     try:
         svm_preds = step_svm(ctx, cfg)
     except ValueError as e:
@@ -372,9 +396,12 @@ def run_pipeline(cfg: RunConfig) -> int:
         return 1
 
     step_geometric(ctx, cfg, svm_preds)
+<<<<<<< HEAD
 =======
     step_geometric(ctx, cfg)
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 
     geo_for_qsar = step_cluster(ctx, cfg)
 
@@ -410,14 +437,20 @@ def run_pipeline(cfg: RunConfig) -> int:
 
     if not cfg.dry_run:
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
         step_window_aggregate(ctx, cfg, svm_preds)
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(ctx.manifest, f, indent=2)
         print(f"Wrote manifest: {manifest_path}")
+<<<<<<< HEAD
 =======
         step_window_aggregate(ctx, cfg)
         _finalize_manifest(ctx, cfg)
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 
     print("\nDone. Outputs under:", ctx.work_dir)
     return 0

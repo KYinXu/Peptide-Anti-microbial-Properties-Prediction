@@ -20,10 +20,13 @@ from peptide_pipeline.manifest_paths import (
 )
 from peptide_pipeline.runner import run_pipeline
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 from peptide_pipeline.sequence_io import read_sequence_records
 from peptide_pipeline.steps.normalize import normalize_to_canonical
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
 
 
 class TestPipelineModular(unittest.TestCase):
@@ -49,6 +52,7 @@ class TestPipelineModular(unittest.TestCase):
             cfg = RunConfig(mode="blind", input_path=Path(td) / "missing.txt", dry_run=True)
             self.assertEqual(run_pipeline(cfg), 1)
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 =======
     def test_read_sequence_records_supports_name_seq_csv(self) -> None:
@@ -78,6 +82,8 @@ class TestPipelineModular(unittest.TestCase):
             self.assertEqual(out.read_text(encoding="utf-8"), "pep1 ACDEFG\n")
 
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     def test_resolve_generated_workspace_parent_or_nested(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -87,6 +93,7 @@ class TestPipelineModular(unittest.TestCase):
             self.assertEqual(resolve_generated_workspace(gen), gen.resolve())
             self.assertEqual(resolve_generated_workspace(root), gen.resolve())
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 =======
     def test_run_pipeline_features_only_dry_run(self) -> None:
@@ -132,6 +139,8 @@ class TestPipelineModular(unittest.TestCase):
         self.assertEqual(windowed.get("qsar_mode"), "parent")
 
 >>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
+=======
+>>>>>>> f255595470cd527a24de3b686587977fb372fb16
     def test_gnn_final_paths_from_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             wd = Path(td)
