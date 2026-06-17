@@ -96,6 +96,43 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--svm-scaler-csv", type=str, default=None)
     ap.add_argument("--svm-output-dir", type=str, default=None, help="Default: work_dir/svm_out")
 
+    ap.add_argument(
+        "--features-only",
+        "--svm-only",
+        action="store_true",
+        dest="features_only",
+        help=(
+            "Prepare inference inputs only: normalize/window, write geometric_features.csv "
+            "(peptide_id + sequence), and qsar12_descriptors.csv. Skips ESMFold, ESM2, and GNN. "
+            "Run compare_model_predictions.py on the workspace for model scoring "
+            "(or pass --run-compare)."
+        ),
+    )
+    ap.add_argument(
+        "--run-compare",
+        action="store_true",
+        help=(
+            "After the pipeline, run compare_model_predictions.py on the workspace. "
+            "Model paths come from configs/compare_models.json and/or --checkpoints-base."
+        ),
+    )
+    ap.add_argument(
+        "--checkpoints-base",
+        type=str,
+        default=None,
+        help=(
+            "Forwarded to compare_model_predictions: directory with svm_qsar12_model.pkl, "
+            "svm_qsar12_zscores.txt, and optional GNN .pt files."
+        ),
+    )
+    ap.add_argument(
+        "--compare-models",
+        type=str,
+        default="all",
+        choices=["all", "svm", "gnn"],
+        help="Forwarded to compare_model_predictions (default: svm when using --features-only).",
+    )
+
     ap.add_argument("--esm2-device", type=str, choices=["cuda", "cpu"], default=None)
     ap.add_argument("--esm2-max-length", type=int, default=400)
 
@@ -192,6 +229,9 @@ def main() -> int:
         if wm > wx:
             print("--window-min-len cannot be greater than --window-max-len.", file=sys.stderr)
             return 2
+    if args.features_only and (args.train_legacy_gnn or args.train_final_gnn):
+        print("--features-only cannot be combined with GNN training flags.", file=sys.stderr)
+        return 2
     cfg = RunConfig.from_args(args)
     return run_pipeline(cfg)
 

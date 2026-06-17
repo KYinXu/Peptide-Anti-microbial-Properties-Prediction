@@ -32,6 +32,10 @@ class RunConfig:
     cluster_run_cdhit: bool = False
     cdhit_path: str = "cd-hit"
     cdhit_identity: float = 0.40
+    features_only: bool = False
+    run_compare: bool = False
+    checkpoints_base: str | None = None
+    compare_models: str = "all"
     with_svm: bool = False
     svm_aaindex: str | None = None
     svm_model_pkl: str | None = None
@@ -75,6 +79,10 @@ class RunConfig:
         amp_in = getattr(args, "amp_input", None)
         decoy_in = getattr(args, "decoy_input", None)
         inp = getattr(args, "input", None)
+        positional_in = getattr(args, "input_positional", None)
+        if inp and positional_in:
+            raise ValueError("Use either positional input or --input, not both")
+        inp = inp or positional_in
 
         if raw_mode is None:
             if amp_in or decoy_in:
@@ -132,6 +140,10 @@ class RunConfig:
             cluster_run_cdhit=args.cluster_run_cdhit,
             cdhit_path=args.cdhit_path,
             cdhit_identity=args.cdhit_identity,
+            features_only=bool(getattr(args, "features_only", False)),
+            run_compare=bool(getattr(args, "run_compare", False)),
+            checkpoints_base=getattr(args, "checkpoints_base", None),
+            compare_models=str(getattr(args, "compare_models", "all")),
             with_svm=args.with_svm,
             svm_aaindex=args.svm_aaindex,
             svm_model_pkl=args.svm_model_pkl,

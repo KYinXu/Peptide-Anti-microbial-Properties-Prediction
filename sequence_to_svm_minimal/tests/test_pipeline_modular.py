@@ -17,6 +17,7 @@ from peptide_pipeline.config import RunConfig, default_work_dir
 from peptide_pipeline.manifest_paths import (
     gnn_final_training_paths_from_work_dir,
     resolve_generated_workspace,
+    resolve_manifest_artifact,
 )
 from peptide_pipeline.runner import run_pipeline
 
@@ -74,6 +75,16 @@ class TestPipelineModular(unittest.TestCase):
             self.assertTrue(p["pdb_dir"].endswith("pdb"))
             self.assertIn("esm2_residue_dir", p)
             self.assertTrue(str(p["esm2_residue_dir"]).replace("\\", "/").endswith("esm2_per_residue"))
+
+    def test_resolve_manifest_artifact_prefers_workspace_local(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ws = Path(td) / "window_run" / "generated"
+            ws.mkdir(parents=True)
+            geo = ws / "geometric_features.csv"
+            geo.write_text("peptide_id,sequence\nw1,ACDE\n", encoding="utf-8")
+            stale = Path(td) / "other" / "generated" / "geometric_features.csv"
+            p = resolve_manifest_artifact(ws, str(stale), manifest_key="geometric_features")
+            self.assertEqual(p, geo.resolve())
 
 
 if __name__ == "__main__":

@@ -423,31 +423,19 @@ def apply_pipeline_generated_workspace(
     """
     If GENERATED (positional) is set, fill paths from pipeline_manifest.json.
 
-    Default GNN checkpoints are NOT changed (e.g. ``checkpoints/latest/*.pt``). Use
-    ``--gnn-checkpoints-dir`` or ``--checkpoints-base`` to point at a workspace-trained
-    ``gnn_ready_models/`` folder.
-
-    Unless skip_svm_clear, clears this script's QSAR-SVM paths (use --svm_pkl etc. to keep).
+    Workspace QSAR descriptors are wired into ``--svm_descriptor_csv``. SVM model
+    paths stay on ``configs/compare_models.json`` defaults unless the user passes
+    ``--svm_pkl`` / ``--checkpoints-base``.
 
     Returns ``(resolved_workspace_or_none, skip_workspace_checkpoint_roots)``. The second
     value is kept for API compatibility and is always False when a workspace path is given.
     """
-    from peptide_pipeline.manifest_paths import load_pipeline_manifest, resolve_generated_workspace
-
-    def _normalize_manifest_path(p: str) -> Path:
-        """
-        Convert WSL-style /mnt/<drive>/... paths into Windows paths when running on win32.
-        Keeps native paths unchanged.
-        """
-        s = str(p)
-        if sys.platform.startswith("win"):
-            # /mnt/c/Users/...  ->  C:\Users\...
-            if s.startswith("/mnt/") and len(s) >= 6 and s[5].isalpha() and s[6:7] == "/":
-                drive = s[5].upper()
-                rest = s[7:].replace("/", "\\")
-                return Path(f"{drive}:\\{rest}")
-            # \\wsl$\<distro>\mnt\c\... sometimes appears in copied paths; leave as-is (Path handles it)
-        return Path(s)
+    from peptide_pipeline.manifest_paths import (
+        load_pipeline_manifest,
+        normalize_manifest_path,
+        resolve_generated_workspace,
+        resolve_manifest_artifact,
+    )
 
     chosen = getattr(args, "generated", None)
     if not chosen:
@@ -457,36 +445,63 @@ def apply_pipeline_generated_workspace(
 
     ws = resolve_generated_workspace(chosen)
     m = load_pipeline_manifest(ws)
-    for key in ("geometric_features", "structures_dir", "qsar12_descriptors", "esm2_embeddings"):
-        if not m.get(key):
-            raise SystemExit(
-                f"Manifest missing {key!r}; run the full pipeline (QSAR + ESM2 required for GNN checkpoints)."
+
+    geo_key = m.get("geometric_features") or m.get("inference_samples")
+    if not geo_key and not (ws / "geometric_features.csv").is_file():
+        raise SystemExit(
+            "Manifest missing geometric_features (or inference_samples); "
+            "run run_data_pipeline.py on this workspace first."
+        )
+    geo_path = resolve_manifest_artifact(
+        ws,
+        str(geo_key) if geo_key else None,
+        manifest_key="geometric_features",
+    )
+    if geo_path is None or not geo_path.is_file():
+        raise SystemExit(
+            f"geometric_features not found in workspace {ws} "
+            "(manifest path may be stale; expected geometric_features.csv under the workspace)."
+        )
+    args.geo_csv = str(geo_path.resolve())
+
+    qsar_key = m.get("qsar12_descriptors")
+    qsar_path = resolve_manifest_artifact(
+        ws,
+        str(qsar_key) if qsar_key else None,
+        manifest_key="qsar12_descriptors",
+    )
+    if qsar_path is not None and qsar_path.is_file():
+        args.qsar_csv = str(qsar_path.resolve())
+        if not skip_svm_clear:
+            args.svm_descriptor_csv = str(qsar_path.resolve())
+
+    structures_path = resolve_manifest_artifact(
+        ws,
+        str(m["structures_dir"]) if m.get("structures_dir") else None,
+        manifest_key="structures_dir",
+    )
+    if structures_path is not None and structures_path.is_dir():
+        args.pdb_dir = str(structures_path.resolve())
+
+    esm2_path = resolve_manifest_artifact(
+        ws,
+        str(m["esm2_embeddings"]) if m.get("esm2_embeddings") else None,
+        manifest_key="esm2_embeddings",
+    )
+    if esm2_path is not None and esm2_path.is_file():
+        args.esm2_csv = str(esm2_path.resolve())
+        if getattr(args, "gnn_esm2_residue_dir", None) in (None, ""):
+            pr = resolve_manifest_artifact(
+                ws,
+                str(m["esm2_per_residue"]) if m.get("esm2_per_residue") else None,
+                manifest_key="esm2_per_residue",
             )
+            if pr is not None and pr.is_dir():
+                args.gnn_esm2_residue_dir = str(pr.resolve())
+            else:
+                args.gnn_esm2_residue_dir = str((esm2_path.parent / "esm2_per_residue").resolve())
 
-    args.geo_csv = str(_normalize_manifest_path(m["geometric_features"]).resolve())
-    args.pdb_dir = str(_normalize_manifest_path(m["structures_dir"]).resolve())
-    args.qsar_csv = str(_normalize_manifest_path(m["qsar12_descriptors"]).resolve())
     args.geometric_qsar_combined_csv = str(ws / "compare_geo_qsar_merged.csv")
-    if getattr(args, "esm2_csv", None) is None:
-        args.esm2_csv = str(_normalize_manifest_path(m["esm2_embeddings"]).resolve())
-    if getattr(args, "gnn_esm2_residue_dir", None) in (None, ""):
-        pr = m.get("esm2_per_residue")
-        if pr:
-            args.gnn_esm2_residue_dir = str(_normalize_manifest_path(pr).resolve())
-        else:
-            emb = _normalize_manifest_path(m["esm2_embeddings"])
-            args.gnn_esm2_residue_dir = str((emb.parent / "esm2_per_residue").resolve())
-
-    if not skip_workspace_checkpoint_roots:
-        # Do not override checkpoint defaults when a workspace is provided.
-        # Users can opt-in to workspace-trained checkpoints via --gnn-checkpoints-dir
-        # (or --checkpoints-base / ready_models_summary.json).
-        pass
-
-    if not skip_svm_clear:
-        args.svm_descriptor_csv = ""
-        args.svm_z_file = ""
-        args.svm_pkl = ""
 
     print(f"Pipeline workspace: {ws}", flush=True)
     return ws, skip_workspace_checkpoint_roots
@@ -941,7 +956,7 @@ def main():
         '--svm_descriptor_csv',
         type=str,
         default=argparse.SUPPRESS,
-        help='Descriptor CSV for QSAR SVM (default: configs/compare_models.json; cleared when using GENERATED unless --svm_pkl is set)',
+        help='Descriptor CSV for QSAR SVM (default: configs/compare_models.json; workspace manifest qsar12 when using GENERATED)',
     )
     ap.add_argument(
         '--svm_z_file',
@@ -954,6 +969,13 @@ def main():
         type=str,
         default=argparse.SUPPRESS,
         help='Trained SVM pickle',
+    )
+    ap.add_argument(
+        '--compare-models',
+        type=str,
+        default='all',
+        choices=['all', 'svm', 'gnn'],
+        help='Which model families to run (default: all). Use svm after --features-only pipeline runs.',
     )
     ap.add_argument('--architecture', type=str, default=cfg['architecture'],
                     choices=['gcn', 'gat', 'egnn'],
@@ -1073,7 +1095,11 @@ def main():
     results = {}
     pred_frames = {}
 
-    if args.svm_pkl and args.svm_descriptor_csv and args.svm_z_file:
+    compare_models = str(getattr(args, "compare_models", "all"))
+    run_svm = compare_models in ("all", "svm")
+    run_gnn = compare_models in ("all", "gnn")
+
+    if run_svm and args.svm_pkl and args.svm_descriptor_csv and args.svm_z_file:
         print("Running SVM...")
         ids, preds, prob_amp, distance = _load_svm_predictions(
             args.svm_descriptor_csv, args.svm_z_file, args.svm_pkl
@@ -1096,47 +1122,47 @@ def main():
     ]
 
     gnn_master_path, mode_cols, _has_qsar_merge = _build_gnn_feature_master(args, ws)
-    if gnn_master_path is None:
-        print(
-            "GNN: missing --geo_csv (or GENERATED manifest geometric_features). Skipping GNN models.",
-            flush=True,
-        )
-
-    for name, path, feat_mode in feature_models:
-        if not path or not Path(path).exists():
-            continue
+    if run_gnn:
         if gnn_master_path is None:
-            continue
-        geom_cols = mode_cols.get(feat_mode, [])
-        if feat_mode != "esm" and not geom_cols:
-            if feat_mode in ('qsar12', 'combined32'):
-                print(f"Skipping {name}: need merged QSAR-12 (check --qsar_csv)", flush=True)
-            continue
-        print(f"Running {args.architecture.upper()} ({name})...")
-        ids, preds, prob_amp, logit_amp, logit_nonamp, logit_margin = _run_gnn_predictions(
-            str(gnn_master_path), args.pdb_dir, path, args.architecture,
-            args.gnn_hidden, args.gnn_layers, args.gnn_pooling,
-            args.batch_size,
-            geometric_feature_cols=geom_cols,
-            esm2_residue_dir=getattr(args, "gnn_esm2_residue_dir", None),
-            node_feature_groups=node_feature_groups,
-            use_gnn_platt=not args.no_gnn_platt,
-        )
-        results[name] = {
-            'ids': ids,
-            'pred': preds,
-            'prob_amp': prob_amp,
-            'confidence': _confidence(prob_amp),
-            'logit_amp': logit_amp,
-            'logit_nonamp': logit_nonamp,
-            'logit_margin': logit_margin,
-        }
-        pred_frames[name] = pd.DataFrame({'pred': preds, 'prob_amp': prob_amp, 'confidence': results[name]['confidence']}, index=ids)
+            print(
+                "GNN: missing --geo_csv (or GENERATED manifest geometric_features). Skipping GNN models.",
+                flush=True,
+            )
+        for name, path, feat_mode in feature_models:
+            if not path or not Path(path).exists():
+                continue
+            if gnn_master_path is None:
+                continue
+            geom_cols = mode_cols.get(feat_mode, [])
+            if feat_mode != "esm" and not geom_cols:
+                if feat_mode in ('qsar12', 'combined32'):
+                    print(f"Skipping {name}: need merged QSAR-12 (check --qsar_csv)", flush=True)
+                continue
+            print(f"Running {args.architecture.upper()} ({name})...")
+            ids, preds, prob_amp, logit_amp, logit_nonamp, logit_margin = _run_gnn_predictions(
+                str(gnn_master_path), args.pdb_dir, path, args.architecture,
+                args.gnn_hidden, args.gnn_layers, args.gnn_pooling,
+                args.batch_size,
+                geometric_feature_cols=geom_cols,
+                esm2_residue_dir=getattr(args, "gnn_esm2_residue_dir", None),
+                node_feature_groups=node_feature_groups,
+                use_gnn_platt=not args.no_gnn_platt,
+            )
+            results[name] = {
+                'ids': ids,
+                'pred': preds,
+                'prob_amp': prob_amp,
+                'confidence': _confidence(prob_amp),
+                'logit_amp': logit_amp,
+                'logit_nonamp': logit_nonamp,
+                'logit_margin': logit_margin,
+            }
+            pred_frames[name] = pd.DataFrame({'pred': preds, 'prob_amp': prob_amp, 'confidence': results[name]['confidence']}, index=ids)
 
     if not results:
         print(
-            "No models run: no SVM (expected with GENERATED unless you pass --svm_pkl / --svm_z_file / "
-            "--svm_descriptor_csv) and no GNN checkpoints found on disk.",
+            "No models run: no SVM (check configs/compare_models.json or --checkpoints-base) "
+            "and no GNN checkpoints found on disk.",
             flush=True,
         )
         print(

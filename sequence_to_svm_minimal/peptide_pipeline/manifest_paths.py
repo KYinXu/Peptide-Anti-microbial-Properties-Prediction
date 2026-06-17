@@ -9,6 +9,15 @@ from pathlib import Path
 
 MANIFEST_NAME = "pipeline_manifest.json"
 
+_WORKSPACE_ARTIFACT_DEFAULTS: dict[str, str] = {
+    "geometric_features": "geometric_features.csv",
+    "inference_samples": "geometric_features.csv",
+    "qsar12_descriptors": "qsar12_descriptors.csv",
+    "structures_dir": "structures",
+    "esm2_embeddings": "esm2_embeddings.csv",
+    "esm2_per_residue": "esm2_per_residue",
+}
+
 
 def normalize_manifest_path(p: str | Path) -> Path:
     """
@@ -38,6 +47,50 @@ def normalize_manifest_path(p: str | Path) -> Path:
 
 def _resolve_manifest_path_str(raw: str) -> str:
     return str(normalize_manifest_path(raw).expanduser().resolve())
+
+
+def resolve_manifest_artifact(
+    workspace: Path | str,
+    raw: str | None,
+    *,
+    manifest_key: str | None = None,
+    default_rel: str | None = None,
+) -> Path | None:
+    """
+    Resolve a pipeline artifact path from ``pipeline_manifest.json``.
+
+    Manifests may record stale absolute paths (e.g. default ``<input_dir>/generated``
+    when outputs were written under ``--work-dir``). Prefer an existing file or
+    directory under ``workspace`` when the stored path is missing.
+    """
+    ws = Path(workspace).resolve()
+    rel = default_rel or (_WORKSPACE_ARTIFACT_DEFAULTS.get(manifest_key or "") if manifest_key else None)
+
+    candidates: list[Path] = []
+    if raw:
+        candidates.append(normalize_manifest_path(raw).expanduser())
+    if rel:
+        candidates.append(ws / rel)
+
+    seen: set[str] = set()
+    for cand in candidates:
+        key = str(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            resolved = cand.resolve()
+        except OSError:
+            resolved = cand
+        if resolved.is_file() or resolved.is_dir():
+            return resolved
+
+    if rel:
+        local = (ws / rel).resolve()
+        return local
+    if raw:
+        return normalize_manifest_path(raw).expanduser().resolve()
+    return None
 
 
 def resolve_generated_workspace(path: Path | str) -> Path:

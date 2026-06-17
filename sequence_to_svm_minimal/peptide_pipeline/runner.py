@@ -10,6 +10,7 @@ from pathlib import Path
 from peptide_pipeline.config import RunConfig
 from peptide_pipeline.constants import CANONICAL_WINDOWS_SIDECAR
 from peptide_pipeline.context import RunContext
+from peptide_pipeline.inference_samples import build_inference_samples, inference_sequences_path
 from peptide_pipeline.steps.cluster_step import step_cluster
 from peptide_pipeline.steps.esm2_step import step_esm2
 from peptide_pipeline.steps.esmfold_step import step_esmfold
@@ -178,6 +179,37 @@ def run_pipeline(cfg: RunConfig) -> int:
                 }
             else:
                 ctx.manifest["normalization"] = {"dry_run": True, "note": "normalize skipped; commands show intended paths"}
+
+    if cfg.features_only:
+        if cfg.compare_models not in ("all", "svm"):
+            print("--features-only supports --compare-models all or svm.", file=sys.stderr)
+            return 2
+        seq_input = inference_sequences_path(ctx, cfg)
+        if not cfg.dry_run:
+            try:
+                build_inference_samples(ctx, cfg)
+            except ValueError as e:
+                print(str(e), file=sys.stderr)
+                return 1
+        ctx.manifest["geometric_features"] = str(ctx.geo_csv)
+        ctx.manifest["inference_samples"] = str(ctx.geo_csv)
+        if not cfg.skip_qsar:
+            step_qsar(ctx, cfg, seq_input)
+        if cfg.run_compare:
+            step_compare_model_predictions(ctx, cfg)
+        if not cfg.dry_run:
+            step_window_aggregate(ctx, cfg, None)
+            ctx.manifest["features_only"] = True
+            ctx.manifest["work_dir"] = str(ctx.work_dir.resolve())
+            ctx.manifest["geometric_features"] = str(ctx.geo_csv.resolve())
+            if ctx.qsar_csv.is_file():
+                ctx.manifest["qsar12_descriptors"] = str(ctx.qsar_csv.resolve())
+            manifest_path = ctx.work_dir / "pipeline_manifest.json"
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(ctx.manifest, f, indent=2)
+            print(f"Wrote manifest: {manifest_path}")
+        print("\nDone. Outputs under:", ctx.work_dir)
+        return 0
 
     skip_esmfold = cfg.skip_if_exists and (ctx.structures_dir / "results_log.csv").is_file()
     if not skip_esmfold:
