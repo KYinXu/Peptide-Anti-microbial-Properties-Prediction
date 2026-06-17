@@ -7,15 +7,7 @@ from peptide_pipeline.context import RunContext
 from peptide_pipeline.steps.exec import run_command
 
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 def step_geometric(ctx: RunContext, cfg: RunConfig, svm_preds: Path | None) -> None:
-=======
-def step_geometric(ctx: RunContext, cfg: RunConfig) -> None:
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
-def step_geometric(ctx: RunContext, cfg: RunConfig, svm_preds: Path | None) -> None:
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
     cmd = [
         ctx.py,
         str(ctx.build_geo_script),
@@ -29,16 +21,8 @@ def step_geometric(ctx: RunContext, cfg: RunConfig, svm_preds: Path | None) -> N
     else:
         # In labeled mode, make results_log discovery explicit so label/sequence are attached.
         cmd.extend(["--results-log", str(ctx.structures_dir / "results_log.csv")])
-<<<<<<< HEAD
-<<<<<<< HEAD
     if svm_preds is not None and svm_preds.is_file():
         cmd.extend(["--svm-predictions", str(svm_preds)])
-=======
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
-    if svm_preds is not None and svm_preds.is_file():
-        cmd.extend(["--svm-predictions", str(svm_preds)])
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
     skip = cfg.skip_if_exists and ctx.geo_csv.is_file()
     if not skip:
         run_command(cmd, root=ctx.root, dry_run=cfg.dry_run)

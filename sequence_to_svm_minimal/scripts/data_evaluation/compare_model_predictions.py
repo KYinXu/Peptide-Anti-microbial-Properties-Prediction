@@ -423,23 +423,11 @@ def apply_pipeline_generated_workspace(
     """
     If GENERATED (positional) is set, fill paths from pipeline_manifest.json.
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
     Default GNN checkpoints are NOT changed (e.g. ``checkpoints/latest/*.pt``). Use
     ``--gnn-checkpoints-dir`` or ``--checkpoints-base`` to point at a workspace-trained
     ``gnn_ready_models/`` folder.
 
     Unless skip_svm_clear, clears this script's QSAR-SVM paths (use --svm_pkl etc. to keep).
-<<<<<<< HEAD
-=======
-    Workspace QSAR descriptors are wired into ``--svm_descriptor_csv``. SVM model
-    paths stay on ``configs/compare_models.json`` defaults unless the user passes
-    ``--svm_pkl`` / ``--checkpoints-base``.
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
 
     Returns ``(resolved_workspace_or_none, skip_workspace_checkpoint_roots)``. The second
     value is kept for API compatibility and is always False when a workspace path is given.
@@ -469,10 +457,6 @@ def apply_pipeline_generated_workspace(
 
     ws = resolve_generated_workspace(chosen)
     m = load_pipeline_manifest(ws)
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
     for key in ("geometric_features", "structures_dir", "qsar12_descriptors", "esm2_embeddings"):
         if not m.get(key):
             raise SystemExit(
@@ -504,47 +488,6 @@ def apply_pipeline_generated_workspace(
         args.svm_z_file = ""
         args.svm_pkl = ""
 
-<<<<<<< HEAD
-=======
-
-    geo_key = m.get("geometric_features") or m.get("inference_samples")
-    if not geo_key:
-        raise SystemExit(
-            "Manifest missing geometric_features (or inference_samples); "
-            "run run_data_pipeline.py on this workspace first."
-        )
-    args.geo_csv = str(_normalize_manifest_path(geo_key).resolve())
-
-    qsar_key = m.get("qsar12_descriptors")
-    if qsar_key:
-        qsar_p = _normalize_manifest_path(qsar_key).resolve()
-        args.qsar_csv = str(qsar_p)
-        if not skip_svm_clear:
-            args.svm_descriptor_csv = str(qsar_p)
-
-    structures_key = m.get("structures_dir")
-    if structures_key:
-        args.pdb_dir = str(_normalize_manifest_path(structures_key).resolve())
-
-    esm2_key = m.get("esm2_embeddings")
-    if esm2_key:
-        args.esm2_csv = str(_normalize_manifest_path(esm2_key).resolve())
-        if getattr(args, "gnn_esm2_residue_dir", None) in (None, ""):
-            pr = m.get("esm2_per_residue")
-            if pr:
-                args.gnn_esm2_residue_dir = str(_normalize_manifest_path(pr).resolve())
-            else:
-                emb = _normalize_manifest_path(esm2_key)
-                args.gnn_esm2_residue_dir = str((emb.parent / "esm2_per_residue").resolve())
-
-    args.geometric_qsar_combined_csv = str(ws / "compare_geo_qsar_merged.csv")
-
-    if not skip_workspace_checkpoint_roots:
-        pass
-
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
     print(f"Pipeline workspace: {ws}", flush=True)
     return ws, skip_workspace_checkpoint_roots
 
@@ -998,15 +941,7 @@ def main():
         '--svm_descriptor_csv',
         type=str,
         default=argparse.SUPPRESS,
-<<<<<<< HEAD
-<<<<<<< HEAD
         help='Descriptor CSV for QSAR SVM (default: configs/compare_models.json; cleared when using GENERATED unless --svm_pkl is set)',
-=======
-        help='Descriptor CSV for QSAR SVM (default: configs/compare_models.json; workspace manifest qsar12 when using GENERATED)',
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
-        help='Descriptor CSV for QSAR SVM (default: configs/compare_models.json; cleared when using GENERATED unless --svm_pkl is set)',
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
     )
     ap.add_argument(
         '--svm_z_file',
@@ -1020,19 +955,6 @@ def main():
         default=argparse.SUPPRESS,
         help='Trained SVM pickle',
     )
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-    ap.add_argument(
-        '--compare-models',
-        type=str,
-        default='all',
-        choices=['all', 'svm', 'gnn'],
-        help='Which model families to run (default: all). Use svm after --features-only pipeline runs.',
-    )
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
     ap.add_argument('--architecture', type=str, default=cfg['architecture'],
                     choices=['gcn', 'gat', 'egnn'],
                     help='GNN architecture to compare across feature sets')
@@ -1151,19 +1073,7 @@ def main():
     results = {}
     pred_frames = {}
 
-<<<<<<< HEAD
-<<<<<<< HEAD
     if args.svm_pkl and args.svm_descriptor_csv and args.svm_z_file:
-=======
-    compare_models = str(getattr(args, "compare_models", "all"))
-    run_svm = compare_models in ("all", "svm")
-    run_gnn = compare_models in ("all", "gnn")
-
-    if run_svm and args.svm_pkl and args.svm_descriptor_csv and args.svm_z_file:
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
-    if args.svm_pkl and args.svm_descriptor_csv and args.svm_z_file:
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
         print("Running SVM...")
         ids, preds, prob_amp, distance = _load_svm_predictions(
             args.svm_descriptor_csv, args.svm_z_file, args.svm_pkl
@@ -1186,10 +1096,6 @@ def main():
     ]
 
     gnn_master_path, mode_cols, _has_qsar_merge = _build_gnn_feature_master(args, ws)
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
     if gnn_master_path is None:
         print(
             "GNN: missing --geo_csv (or GENERATED manifest geometric_features). Skipping GNN models.",
@@ -1231,52 +1137,6 @@ def main():
         print(
             "No models run: no SVM (expected with GENERATED unless you pass --svm_pkl / --svm_z_file / "
             "--svm_descriptor_csv) and no GNN checkpoints found on disk.",
-<<<<<<< HEAD
-=======
-    if run_gnn:
-        if gnn_master_path is None:
-            print(
-                "GNN: missing --geo_csv (or GENERATED manifest geometric_features). Skipping GNN models.",
-                flush=True,
-            )
-        for name, path, feat_mode in feature_models:
-            if not path or not Path(path).exists():
-                continue
-            if gnn_master_path is None:
-                continue
-            geom_cols = mode_cols.get(feat_mode, [])
-            if feat_mode != "esm" and not geom_cols:
-                if feat_mode in ('qsar12', 'combined32'):
-                    print(f"Skipping {name}: need merged QSAR-12 (check --qsar_csv)", flush=True)
-                continue
-            print(f"Running {args.architecture.upper()} ({name})...")
-            ids, preds, prob_amp, logit_amp, logit_nonamp, logit_margin = _run_gnn_predictions(
-                str(gnn_master_path), args.pdb_dir, path, args.architecture,
-                args.gnn_hidden, args.gnn_layers, args.gnn_pooling,
-                args.batch_size,
-                geometric_feature_cols=geom_cols,
-                esm2_residue_dir=getattr(args, "gnn_esm2_residue_dir", None),
-                node_feature_groups=node_feature_groups,
-                use_gnn_platt=not args.no_gnn_platt,
-            )
-            results[name] = {
-                'ids': ids,
-                'pred': preds,
-                'prob_amp': prob_amp,
-                'confidence': _confidence(prob_amp),
-                'logit_amp': logit_amp,
-                'logit_nonamp': logit_nonamp,
-                'logit_margin': logit_margin,
-            }
-            pred_frames[name] = pd.DataFrame({'pred': preds, 'prob_amp': prob_amp, 'confidence': results[name]['confidence']}, index=ids)
-
-    if not results:
-        print(
-            "No models run: no SVM (check configs/compare_models.json or --checkpoints-base) "
-            "and no GNN checkpoints found on disk.",
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
             flush=True,
         )
         print(

@@ -50,10 +50,6 @@ class CandidateStats:
     cterm_filtered: int = 0
 
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
 def net_charge(sequence: str) -> int:
     return sum(1 for aa in sequence if aa in POSITIVE_AA) - sum(1 for aa in sequence if aa in NEGATIVE_AA)
 
@@ -63,58 +59,11 @@ def hydrophobicity(sequence: str) -> float:
 
 
 def hydrophobic_moment(sequence: str, *, angle_degrees: float = 100.0) -> float:
-<<<<<<< HEAD
-=======
-def _metrics_from_residues(residue_metrics=None):
-    if residue_metrics is None:
-        return POSITIVE_AA, NEGATIVE_AA, HYDROPHOBIC_AA, 100.0
-    return (
-        residue_metrics.positive,
-        residue_metrics.negative,
-        residue_metrics.hydrophobic,
-        residue_metrics.hydrophobic_moment_angle_degrees,
-    )
-
-
-def net_charge(
-    sequence: str,
-    *,
-    positive_aa: frozenset[str] | None = None,
-    negative_aa: frozenset[str] | None = None,
-) -> int:
-    positive = POSITIVE_AA if positive_aa is None else positive_aa
-    negative = NEGATIVE_AA if negative_aa is None else negative_aa
-    return sum(1 for aa in sequence if aa in positive) - sum(1 for aa in sequence if aa in negative)
-
-
-def hydrophobicity(sequence: str, *, hydrophobic_aa: frozenset[str] | None = None) -> float:
-    hydrophobic = HYDROPHOBIC_AA if hydrophobic_aa is None else hydrophobic_aa
-    return sum(1 for aa in sequence if aa in hydrophobic) / len(sequence)
-
-
-def hydrophobic_moment(
-    sequence: str,
-    *,
-    angle_degrees: float = 100.0,
-    hydrophobic_aa: frozenset[str] | None = None,
-) -> float:
-    hydrophobic = HYDROPHOBIC_AA if hydrophobic_aa is None else hydrophobic_aa
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
     angle = math.radians(angle_degrees)
     x_total = 0.0
     y_total = 0.0
     for index, aa in enumerate(sequence):
-<<<<<<< HEAD
-<<<<<<< HEAD
         value = 1.0 if aa in HYDROPHOBIC_AA else 0.0
-=======
-        value = 1.0 if aa in hydrophobic else 0.0
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
-        value = 1.0 if aa in HYDROPHOBIC_AA else 0.0
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
         x_total += value * math.cos(index * angle)
         y_total += value * math.sin(index * angle)
     return math.sqrt((x_total * x_total) + (y_total * y_total)) / len(sequence)
@@ -168,31 +117,13 @@ def _base_candidate(
     end: int,
     sites: ProteinCleavageSites,
     rank_score: float,
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-    residue_metrics=None,
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
     pddp_score: float | None = None,
     score_threshold: float | None = None,
     passes_score_threshold: bool | None = None,
     passes_cationic_cterm: bool | None = None,
 ) -> CandidatePeptide:
-<<<<<<< HEAD
-<<<<<<< HEAD
     charge = net_charge(sequence)
     hydro = hydrophobicity(sequence)
-=======
-    positive, negative, hydrophobic, angle = _metrics_from_residues(residue_metrics)
-    charge = net_charge(sequence, positive_aa=positive, negative_aa=negative)
-    hydro = hydrophobicity(sequence, hydrophobic_aa=hydrophobic)
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
-    charge = net_charge(sequence)
-    hydro = hydrophobicity(sequence)
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
     left_prob = _boundary_probability(sites, start)
     right_prob = _boundary_probability(sites, end)
     return CandidatePeptide(
@@ -204,15 +135,7 @@ def _base_candidate(
         length=len(sequence),
         net_charge=charge,
         hydrophobicity=hydro,
-<<<<<<< HEAD
-<<<<<<< HEAD
         hydrophobic_moment=hydrophobic_moment(sequence),
-=======
-        hydrophobic_moment=hydrophobic_moment(sequence, angle_degrees=angle, hydrophobic_aa=hydrophobic),
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
-        hydrophobic_moment=hydrophobic_moment(sequence),
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
         rank_score=rank_score,
         left_cleavage_probability=left_prob,
         right_cleavage_probability=right_prob,
@@ -234,24 +157,9 @@ def generate_candidates(
     min_hydrophobicity: float,
     top_n: int | None,
     include_terminal_boundaries: bool,
-<<<<<<< HEAD
-<<<<<<< HEAD
     show_progress: bool = False,
 ) -> tuple[list[CandidatePeptide], CandidateStats]:
     seen: set[str] = set()
-=======
-    dedupe_sequences: bool = True,
-    residue_metrics=None,
-    show_progress: bool = False,
-) -> tuple[list[CandidatePeptide], CandidateStats]:
-    positive, negative, hydrophobic, angle = _metrics_from_residues(residue_metrics)
-    seen: set[int] = set()
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
-    show_progress: bool = False,
-) -> tuple[list[CandidatePeptide], CandidateStats]:
-    seen: set[str] = set()
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
     retained: list[CandidatePeptide] = []
     heap: list[tuple[float, int, CandidatePeptide]] = []
     expanded = duplicate_sequences = failed_filters = counter = 0
@@ -271,10 +179,6 @@ def generate_candidates(
             include_terminal_boundaries=include_terminal_boundaries,
         ):
             expanded += 1
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
             if sequence in seen:
                 duplicate_sequences += 1
                 continue
@@ -285,39 +189,13 @@ def generate_candidates(
                 failed_filters += 1
                 continue
             moment = hydrophobic_moment(sequence)
-<<<<<<< HEAD
-=======
-            charge = net_charge(sequence, positive_aa=positive, negative_aa=negative)
-            hydro = hydrophobicity(sequence, hydrophobic_aa=hydrophobic)
-            if charge < min_charge or hydro < min_hydrophobicity:
-                failed_filters += 1
-                continue
-            if dedupe_sequences:
-                sequence_key = hash(sequence)
-                if sequence_key in seen:
-                    duplicate_sequences += 1
-                    continue
-                seen.add(sequence_key)
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
             candidate = _base_candidate(
                 sequence=sequence,
                 source_protein_id=record.protein_id,
                 start=start,
                 end=end,
                 sites=sites,
-<<<<<<< HEAD
-<<<<<<< HEAD
                 rank_score=charge * moment,
-=======
-                rank_score=charge
-                * hydrophobic_moment(sequence, angle_degrees=angle, hydrophobic_aa=hydrophobic),
-                residue_metrics=residue_metrics,
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
-                rank_score=charge * moment,
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
             )
             counter += 1
             if top_n is None:
@@ -327,14 +205,6 @@ def generate_candidates(
             elif candidate.rank_score > heap[0][0]:
                 heapq.heapreplace(heap, (candidate.rank_score, counter, candidate))
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-    del seen
-
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
     if top_n is not None:
         retained = [item[2] for item in sorted(heap, key=lambda row: row[0], reverse=True)]
     else:
@@ -361,13 +231,6 @@ def generate_paper_candidates(
     cationic_cterm_residues: str,
     overlap_policy: str,
     include_terminal_boundaries: bool,
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-    residue_metrics=None,
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
     show_progress: bool = False,
 ) -> tuple[list[CandidatePeptide], CandidateStats]:
     retained: list[CandidatePeptide] = []
@@ -400,13 +263,6 @@ def generate_paper_candidates(
                     end=end,
                     sites=sites,
                     rank_score=score,
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-                    residue_metrics=residue_metrics,
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
                     pddp_score=score,
                     score_threshold=score_threshold,
                     passes_score_threshold=True,

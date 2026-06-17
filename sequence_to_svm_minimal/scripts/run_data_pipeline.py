@@ -41,22 +41,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "If omitted, inferred from provided inputs."
         ),
     )
-<<<<<<< HEAD
-<<<<<<< HEAD
     ap.add_argument("--input", "-i", type=str, default=None, help="(blind) Txt-like sequences or FASTA")
     ap.add_argument("--amp-input", type=str, default=None, help="(train) AMP sequences (txt-like or FASTA)")
     ap.add_argument("--decoy-input", type=str, default=None, help="(train) Decoy sequences (txt-like or FASTA)")
-=======
-    ap.add_argument("input_positional", nargs="?", default=None, help="(blind) Optional alias for --input")
-    ap.add_argument("--input", "-i", type=str, default=None, help="(blind) TXT-like, FASTA, or CSV sequences")
-    ap.add_argument("--amp-input", type=str, default=None, help="(train) AMP sequences (TXT-like, FASTA, or CSV)")
-    ap.add_argument("--decoy-input", type=str, default=None, help="(train) Decoy sequences (TXT-like, FASTA, or CSV)")
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
-    ap.add_argument("--input", "-i", type=str, default=None, help="(blind) Txt-like sequences or FASTA")
-    ap.add_argument("--amp-input", type=str, default=None, help="(train) AMP sequences (txt-like or FASTA)")
-    ap.add_argument("--decoy-input", type=str, default=None, help="(train) Decoy sequences (txt-like or FASTA)")
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
     ap.add_argument(
         "--work-dir",
         "-w",
@@ -103,56 +90,11 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--cdhit-path", type=str, default="cd-hit")
     ap.add_argument("--cdhit-identity", type=float, default=0.40)
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
     ap.add_argument("--with-svm", action="store_true")
     ap.add_argument("--svm-aaindex", type=str, default=None)
     ap.add_argument("--svm-model-pkl", type=str, default=None)
     ap.add_argument("--svm-scaler-csv", type=str, default=None)
     ap.add_argument("--svm-output-dir", type=str, default=None, help="Default: work_dir/svm_out")
-<<<<<<< HEAD
-=======
-    ap.add_argument(
-        "--features-only",
-        "--svm-only",
-        action="store_true",
-        dest="features_only",
-        help=(
-            "Prepare inference inputs only: normalize/window, write geometric_features.csv "
-            "(peptide_id + sequence), and qsar12_descriptors.csv. Skips ESMFold, ESM2, and GNN. "
-            "Run compare_model_predictions.py on the workspace for model scoring "
-            "(or pass --run-compare)."
-        ),
-    )
-    ap.add_argument(
-        "--run-compare",
-        action="store_true",
-        help=(
-            "After the pipeline, run compare_model_predictions.py on the workspace. "
-            "Model paths come from configs/compare_models.json and/or --checkpoints-base."
-        ),
-    )
-    ap.add_argument(
-        "--checkpoints-base",
-        type=str,
-        default=None,
-        help=(
-            "Forwarded to compare_model_predictions: directory with svm_qsar12_model.pkl, "
-            "svm_qsar12_zscores.txt, and optional GNN .pt files."
-        ),
-    )
-    ap.add_argument(
-        "--compare-models",
-        type=str,
-        default="all",
-        choices=["all", "svm", "gnn"],
-        help="Forwarded to compare_model_predictions (default: svm when using --features-only).",
-    )
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
 
     ap.add_argument("--esm2-device", type=str, choices=["cuda", "cpu"], default=None)
     ap.add_argument("--esm2-max-length", type=int, default=400)
@@ -250,15 +192,6 @@ def main() -> int:
         if wm > wx:
             print("--window-min-len cannot be greater than --window-max-len.", file=sys.stderr)
             return 2
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-    if args.features_only and (args.train_legacy_gnn or args.train_final_gnn):
-        print("--features-only cannot be combined with GNN training flags.", file=sys.stderr)
-        return 2
->>>>>>> 020bd7d (SVM window config fix, pddp lower filter run and misc additions to data)
-=======
->>>>>>> f255595470cd527a24de3b686587977fb372fb16
     cfg = RunConfig.from_args(args)
     return run_pipeline(cfg)
 
