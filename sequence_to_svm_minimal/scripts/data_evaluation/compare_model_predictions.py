@@ -975,7 +975,7 @@ def main():
         type=str,
         default='all',
         choices=['all', 'svm', 'gnn'],
-        help='Which model families to run (default: all). Use svm after --features-only pipeline runs.',
+        help='Which model families to run (default: all). Use svm after --with-svm pipeline runs.',
     )
     ap.add_argument('--architecture', type=str, default=cfg['architecture'],
                     choices=['gcn', 'gat', 'egnn'],

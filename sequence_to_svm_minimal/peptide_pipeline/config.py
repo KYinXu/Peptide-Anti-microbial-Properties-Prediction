@@ -36,11 +36,6 @@ class RunConfig:
     run_compare: bool = False
     checkpoints_base: str | None = None
     compare_models: str = "all"
-    with_svm: bool = False
-    svm_aaindex: str | None = None
-    svm_model_pkl: str | None = None
-    svm_scaler_csv: str | None = None
-    svm_output_dir: str | None = None
     esm2_device: str | None = None
     esm2_max_length: int = 400
     train_legacy_gnn: bool = False
@@ -144,11 +139,6 @@ class RunConfig:
             run_compare=bool(getattr(args, "run_compare", False)),
             checkpoints_base=getattr(args, "checkpoints_base", None),
             compare_models=str(getattr(args, "compare_models", "all")),
-            with_svm=args.with_svm,
-            svm_aaindex=args.svm_aaindex,
-            svm_model_pkl=args.svm_model_pkl,
-            svm_scaler_csv=args.svm_scaler_csv,
-            svm_output_dir=args.svm_output_dir,
             esm2_device=args.esm2_device,
             esm2_max_length=args.esm2_max_length,
             train_legacy_gnn=args.train_legacy_gnn,

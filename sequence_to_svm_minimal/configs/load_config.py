@@ -58,6 +58,15 @@ def normalize_pipeline_arg_keys(raw: dict) -> dict:
     out = dict(raw)
     if "input_path" in out:
         out["input"] = out.pop("input_path")
+    if out.pop("with_svm", False) or out.pop("svm_only", False):
+        out["features_only"] = True
+    for deprecated in (
+        "svm_aaindex",
+        "svm_model_pkl",
+        "svm_scaler_csv",
+        "svm_output_dir",
+    ):
+        out.pop(deprecated, None)
     return {k: v for k, v in out.items() if not str(k).startswith("_")}
 
 

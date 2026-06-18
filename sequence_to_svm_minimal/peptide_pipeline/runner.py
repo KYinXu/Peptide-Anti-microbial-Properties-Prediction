@@ -18,7 +18,6 @@ from peptide_pipeline.steps.geometric_step import step_geometric
 from peptide_pipeline.sequence_io import read_sequence_records, write_canonical
 from peptide_pipeline.steps.normalize import normalize_to_canonical
 from peptide_pipeline.steps.qsar_step import step_qsar
-from peptide_pipeline.steps.svm_step import step_svm
 from peptide_pipeline.steps.comparison_step import step_compare_model_predictions
 from peptide_pipeline.steps.train_step import step_final_gnn, step_legacy_gnn
 from peptide_pipeline.steps.window_aggregate_step import step_window_aggregate
@@ -182,7 +181,7 @@ def run_pipeline(cfg: RunConfig) -> int:
 
     if cfg.features_only:
         if cfg.compare_models not in ("all", "svm"):
-            print("--features-only supports --compare-models all or svm.", file=sys.stderr)
+            print("--with-svm supports --compare-models all or svm.", file=sys.stderr)
             return 2
         seq_input = inference_sequences_path(ctx, cfg)
         if not cfg.dry_run:
@@ -215,13 +214,7 @@ def run_pipeline(cfg: RunConfig) -> int:
     if not skip_esmfold:
         step_esmfold(ctx, cfg)
 
-    try:
-        svm_preds = step_svm(ctx, cfg)
-    except ValueError as e:
-        print(str(e), file=sys.stderr)
-        return 1
-
-    step_geometric(ctx, cfg, svm_preds)
+    step_geometric(ctx, cfg, None)
 
     geo_for_qsar = step_cluster(ctx, cfg)
 
@@ -256,7 +249,7 @@ def run_pipeline(cfg: RunConfig) -> int:
             step_compare_model_predictions(ctx, cfg)
 
     if not cfg.dry_run:
-        step_window_aggregate(ctx, cfg, svm_preds)
+        step_window_aggregate(ctx, cfg, None)
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(ctx.manifest, f, indent=2)
         print(f"Wrote manifest: {manifest_path}")

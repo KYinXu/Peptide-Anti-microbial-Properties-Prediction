@@ -90,15 +90,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--cdhit-path", type=str, default="cd-hit")
     ap.add_argument("--cdhit-identity", type=float, default=0.40)
 
-    ap.add_argument("--with-svm", action="store_true")
-    ap.add_argument("--svm-aaindex", type=str, default=None)
-    ap.add_argument("--svm-model-pkl", type=str, default=None)
-    ap.add_argument("--svm-scaler-csv", type=str, default=None)
-    ap.add_argument("--svm-output-dir", type=str, default=None, help="Default: work_dir/svm_out")
-
     ap.add_argument(
-        "--features-only",
-        "--svm-only",
+        "--with-svm",
         action="store_true",
         dest="features_only",
         help=(
@@ -130,7 +123,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         default="all",
         choices=["all", "svm", "gnn"],
-        help="Forwarded to compare_model_predictions (default: svm when using --features-only).",
+        help="Forwarded to compare_model_predictions (default: svm when using --with-svm).",
     )
 
     ap.add_argument("--esm2-device", type=str, choices=["cuda", "cpu"], default=None)
@@ -230,7 +223,7 @@ def main() -> int:
             print("--window-min-len cannot be greater than --window-max-len.", file=sys.stderr)
             return 2
     if args.features_only and (args.train_legacy_gnn or args.train_final_gnn):
-        print("--features-only cannot be combined with GNN training flags.", file=sys.stderr)
+        print("--with-svm cannot be combined with GNN training flags.", file=sys.stderr)
         return 2
     cfg = RunConfig.from_args(args)
     return run_pipeline(cfg)

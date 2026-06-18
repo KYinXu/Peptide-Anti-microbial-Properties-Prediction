@@ -33,7 +33,6 @@ class RunContext:
     gen_qsar_script: Path
     esm2_script: Path
     prepare_clusters_script: Path
-    run_svm_script: Path
     legacy_train_script: Path
     final_train_script: Path
     compare_script: Path
@@ -80,7 +79,6 @@ class RunContext:
             gen_qsar_script=root / "scripts" / "data_generation" / "generate_qsar_features.py",
             esm2_script=root / "models" / "esm_sequence_processor.py",
             prepare_clusters_script=root / "nn_pipeline" / "prepare_clusters.py",
-            run_svm_script=root / "scripts" / "data_generation" / "run_sequence_svm.py",
             legacy_train_script=root / "scripts" / "run_gnn_training.py",
             final_train_script=root / "scripts" / "run_gnn_train_final_models.py",
             compare_script=root / "scripts" / "data_evaluation" / "compare_model_predictions.py",
