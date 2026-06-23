@@ -1,0 +1,8 @@
+{
+    "_documentation": "Sliding-window preset for scripts/run_data_pipeline.py (blind mode). Compose with configs/pipeline_defaults.json if needed. By default ESMFold/ESM2 use full parent sequences in canonical_seqs.txt; set window_expand_canonical true (or --window-expand-canonical) to fold every window as its own sequence.",
+    "window_min_len": 25,
+    "window_max_len": 35,
+    "window_stride": 1,
+    "esmfold-max-length": 600
+  }
+  
