@@ -12,9 +12,42 @@ from proteome_candidate_generator.fasta import canonical_standard_sequence, iter
 STANDARD_AA = tuple("ACDEFGHIKLMNPQRSTVWY")
 
 
+HYDROPHOBIC_AA = frozenset("AILMFVPG")
+POSITIVE_AA = frozenset("RK")
+NEGATIVE_AA = frozenset("DE")
+
+def net_charge(sequence: str) -> int:
+    return sum(1 for aa in sequence if aa in POSITIVE_AA) - sum(1 for aa in sequence if aa in NEGATIVE_AA)
+
+def hydrophobicity(sequence: str) -> float:
+    return sum(1 for aa in sequence if aa in HYDROPHOBIC_AA) / len(sequence)
+
 class SequenceScorer(Protocol):
     def score_sequence(self, sequence: str) -> float:
         ...
+
+
+@dataclass(frozen=True)
+class PaneScorer:
+    m: float = 1.0
+    n: float = 1.0
+
+    def score_sequence(self, sequence: str) -> float:
+        seq = canonical_standard_sequence(sequence)
+        if seq is None:
+            raise ValueError(f"Invalid peptide sequence: {sequence!r}")
+        
+        c = net_charge(seq)
+        if c <= 0:
+            return 0.0  # Pane's algorithm is typically for cationic peptides
+            
+        h = hydrophobicity(seq)
+        l = len(seq)
+        
+        # The paper explicitly states that the score is calculated by the formula C^m * H^n * L
+        # However, they also mention excluding a score of zero.
+        # If the score is extremely small, it might be rounded to zero.
+        return float((c ** self.m) * (h ** self.n) * l)
 
 
 @dataclass(frozen=True)

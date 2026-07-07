@@ -47,36 +47,27 @@ The default command is `all`, which runs:
 
 ## Paper-Aligned PDDP Mode
 
-Use `--protocol paper_pddp` to follow the published PDDP-style selection flow more closely:
-
-1. Pepsickle cleavage prediction on the human proteome.
-2. Fragment expansion using 10-50 aa peptides.
-3. AMP activity contribution scoring from a supplied score matrix.
-4. Thresholding by the mean nonzero score of known AMPs, or by an explicit threshold.
-5. Removal of lower-scoring overlapping peptides per source protein.
-6. Optional cationic C-terminus filtering.
-
-The paper’s AMP scoring algorithm is data-driven, so this mode requires the amino-acid contribution score matrix used for that method. The matrix can be long format (`position,amino_acid,score`) or wide format (`position,A,C,D,...`). Known AMP files may be FASTA, TXT, CSV, or TSV; sequence columns named `sequence`, `seq`, or `peptide` are detected when present.
+Use `--protocol mapp_database` to filter against the experimental MAPP database:
 
 ```bash
 python -m proteome_candidate_generator all \
-  --protocol paper_pddp \
+  --protocol mapp_database \
   --input data/proteomes/uniprotkb_UP000005640_2026_05_13.fasta \
   --output-dir data/proteomes/paper_pddp \
-  --amp-score-matrix data/proteomes/reference/amp_contribution_matrix.csv \
-  --known-amps data/proteomes/reference/known_amps.fasta \
-  --require-cationic-cterm \
+  --mapp-database data/proteomes/MAPP_database.csv \
   --resume
 ```
 
-If you already know the threshold (for example `5` from the paper), pass it directly:
+Use `--protocol paper_pddp` to follow the Pane scoring algorithm from the paper (C^m * H^n * L):
 
 ```bash
 python -m proteome_candidate_generator build-candidates \
   --protocol paper_pddp \
   --input data/proteomes/uniprotkb_UP000005640_2026_05_13.fasta \
   --output-dir data/proteomes/paper_pddp \
-  --amp-score-matrix data/proteomes/reference/amp_contribution_matrix.csv \
+  --pane-m-exponent 1.0 \
+  --pane-n-exponent 1.0 \
+  --amp-score-threshold 5.0 \
   --amp-score-threshold 5 \
   --require-cationic-cterm
 ```
@@ -144,7 +135,8 @@ python -m proteome_candidate_generator validate \
 - `--min-hydrophobicity 0.30`: minimum fraction of `A,I,L,M,F,V,P,G`.
 - `--top-n 400000`: keep the highest-ranked peptides after hard filters.
 - `--protocol current|paper_pddp`: use the existing heuristic workflow or the paper-aligned PDDP workflow.
-- `--amp-score-matrix`: contribution score matrix required for `--protocol paper_pddp`.
+- `--mapp-database`: MAPP database CSV required for `--protocol mapp_database`.
+- `--pane-m-exponent` and `--pane-n-exponent`: exponents for the Pane scoring algorithm in `--protocol paper_pddp`.
 - `--mapp-database`: MAPP peptide spreadsheet with a `Sequence` column; used as an exact-match reference when no score matrix is available.
 - `--known-amps`: known AMP sequence files used to compute the nonzero mean score threshold.
 - `--amp-score-threshold`: explicit score threshold override for paper mode.

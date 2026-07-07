@@ -5,18 +5,16 @@ from __future__ import annotations
 import csv
 import heapq
 import math
+import sqlite3
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Iterator
 
 from proteome_candidate_generator.cleavage import ProteinCleavageSites
 from proteome_candidate_generator.fasta import ProteinRecord
-from proteome_candidate_generator.pddp_scoring import SequenceScorer
+from proteome_candidate_generator.pddp_scoring import SequenceScorer, net_charge, hydrophobicity, HYDROPHOBIC_AA, POSITIVE_AA, NEGATIVE_AA
 from proteome_candidate_generator.progress import progress_iter
-
-HYDROPHOBIC_AA = frozenset("AILMFVPG")
-POSITIVE_AA = frozenset("RK")
-NEGATIVE_AA = frozenset("DE")
-
 
 @dataclass(frozen=True)
 class CandidatePeptide:
@@ -48,14 +46,6 @@ class CandidateStats:
     score_filtered: int = 0
     overlap_removed: int = 0
     cterm_filtered: int = 0
-
-
-def net_charge(sequence: str) -> int:
-    return sum(1 for aa in sequence if aa in POSITIVE_AA) - sum(1 for aa in sequence if aa in NEGATIVE_AA)
-
-
-def hydrophobicity(sequence: str) -> float:
-    return sum(1 for aa in sequence if aa in HYDROPHOBIC_AA) / len(sequence)
 
 
 def hydrophobic_moment(sequence: str, *, angle_degrees: float = 100.0) -> float:
@@ -232,75 +222,87 @@ def generate_paper_candidates(
     overlap_policy: str,
     include_terminal_boundaries: bool,
     show_progress: bool = False,
+    finalize_outputs: tuple[Path, Path, str] | None = None,
 ) -> tuple[list[CandidatePeptide], CandidateStats]:
-    retained: list[CandidatePeptide] = []
-    expanded = score_filtered = 0
+    expanded = score_filtered = overlap_removed = cterm_filtered = duplicate_sequences = 0
 
     record_iter = records
     if show_progress:
         record_iter = progress_iter(records, desc="Expanding and paper-scoring candidates", total=len(records))
-    for record in record_iter:
-        sites = sites_by_protein.get(record.protein_id)
-        if sites is None:
-            continue
-        for start, end, sequence in _iter_raw_candidates(
-            record,
-            sites,
-            min_len=min_len,
-            max_len=max_len,
-            include_terminal_boundaries=include_terminal_boundaries,
-        ):
-            expanded += 1
-            score = scorer.score_sequence(sequence)
-            if score <= score_threshold:
-                score_filtered += 1
+
+    seen_sequences: set[str] = set()
+    spill = _CandidateSpillStore()
+
+    try:
+        for record in record_iter:
+            sites = sites_by_protein.get(record.protein_id)
+            if sites is None:
                 continue
-            retained.append(
-                _base_candidate(
-                    sequence=sequence,
-                    source_protein_id=record.protein_id,
-                    start=start,
-                    end=end,
-                    sites=sites,
-                    rank_score=score,
-                    pddp_score=score,
-                    score_threshold=score_threshold,
-                    passes_score_threshold=True,
-                    passes_cationic_cterm=None,
+
+            protein_retained: list[CandidatePeptide] = []
+            for start, end, sequence in _iter_raw_candidates(
+                record,
+                sites,
+                min_len=min_len,
+                max_len=max_len,
+                include_terminal_boundaries=include_terminal_boundaries,
+            ):
+                expanded += 1
+                score = scorer.score_sequence(sequence)
+                if score <= score_threshold:
+                    score_filtered += 1
+                    continue
+                protein_retained.append(
+                    _base_candidate(
+                        sequence=sequence,
+                        source_protein_id=record.protein_id,
+                        start=start,
+                        end=end,
+                        sites=sites,
+                        rank_score=score,
+                        pddp_score=score,
+                        score_threshold=score_threshold,
+                        passes_score_threshold=True,
+                        passes_cationic_cterm=None,
+                    )
                 )
-            )
 
-    non_overlapping, overlap_removed = _apply_overlap_policy(retained, overlap_policy)
-    final_candidates = non_overlapping
-    cterm_filtered = 0
-    if require_cationic_cterm:
-        filtered: list[CandidatePeptide] = []
-        for candidate in final_candidates:
-            passed = has_cationic_cterm(candidate.sequence, cationic_cterm_residues)
-            candidate = _replace_candidate(candidate, passes_cationic_cterm=passed)
-            if passed:
-                filtered.append(candidate)
-            else:
-                cterm_filtered += 1
-        final_candidates = filtered
-    else:
-        final_candidates = [
-            _replace_candidate(candidate, passes_cationic_cterm=None)
-            for candidate in final_candidates
-        ]
+            protein_non_overlapping, removed = _apply_overlap_policy(protein_retained, overlap_policy)
+            overlap_removed += removed
 
-    final_candidates.sort(key=lambda row: (row.pddp_score or float("-inf")), reverse=True)
-    final = [_with_peptide_id(candidate, index + 1) for index, candidate in enumerate(final_candidates)]
-    stats = CandidateStats(
-        expanded=expanded,
-        duplicate_sequences=0,
-        failed_filters=score_filtered + cterm_filtered,
-        retained=len(final),
-        score_filtered=score_filtered,
-        overlap_removed=overlap_removed,
-        cterm_filtered=cterm_filtered,
-    )
-    return final, stats
+            for candidate in protein_non_overlapping:
+                if require_cationic_cterm:
+                    passed = has_cationic_cterm(candidate.sequence, cationic_cterm_residues)
+                    if not passed:
+                        cterm_filtered += 1
+                        continue
+                    candidate = _replace_candidate(candidate, passes_cationic_cterm=True)
+                else:
+                    candidate = _replace_candidate(candidate, passes_cationic_cterm=None)
+
+                if candidate.sequence in seen_sequences:
+                    duplicate_sequences += 1
+                    continue
+
+                seen_sequences.add(candidate.sequence)
+                spill.add(candidate)
+
+        stats = CandidateStats(
+            expanded=expanded,
+            duplicate_sequences=duplicate_sequences,
+            failed_filters=score_filtered + cterm_filtered,
+            retained=spill.count,
+            score_filtered=score_filtered,
+            overlap_removed=overlap_removed,
+            cterm_filtered=cterm_filtered,
+        )
+        if finalize_outputs is not None:
+            table_stem, txt_path, output_format = finalize_outputs
+            spill.write_sorted_outputs(table_stem, txt_path, output_format=output_format)
+            return [], stats
+        return spill.to_list_with_ids(), stats
+    finally:
+        spill.close()
 
 
 def _apply_overlap_policy(candidates: list[CandidatePeptide], policy: str) -> tuple[list[CandidatePeptide], int]:
@@ -312,7 +314,7 @@ def _apply_overlap_policy(candidates: list[CandidatePeptide], policy: str) -> tu
             sort_key=lambda row: (
                 row.pddp_score or float("-inf"),
                 row.predicted_cleavage_probability,
-                row.length,
+                -row.length,  # Break ties by preferring shorter peptides
             ),
         )
     if policy == "longest":
@@ -333,7 +335,7 @@ def _remove_overlapping_lower_scores(candidates: list[CandidatePeptide]) -> tupl
         sort_key=lambda row: (
             row.pddp_score or float("-inf"),
             row.predicted_cleavage_probability,
-            row.length,
+            -row.length,
         ),
     )
 
@@ -375,6 +377,182 @@ def _with_peptide_id(candidate: CandidatePeptide, index: int) -> CandidatePeptid
     return CandidatePeptide(**values)
 
 
+_CANDIDATE_FIELDNAMES = list(CandidatePeptide.__dataclass_fields__)
+_SPILL_COMMIT_INTERVAL = 10_000
+
+
+def _optional_bool_to_db(value: bool | None) -> int | None:
+    if value is None:
+        return None
+    return int(value)
+
+
+def _optional_bool_from_db(value: object) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
+
+
+def _candidate_to_spill_row(candidate: CandidatePeptide) -> tuple[object, ...]:
+    return (
+        candidate.peptide_id,
+        candidate.sequence,
+        candidate.source_protein_id,
+        candidate.start,
+        candidate.end,
+        candidate.length,
+        candidate.net_charge,
+        candidate.hydrophobicity,
+        candidate.hydrophobic_moment,
+        candidate.rank_score,
+        candidate.left_cleavage_probability,
+        candidate.right_cleavage_probability,
+        candidate.predicted_cleavage_probability,
+        candidate.pddp_score,
+        candidate.score_threshold,
+        _optional_bool_to_db(candidate.passes_score_threshold),
+        _optional_bool_to_db(candidate.passes_cationic_cterm),
+    )
+
+
+def _candidate_from_spill_row(row: sqlite3.Row) -> CandidatePeptide:
+    return CandidatePeptide(
+        peptide_id=row["peptide_id"],
+        sequence=row["sequence"],
+        source_protein_id=row["source_protein_id"],
+        start=row["start"],
+        end=row["end"],
+        length=row["length"],
+        net_charge=row["net_charge"],
+        hydrophobicity=row["hydrophobicity"],
+        hydrophobic_moment=row["hydrophobic_moment"],
+        rank_score=row["rank_score"],
+        left_cleavage_probability=row["left_cleavage_probability"],
+        right_cleavage_probability=row["right_cleavage_probability"],
+        predicted_cleavage_probability=row["predicted_cleavage_probability"],
+        pddp_score=row["pddp_score"],
+        score_threshold=row["score_threshold"],
+        passes_score_threshold=_optional_bool_from_db(row["passes_score_threshold"]),
+        passes_cationic_cterm=_optional_bool_from_db(row["passes_cationic_cterm"]),
+    )
+
+
+class _CandidateSpillStore:
+    def __init__(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "candidates.sqlite"
+        self._conn = sqlite3.connect(self._db_path)
+        self._conn.row_factory = sqlite3.Row
+        self._create_table()
+        self.count = 0
+
+    def _create_table(self) -> None:
+        self._conn.execute(
+            """
+            CREATE TABLE candidates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                peptide_id TEXT,
+                sequence TEXT NOT NULL,
+                source_protein_id TEXT NOT NULL,
+                start INTEGER NOT NULL,
+                end INTEGER NOT NULL,
+                length INTEGER NOT NULL,
+                net_charge INTEGER NOT NULL,
+                hydrophobicity REAL NOT NULL,
+                hydrophobic_moment REAL NOT NULL,
+                rank_score REAL NOT NULL,
+                left_cleavage_probability REAL NOT NULL,
+                right_cleavage_probability REAL NOT NULL,
+                predicted_cleavage_probability REAL NOT NULL,
+                pddp_score REAL,
+                score_threshold REAL,
+                passes_score_threshold INTEGER,
+                passes_cationic_cterm INTEGER
+            )
+            """
+        )
+        self._conn.execute(
+            "CREATE INDEX idx_candidates_pddp_score ON candidates (pddp_score DESC, id ASC)"
+        )
+
+    def add(self, candidate: CandidatePeptide) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO candidates (
+                peptide_id, sequence, source_protein_id, start, end, length,
+                net_charge, hydrophobicity, hydrophobic_moment, rank_score,
+                left_cleavage_probability, right_cleavage_probability,
+                predicted_cleavage_probability, pddp_score, score_threshold,
+                passes_score_threshold, passes_cationic_cterm
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            _candidate_to_spill_row(candidate),
+        )
+        self.count += 1
+        if self.count % _SPILL_COMMIT_INTERVAL == 0:
+            self._conn.commit()
+
+    def iter_sorted(self) -> Iterator[CandidatePeptide]:
+        self._conn.commit()
+        cursor = self._conn.execute(
+            """
+            SELECT *
+            FROM candidates
+            ORDER BY COALESCE(pddp_score, -1e308) DESC, id ASC
+            """
+        )
+        for row in cursor:
+            yield _candidate_from_spill_row(row)
+
+    def to_list_with_ids(self) -> list[CandidatePeptide]:
+        return [_with_peptide_id(candidate, index + 1) for index, candidate in enumerate(self.iter_sorted())]
+
+    def write_sorted_outputs(self, table_stem: Path, txt_path: Path, *, output_format: str) -> Path:
+        csv_path = table_stem.with_suffix(".csv")
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        txt_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with csv_path.open("w", newline="", encoding="utf-8") as csv_handle, txt_path.open(
+            "w", encoding="utf-8"
+        ) as txt_handle:
+            writer = csv.DictWriter(csv_handle, fieldnames=_CANDIDATE_FIELDNAMES)
+            writer.writeheader()
+            for index, candidate in enumerate(self.iter_sorted(), start=1):
+                final_candidate = _with_peptide_id(candidate, index)
+                writer.writerow(asdict(final_candidate))
+                txt_handle.write(f"{final_candidate.peptide_id} {final_candidate.sequence}\n")
+
+        if output_format == "parquet" or (output_format == "auto" and _can_write_parquet()):
+            parquet_path = table_stem.with_suffix(".parquet")
+            _csv_to_parquet_chunked(csv_path, parquet_path)
+            return parquet_path
+        return csv_path
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+        if self._tmpdir is not None:
+            self._tmpdir.cleanup()
+            self._tmpdir = None
+
+
+def _csv_to_parquet_chunked(csv_path: Path, parquet_path: Path, *, chunksize: int = 100_000) -> None:
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+    writer: pq.ParquetWriter | None = None
+    for chunk in pd.read_csv(csv_path, chunksize=chunksize):
+        table = pa.Table.from_pandas(chunk, preserve_index=False)
+        if writer is None:
+            writer = pq.ParquetWriter(parquet_path, table.schema)
+        writer.write_table(table)
+    if writer is not None:
+        writer.close()
+
+
 def write_candidates_csv(candidates: list[CandidatePeptide], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = list(CandidatePeptide.__dataclass_fields__)
@@ -393,6 +571,12 @@ def write_candidates_table(candidates: list[CandidatePeptide], path: Path, *, ou
     table_path = path.with_suffix(".csv")
     write_candidates_csv(candidates, table_path)
     return table_path
+
+
+def resolve_candidates_table_path(table_stem: Path, output_format: str) -> Path:
+    if output_format == "parquet" or (output_format == "auto" and _can_write_parquet()):
+        return table_stem.with_suffix(".parquet")
+    return table_stem.with_suffix(".csv")
 
 
 def _can_write_parquet() -> bool:

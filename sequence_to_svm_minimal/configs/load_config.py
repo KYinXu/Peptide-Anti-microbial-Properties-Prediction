@@ -111,6 +111,7 @@ PEPSICKLE_CONFIG_SECTIONS = frozenset(
         "fragment_expansion",
         "filtering",
         "paper_pddp",
+        "mapp_database",
         "output",
     }
 )

@@ -2,7 +2,7 @@
   "_documentation": "Defaults for proteome_candidate_generator. Run from sequence_to_svm_minimal: python -m proteome_candidate_generator --config configs/pepsickle_pipeline.json. Repeat --config for layered overrides; CLI flags override JSON. In filtering, null top_n keeps all candidates; null min_len/max_len/min_charge/min_hydrophobicity fall back to protocol defaults (current: 8/30/2/0.30, paper_pddp: 10/50/0/0.0).",
 
   "command": "all",
-  "input": "data/proteomes/uniprotkb_UP000005640_2026_05_13.fasta",
+  "input": "data/proteomes/uniprotkb_UP000005640_AND_model_organis_2026_06_27.fasta",
   "output_dir": "data/proteomes/paper_pddp_relaxed",
 
   "preprocessing": {
@@ -13,8 +13,11 @@
 
   "pepsickle": {
     "pepsickle_bin": "pepsickle",
-    "threshold": 0.35,
-    "cleavage_models": ["constitutive", "immunoproteasome"],
+    "threshold": 0.5,
+    "cleavage_models": [
+      "constitutive",
+      "immunoproteasome"
+    ],
     "workers": 1,
     "resume": true,
     "force": false
@@ -27,7 +30,7 @@
 
   "filtering": {
     "protocol": "paper_pddp",
-    "min_len": 8,
+    "min_len": 10,
     "max_len": 50,
     "min_charge": null,
     "min_hydrophobicity": null,
@@ -38,14 +41,21 @@
     "hydrophobic_moment_angle_degrees": 100.0
   },
 
-  "paper_pddp": {
-    "amp_score_matrix": null,
+  "mapp_database": {
     "mapp_database": "data/proteomes/MAPP_database.csv",
-    "known_amps": [],
-    "amp_score_threshold": null,
+    "amp_score_threshold": 0.0,
     "require_cationic_cterm": false,
     "cationic_cterm_residues": "KRH",
     "overlap_policy": "keep_all"
+  },
+
+  "paper_pddp": {
+    "pane_m_exponent": 1.0,
+    "pane_n_exponent": 1.0,
+    "amp_score_threshold": 5.0,
+    "require_cationic_cterm": false,
+    "cationic_cterm_residues": "KRH",
+    "overlap_policy": "top_score"
   },
 
   "output": {

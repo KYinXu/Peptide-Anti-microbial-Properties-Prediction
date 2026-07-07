@@ -11,6 +11,7 @@ from pathlib import Path
 from proteome_candidate_generator.candidates import (
     generate_candidates,
     generate_paper_candidates,
+    resolve_candidates_table_path,
     write_candidates_table,
     write_pipeline_txt,
 )
@@ -22,6 +23,7 @@ from proteome_candidate_generator.cleavage import (
 from proteome_candidate_generator.fasta import BatchFile, ProteinRecord, preprocess_fasta, read_valid_proteins
 from proteome_candidate_generator.pepsickle_runner import build_tasks, run_tasks
 from proteome_candidate_generator.pddp_scoring import (
+    PaneScorer,
     compute_nonzero_mean_threshold,
     is_mapp_database,
     load_known_amp_sequences,
@@ -47,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--pepsickle-bin", default="pepsickle")
-    parser.add_argument("--protocol", choices=["current", "paper_pddp"], default="current")
+    parser.add_argument("--protocol", choices=["current", "paper_pddp", "mapp_database"], default="current")
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--batch-size", type=int, default=1000)
     parser.add_argument("--workers", type=int, default=1)
@@ -63,6 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mapp-database", type=Path, default=None)
     parser.add_argument("--known-amps", type=Path, nargs="*", default=None)
     parser.add_argument("--amp-score-threshold", type=float, default=None)
+    parser.add_argument("--pane-m-exponent", type=float, default=1.0)
+    parser.add_argument("--pane-n-exponent", type=float, default=1.0)
     parser.add_argument("--require-cationic-cterm", action="store_true")
     parser.add_argument("--cationic-cterm-residues", default="KRH")
     parser.add_argument(
@@ -86,7 +90,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    import sys
+    from configs.load_config import argv_without_config_flags
+    from proteome_candidate_generator.config import parser_defaults
+
+    if argv is None:
+        argv = sys.argv[1:]
+    
+    cfg_path, remaining_argv = argv_without_config_flags(argv)
+    parser = build_parser()
+    
+    if cfg_path:
+        defaults = parser_defaults([cfg_path])
+        parser.set_defaults(**defaults)
+        
+    args = parser.parse_args(remaining_argv)
     try:
         _apply_protocol_defaults(args)
         _validate_args(args)
@@ -97,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _apply_protocol_defaults(args: argparse.Namespace) -> None:
-    if args.protocol == "paper_pddp":
+    if args.protocol in ("paper_pddp", "mapp_database"):
         args.min_len = 10 if args.min_len is None else args.min_len
         args.max_len = 50 if args.max_len is None else args.max_len
         args.min_charge = 0 if args.min_charge is None else args.min_charge
@@ -137,18 +155,13 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--min-hydrophobicity must be between 0 and 1")
     if args.top_n is not None and args.top_n <= 0:
         raise ValueError("--top-n must be positive")
+    if args.protocol == "mapp_database":
+        if args.mapp_database is None:
+            raise ValueError("--protocol mapp_database requires --mapp-database")
     if args.protocol == "paper_pddp":
-        if args.amp_score_matrix is None and args.mapp_database is None:
-            raise ValueError("--protocol paper_pddp requires --amp-score-matrix or --mapp-database")
-        if args.amp_score_matrix is not None and args.mapp_database is not None:
-            raise ValueError("Use only one of --amp-score-matrix or --mapp-database")
-        if (
-            args.amp_score_matrix is not None
-            and not is_mapp_database(args.amp_score_matrix)
-            and args.amp_score_threshold is None
-            and not args.known_amps
-        ):
-            raise ValueError("--amp-score-matrix requires --known-amps or --amp-score-threshold")
+        pass  # Pane scorer doesn't require extra files unless we want to compute threshold from known AMPs
+        if args.amp_score_matrix is not None:
+            raise ValueError("--protocol paper_pddp uses Pane scorer, do not provide --amp-score-matrix")
         if not args.cationic_cterm_residues:
             raise ValueError("--cationic-cterm-residues cannot be empty")
     if str(args.pepsickle_bin).startswith("/path/to/"):
@@ -236,15 +249,38 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
             "Run `run-pepsickle`, or run the full `all` command."
         )
     lengths = {record.protein_id: len(record.sequence) for record in records}
-    sites = load_union_from_outputs(
-        output_paths,
-        lengths=lengths,
-        threshold=args.threshold,
-        show_progress=not args.no_progress,
-    )
-    write_sites_jsonl(sites, paths["sites"])
+    
+    # Check if we can reuse the existing cleavage_sites.jsonl
+    if paths["sites"].exists():
+        print(f"Loading existing cleavage sites from {paths['sites']}")
+        import json
+        from proteome_candidate_generator.cleavage import ProteinCleavageSites
+        sites = {}
+        with paths["sites"].open("r", encoding="utf-8") as f:
+            for line in f:
+                data = json.loads(line)
+                # Apply the threshold filter when loading from cache!
+                filtered_probs = {
+                    int(k): float(v) 
+                    for k, v in data["site_probabilities"].items() 
+                    if float(v) > args.threshold  # The paper says "threshold of 0.5"
+                }
+                sites[data["protein_id"]] = ProteinCleavageSites(
+                    protein_id=data["protein_id"],
+                    length=data["length"],
+                    site_probabilities=filtered_probs
+                )
+    else:
+        print(f"Parsing raw Pepsickle TSVs to build cleavage sites...")
+        sites = load_union_from_outputs(
+            output_paths,
+            lengths=lengths,
+            threshold=args.threshold,
+            show_progress=not args.no_progress,
+        )
+        write_sites_jsonl(sites, paths["sites"])
     scoring_metadata: dict[str, object] = {"protocol": args.protocol}
-    if args.protocol == "paper_pddp":
+    if args.protocol in ("paper_pddp", "mapp_database"):
         scorer, threshold, threshold_source, known_amp_count = _build_paper_scorer(args)
         candidates, candidate_stats = generate_paper_candidates(
             records,
@@ -258,11 +294,14 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
             overlap_policy=args.overlap_policy,
             include_terminal_boundaries=not args.no_terminal_boundaries,
             show_progress=not args.no_progress,
+            finalize_outputs=(paths["final_table"], paths["final_txt"], args.output_format),
         )
         scoring_metadata.update(
             {
-                "amp_score_matrix": str(args.amp_score_matrix),
+                "amp_score_matrix": str(args.amp_score_matrix) if args.amp_score_matrix else None,
                 "mapp_database": str(args.mapp_database) if args.mapp_database else None,
+                "pane_m_exponent": args.pane_m_exponent,
+                "pane_n_exponent": args.pane_n_exponent,
                 "known_amps": [str(path) for path in (args.known_amps or [])],
                 "known_amp_count": known_amp_count,
                 "amp_score_threshold": threshold,
@@ -284,8 +323,11 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
             include_terminal_boundaries=not args.no_terminal_boundaries,
             show_progress=not args.no_progress,
         )
-    table_path = write_candidates_table(candidates, paths["final_table"], output_format=args.output_format)
-    write_pipeline_txt(candidates, paths["final_txt"])
+    if candidates:
+        table_path = write_candidates_table(candidates, paths["final_table"], output_format=args.output_format)
+        write_pipeline_txt(candidates, paths["final_txt"])
+    else:
+        table_path = resolve_candidates_table_path(paths["final_table"], args.output_format)
     _update_manifest(
         paths["manifest"],
         {
@@ -299,30 +341,32 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
             },
         },
     )
-    print(f"Wrote {len(candidates)} final candidates to {table_path}")
+    print(f"Wrote {candidate_stats.retained} final candidates to {table_path}")
 
 
 def _build_paper_scorer(args: argparse.Namespace):
-    if args.mapp_database is not None:
+    if args.protocol == "mapp_database":
         scorer = load_mapp_reference_scorer(args.mapp_database)
         threshold = 0.0 if args.amp_score_threshold is None else args.amp_score_threshold
         return scorer, threshold, "mapp_treatment_total", 0
 
-    if is_mapp_database(args.amp_score_matrix):
-        scorer = load_mapp_reference_scorer(args.amp_score_matrix)
-        threshold = 0.0 if args.amp_score_threshold is None else args.amp_score_threshold
-        return scorer, threshold, "mapp_treatment_total_from_amp_score_matrix_arg", 0
+    if args.protocol == "paper_pddp":
+        scorer = PaneScorer(m=args.pane_m_exponent, n=args.pane_n_exponent)
+        threshold = args.amp_score_threshold
+        threshold_source = "cli"
+        known_amp_count = 0
+        if threshold is None:
+            if args.known_amps:
+                known_amp_sequences = load_known_amp_sequences(args.known_amps)
+                known_amp_count = len(known_amp_sequences)
+                threshold = compute_nonzero_mean_threshold(known_amp_sequences, scorer)
+                threshold_source = "known_amps_nonzero_mean"
+            else:
+                threshold = 5.0
+                threshold_source = "default"
+        return scorer, threshold, threshold_source, known_amp_count
 
-    score_matrix = load_score_matrix(args.amp_score_matrix)
-    threshold = args.amp_score_threshold
-    threshold_source = "cli"
-    known_amp_count = 0
-    if threshold is None:
-        known_amp_sequences = load_known_amp_sequences(args.known_amps or [])
-        known_amp_count = len(known_amp_sequences)
-        threshold = compute_nonzero_mean_threshold(known_amp_sequences, score_matrix)
-        threshold_source = "known_amps_nonzero_mean"
-    return score_matrix, threshold, threshold_source, known_amp_count
+    raise ValueError(f"Unknown protocol: {args.protocol}")
 
 
 def _run_validate(args: argparse.Namespace) -> None:

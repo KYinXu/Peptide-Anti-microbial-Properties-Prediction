@@ -1,0 +1,35 @@
+{
+  "candidate_generation": {
+    "cterm_filtered": 0,
+    "duplicate_sequences": 1665148,
+    "expanded": 143040216,
+    "failed_filters": 88108528,
+    "overlap_removed": 0,
+    "retained": 53266540,
+    "score_filtered": 88108528
+  },
+  "candidate_protocol": {
+    "amp_score_matrix": null,
+    "amp_score_threshold": 5.0,
+    "amp_score_threshold_source": "cli",
+    "cationic_cterm_residues": "KRH",
+    "known_amp_count": 0,
+    "known_amps": [],
+    "mapp_database": "/mnt/c/Users/bioin/Documents/Peptide-Anti-microbial-Properties-Prediction/sequence_to_svm_minimal/data/proteomes/MAPP_database.csv",
+    "overlap_policy": "keep_all",
+    "pane_m_exponent": 1.0,
+    "pane_n_exponent": 1.0,
+    "protocol": "paper_pddp",
+    "require_cationic_cterm": false
+  },
+  "input_stats": {
+    "skipped_invalid": 25,
+    "total": 20416,
+    "valid": 20391
+  },
+  "outputs": {
+    "cleavage_sites": "/mnt/c/Users/bioin/Documents/Peptide-Anti-microbial-Properties-Prediction/sequence_to_svm_minimal/data/proteomes/pane_filtered_candidates/generated/cleavage_sites.jsonl",
+    "final_pipeline_txt": "/mnt/c/Users/bioin/Documents/Peptide-Anti-microbial-Properties-Prediction/sequence_to_svm_minimal/data/proteomes/pane_filtered_candidates/generated/final_candidates.txt",
+    "final_table": "/mnt/c/Users/bioin/Documents/Peptide-Anti-microbial-Properties-Prediction/sequence_to_svm_minimal/data/proteomes/pane_filtered_candidates/generated/final_candidates.csv"
+  }
+}

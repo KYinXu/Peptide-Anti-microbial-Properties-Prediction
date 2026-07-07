@@ -247,6 +247,51 @@ class TestProteomeCandidateGenerator(unittest.TestCase):
         self.assertEqual(len(candidates), 2)
         self.assertEqual(stats.overlap_removed, 0)
 
+    def test_paper_candidate_streaming_matches_in_memory(self) -> None:
+        records = [ProteinRecord("p1", "MMMMMMMMMMAAAAAAAAAAKCCCCCCCCCCR")]
+        sites = union_sites(
+            [
+                parse_pepsickle_tsv(
+                    _write_tsv(
+                        "position\tresidue\tcleav_prob\tcleaved\tprotein_id\n"
+                        "10\tM\t0.9\tTrue\tp1\n"
+                        "20\tA\t0.9\tTrue\tp1\n"
+                        "32\tR\t0.9\tTrue\tp1\n"
+                    ),
+                    model_name="constitutive",
+                    threshold=0.5,
+                )
+            ],
+            {"p1": len(records[0].sequence)},
+        )
+        matrix = load_score_matrix(_write_score_matrix({"A": 1.0, "C": 2.0, "K": 3.0, "R": 4.0}))
+        kwargs = dict(
+            records=records,
+            sites_by_protein=sites,
+            min_len=10,
+            max_len=50,
+            scorer=matrix,
+            score_threshold=10.0,
+            require_cationic_cterm=False,
+            cationic_cterm_residues="KR",
+            overlap_policy="keep_all",
+            include_terminal_boundaries=False,
+        )
+        in_memory, in_memory_stats = generate_paper_candidates(**kwargs)
+        with tempfile.TemporaryDirectory() as td:
+            output_dir = Path(td)
+            streamed, streamed_stats = generate_paper_candidates(
+                **kwargs,
+                finalize_outputs=(output_dir / "final_candidates", output_dir / "final_candidates.txt", "csv"),
+            )
+            self.assertEqual(streamed, [])
+            self.assertEqual(streamed_stats, in_memory_stats)
+            txt_lines = (output_dir / "final_candidates.txt").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(
+                txt_lines,
+                [f"{candidate.peptide_id} {candidate.sequence}" for candidate in in_memory],
+            )
+
     def test_mapp_database_can_score_exact_sequence_matches(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             mapp = Path(td) / "MAPP_database.csv"
@@ -262,26 +307,6 @@ class TestProteomeCandidateGenerator(unittest.TestCase):
         self.assertEqual(scorer.score_sequence("CCCCR"), 0.0)
         self.assertEqual(scorer.score_sequence("RRRRR"), 0.0)
 
-    def test_mapp_database_is_accepted_from_amp_score_matrix_argument(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            mapp = Path(td) / "MAPP_database.csv"
-            mapp.write_text(
-                "Sequence,Leading razor protein,Start position,End position,Gene names,Treatment\n"
-                "AAAAK,P1,1,5,GENE,Wt-alpha6:0;KO-alpha6:25;KO-iso:5\n",
-                encoding="utf-8",
-            )
-
-            class Args:
-                mapp_database = None
-                amp_score_matrix = mapp
-                amp_score_threshold = None
-                known_amps = None
-
-            scorer, threshold, source, known_count = _build_paper_scorer(Args())
-        self.assertEqual(scorer.score_sequence("AAAAK"), 30.0)
-        self.assertEqual(threshold, 0.0)
-        self.assertEqual(source, "mapp_treatment_total_from_amp_score_matrix_arg")
-        self.assertEqual(known_count, 0)
 
 
 def _write_tsv(text: str) -> Path:
