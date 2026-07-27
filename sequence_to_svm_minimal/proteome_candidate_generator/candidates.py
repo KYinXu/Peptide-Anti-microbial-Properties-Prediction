@@ -223,6 +223,7 @@ def generate_paper_candidates(
     include_terminal_boundaries: bool,
     show_progress: bool = False,
     finalize_outputs: tuple[Path, Path, str] | None = None,
+    overlap_fraction_cutoff: float = 0.5,
 ) -> tuple[list[CandidatePeptide], CandidateStats]:
     expanded = score_filtered = overlap_removed = cterm_filtered = duplicate_sequences = 0
 
@@ -267,7 +268,11 @@ def generate_paper_candidates(
                     )
                 )
 
-            protein_non_overlapping, removed = _apply_overlap_policy(protein_retained, overlap_policy)
+            protein_non_overlapping, removed = _apply_overlap_policy(
+                protein_retained,
+                overlap_policy,
+                overlap_fraction_cutoff=overlap_fraction_cutoff,
+            )
             overlap_removed += removed
 
             for candidate in protein_non_overlapping:
@@ -305,7 +310,12 @@ def generate_paper_candidates(
         spill.close()
 
 
-def _apply_overlap_policy(candidates: list[CandidatePeptide], policy: str) -> tuple[list[CandidatePeptide], int]:
+def _apply_overlap_policy(
+    candidates: list[CandidatePeptide],
+    policy: str,
+    *,
+    overlap_fraction_cutoff: float = 0.5,
+) -> tuple[list[CandidatePeptide], int]:
     if policy == "keep_all":
         return candidates, 0
     if policy == "top_score":
@@ -315,6 +325,30 @@ def _apply_overlap_policy(candidates: list[CandidatePeptide], policy: str) -> tu
                 row.pddp_score or float("-inf"),
                 row.predicted_cleavage_probability,
                 -row.length,  # Break ties by preferring shorter peptides
+            ),
+        )
+    fractional_overlap_policies = {
+        "top_score_50pct_shorter": "shorter",
+        "top_score_50pct_candidate": "candidate",
+        "top_score_50pct_longer": "longer",
+        "top_score_overlap_fraction_shorter": "shorter",
+        "top_score_overlap_fraction_candidate": "candidate",
+        "top_score_overlap_fraction_longer": "longer",
+    }
+    if policy in fractional_overlap_policies:
+        denominator = fractional_overlap_policies[policy]
+        return _remove_overlapping_candidates(
+            candidates,
+            sort_key=lambda row: (
+                row.pddp_score or float("-inf"),
+                row.predicted_cleavage_probability,
+                -row.length,
+            ),
+            overlaps=lambda left, right: _overlaps_by_fraction(
+                left,
+                right,
+                denominator=denominator,
+                cutoff=overlap_fraction_cutoff,
             ),
         )
     if policy == "longest":
@@ -340,7 +374,8 @@ def _remove_overlapping_lower_scores(candidates: list[CandidatePeptide]) -> tupl
     )
 
 
-def _remove_overlapping_candidates(candidates, *, sort_key) -> tuple[list[CandidatePeptide], int]:
+def _remove_overlapping_candidates(candidates, *, sort_key, overlaps=None) -> tuple[list[CandidatePeptide], int]:
+    overlaps = overlaps or _overlaps
     selected: list[CandidatePeptide] = []
     removed = 0
     by_protein: dict[str, list[CandidatePeptide]] = {}
@@ -353,7 +388,7 @@ def _remove_overlapping_candidates(candidates, *, sort_key) -> tuple[list[Candid
             key=sort_key,
             reverse=True,
         ):
-            if any(_overlaps(candidate, existing) for existing in chosen):
+            if any(overlaps(candidate, existing) for existing in chosen):
                 removed += 1
                 continue
             chosen.append(candidate)
@@ -363,6 +398,29 @@ def _remove_overlapping_candidates(candidates, *, sort_key) -> tuple[list[Candid
 
 def _overlaps(left: CandidatePeptide, right: CandidatePeptide) -> bool:
     return left.source_protein_id == right.source_protein_id and left.start < right.end and right.start < left.end
+
+
+def _overlaps_by_fraction(
+    left: CandidatePeptide,
+    right: CandidatePeptide,
+    *,
+    denominator: str,
+    cutoff: float,
+) -> bool:
+    if left.source_protein_id != right.source_protein_id:
+        return False
+    overlap = max(0, min(left.end, right.end) - max(left.start, right.start))
+    if overlap == 0:
+        return False
+    if denominator == "shorter":
+        base = min(left.length, right.length)
+    elif denominator == "candidate":
+        base = left.length
+    elif denominator == "longer":
+        base = max(left.length, right.length)
+    else:
+        raise ValueError(f"Unknown overlap denominator: {denominator}")
+    return (overlap / base) >= cutoff
 
 
 def _replace_candidate(candidate: CandidatePeptide, **updates: object) -> CandidatePeptide:

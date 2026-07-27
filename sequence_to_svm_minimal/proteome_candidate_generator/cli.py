@@ -23,6 +23,7 @@ from proteome_candidate_generator.cleavage import (
 from proteome_candidate_generator.fasta import BatchFile, ProteinRecord, preprocess_fasta, read_valid_proteins
 from proteome_candidate_generator.pepsickle_runner import build_tasks, run_tasks
 from proteome_candidate_generator.pddp_scoring import (
+    AmpScoringPaneScorer,
     PaneScorer,
     compute_nonzero_mean_threshold,
     is_mapp_database,
@@ -65,15 +66,37 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mapp-database", type=Path, default=None)
     parser.add_argument("--known-amps", type=Path, nargs="*", default=None)
     parser.add_argument("--amp-score-threshold", type=float, default=None)
+    parser.add_argument(
+        "--paper-score-mode",
+        choices=["legacy_pane", "amp_scoring"],
+        default="legacy_pane",
+        help="Scorer for --protocol paper_pddp. amp_scoring matches the published supplementary code.",
+    )
     parser.add_argument("--pane-m-exponent", type=float, default=1.0)
     parser.add_argument("--pane-n-exponent", type=float, default=1.0)
     parser.add_argument("--require-cationic-cterm", action="store_true")
     parser.add_argument("--cationic-cterm-residues", default="KRH")
     parser.add_argument(
         "--overlap-policy",
-        choices=["top_score", "longest", "keep_all"],
+        choices=[
+            "top_score",
+            "top_score_50pct_shorter",
+            "top_score_50pct_candidate",
+            "top_score_50pct_longer",
+            "top_score_overlap_fraction_shorter",
+            "top_score_overlap_fraction_candidate",
+            "top_score_overlap_fraction_longer",
+            "longest",
+            "keep_all",
+        ],
         default="top_score",
         help="How paper mode handles overlapping peptides from the same source protein.",
+    )
+    parser.add_argument(
+        "--overlap-fraction-cutoff",
+        type=float,
+        default=0.5,
+        help="Fractional overlap cutoff for top_score_50pct_* policies.",
     )
     parser.add_argument(
         "--no-terminal-boundaries",
@@ -155,6 +178,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--min-hydrophobicity must be between 0 and 1")
     if args.top_n is not None and args.top_n <= 0:
         raise ValueError("--top-n must be positive")
+    if args.overlap_fraction_cutoff <= 0 or args.overlap_fraction_cutoff > 1:
+        raise ValueError("--overlap-fraction-cutoff must be > 0 and <= 1")
     if args.protocol == "mapp_database":
         if args.mapp_database is None:
             raise ValueError("--protocol mapp_database requires --mapp-database")
@@ -295,11 +320,13 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
             include_terminal_boundaries=not args.no_terminal_boundaries,
             show_progress=not args.no_progress,
             finalize_outputs=(paths["final_table"], paths["final_txt"], args.output_format),
+            overlap_fraction_cutoff=args.overlap_fraction_cutoff,
         )
         scoring_metadata.update(
             {
                 "amp_score_matrix": str(args.amp_score_matrix) if args.amp_score_matrix else None,
                 "mapp_database": str(args.mapp_database) if args.mapp_database else None,
+                "paper_score_mode": args.paper_score_mode,
                 "pane_m_exponent": args.pane_m_exponent,
                 "pane_n_exponent": args.pane_n_exponent,
                 "known_amps": [str(path) for path in (args.known_amps or [])],
@@ -309,6 +336,7 @@ def _run_build_candidates(args: argparse.Namespace) -> None:
                 "require_cationic_cterm": args.require_cationic_cterm,
                 "cationic_cterm_residues": args.cationic_cterm_residues,
                 "overlap_policy": args.overlap_policy,
+                "overlap_fraction_cutoff": args.overlap_fraction_cutoff,
             }
         )
     else:
@@ -351,7 +379,10 @@ def _build_paper_scorer(args: argparse.Namespace):
         return scorer, threshold, "mapp_treatment_total", 0
 
     if args.protocol == "paper_pddp":
-        scorer = PaneScorer(m=args.pane_m_exponent, n=args.pane_n_exponent)
+        if args.paper_score_mode == "amp_scoring":
+            scorer = AmpScoringPaneScorer(m=args.pane_m_exponent, n=args.pane_n_exponent)
+        else:
+            scorer = PaneScorer(m=args.pane_m_exponent, n=args.pane_n_exponent)
         threshold = args.amp_score_threshold
         threshold_source = "cli"
         known_amp_count = 0

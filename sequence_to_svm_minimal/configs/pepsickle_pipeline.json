@@ -1,5 +1,5 @@
 {
-  "_documentation": "Defaults for proteome_candidate_generator. Run from sequence_to_svm_minimal: python -m proteome_candidate_generator --config configs/pepsickle_pipeline.json. Repeat --config for layered overrides; CLI flags override JSON. In filtering, null top_n keeps all candidates; null min_len/max_len/min_charge/min_hydrophobicity fall back to protocol defaults (current: 8/30/2/0.30, paper_pddp: 10/50/0/0.0).",
+  "_documentation": "Defaults for proteome_candidate_generator. Run from sequence_to_svm_minimal: python -m proteome_candidate_generator --config configs/pepsickle_pipeline.json. Repeat --config for layered overrides; CLI flags override JSON. In filtering, null top_n keeps all candidates; null min_len/max_len/min_charge/min_hydrophobicity fall back to protocol defaults (current: 8/30/2/0.30, paper_pddp: 10/50/0/0.0). paper_score_mode=amp_scoring uses the published AMP_scoring Pane implementation.",
 
   "command": "all",
   "input": "data/proteomes/uniprotkb_UP000005640_AND_model_organis_2026_06_27.fasta",
@@ -13,7 +13,7 @@
 
   "pepsickle": {
     "pepsickle_bin": "pepsickle",
-    "threshold": 0.5,
+    "threshold": 0.6,
     "cleavage_models": [
       "constitutive",
       "immunoproteasome"
@@ -50,12 +50,14 @@
   },
 
   "paper_pddp": {
-    "pane_m_exponent": 1.0,
-    "pane_n_exponent": 1.0,
+    "paper_score_mode": "amp_scoring",
+    "pane_m_exponent": 0.9,
+    "pane_n_exponent": 1.1,
     "amp_score_threshold": 5.0,
     "require_cationic_cterm": false,
     "cationic_cterm_residues": "KRH",
-    "overlap_policy": "top_score"
+    "overlap_policy": "top_score_overlap_fraction_longer",
+    "overlap_fraction_cutoff": 0.75
   },
 
   "output": {

@@ -26,6 +26,7 @@ from proteome_candidate_generator.cli import _run_build_candidates
 from proteome_candidate_generator.cleavage import parse_pepsickle_tsv, union_sites
 from proteome_candidate_generator.fasta import ProteinRecord, read_valid_proteins
 from proteome_candidate_generator.pddp_scoring import (
+    AmpScoringPaneScorer,
     compute_nonzero_mean_threshold,
     is_mapp_database,
     load_known_amp_sequences,
@@ -174,6 +175,11 @@ class TestProteomeCandidateGenerator(unittest.TestCase):
         self.assertEqual(sequences, ["AAAAA", "CCCCC"])
         self.assertEqual(compute_nonzero_mean_threshold(sequences, score_matrix), 5.0)
 
+    def test_amp_scoring_pane_matches_public_pddp_table_score(self) -> None:
+        scorer = AmpScoringPaneScorer()
+        self.assertAlmostEqual(scorer.score_sequence("LSLVTKKKRFWCWQRPKYQFL"), 9.671455363, places=9)
+        self.assertAlmostEqual(scorer.score_sequence("RMFRGSLYKRYPSLWRRL"), 9.085465406, places=9)
+
     def test_paper_candidate_generation_score_overlap_and_cterm(self) -> None:
         records = [ProteinRecord("p1", "MMMMMMMMMMAAAAAAAAAAKCCCCCCCCCCR")]
         sites = union_sites(
@@ -246,6 +252,56 @@ class TestProteomeCandidateGenerator(unittest.TestCase):
         )
         self.assertEqual(len(candidates), 2)
         self.assertEqual(stats.overlap_removed, 0)
+
+    def test_paper_candidate_generation_can_use_fifty_percent_overlap_policy(self) -> None:
+        records = [ProteinRecord("p1", "ACDEFGHIKLMNPQ")]
+        sites = union_sites(
+            [
+                parse_pepsickle_tsv(
+                    _write_tsv(
+                        "position\tresidue\tcleav_prob\tcleaved\tprotein_id\n"
+                        "4\tE\t0.9\tTrue\tp1\n"
+                        "10\tL\t0.9\tTrue\tp1\n"
+                    ),
+                    model_name="constitutive",
+                    threshold=0.5,
+                )
+            ],
+            {"p1": len(records[0].sequence)},
+        )
+        matrix = load_score_matrix(_write_score_matrix({aa: 1.0 for aa in "ACDEFGHIKLMNPQRSTVWY"}))
+        kwargs = dict(
+            records=records,
+            sites_by_protein=sites,
+            min_len=10,
+            max_len=10,
+            scorer=matrix,
+            score_threshold=0.0,
+            require_cationic_cterm=False,
+            cationic_cterm_residues="KR",
+            include_terminal_boundaries=True,
+        )
+
+        any_overlap, any_stats = generate_paper_candidates(**kwargs, overlap_policy="top_score")
+        fifty_pct, fifty_stats = generate_paper_candidates(
+            **kwargs,
+            overlap_policy="top_score_overlap_fraction_longer",
+        )
+        seventy_five_pct, seventy_five_stats = generate_paper_candidates(
+            **kwargs,
+            overlap_policy="top_score_overlap_fraction_longer",
+            overlap_fraction_cutoff=0.75,
+        )
+
+        self.assertEqual([candidate.sequence for candidate in any_overlap], ["ACDEFGHIKL"])
+        self.assertEqual([candidate.sequence for candidate in fifty_pct], ["ACDEFGHIKL"])
+        self.assertEqual(
+            [candidate.sequence for candidate in seventy_five_pct],
+            ["ACDEFGHIKL", "FGHIKLMNPQ"],
+        )
+        self.assertEqual(any_stats.overlap_removed, 1)
+        self.assertEqual(fifty_stats.overlap_removed, 1)
+        self.assertEqual(seventy_five_stats.overlap_removed, 0)
 
     def test_paper_candidate_streaming_matches_in_memory(self) -> None:
         records = [ProteinRecord("p1", "MMMMMMMMMMAAAAAAAAAAKCCCCCCCCCCR")]

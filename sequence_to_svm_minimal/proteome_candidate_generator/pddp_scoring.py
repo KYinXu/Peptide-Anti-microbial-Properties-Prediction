@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
-from typing import Protocol
+from typing import Mapping, Protocol
 
 from proteome_candidate_generator.fasta import canonical_standard_sequence, iter_fasta_records
 
@@ -15,6 +16,28 @@ STANDARD_AA = tuple("ACDEFGHIKLMNPQRSTVWY")
 HYDROPHOBIC_AA = frozenset("AILMFVPG")
 POSITIVE_AA = frozenset("RK")
 NEGATIVE_AA = frozenset("DE")
+PARKER_GLY0_HYDROPHOBICITY = {
+    "A": 0.229,
+    "C": 0.274,
+    "D": 0.0,
+    "E": 0.0,
+    "F": 0.949,
+    "G": 0.0,
+    "H": 0.229,
+    "I": 0.873,
+    "K": 0.0,
+    "L": 0.949,
+    "M": 0.631,
+    "N": 0.0,
+    "P": 0.229,
+    "Q": 0.0,
+    "R": 0.096,
+    "S": 0.0,
+    "T": 0.032,
+    "V": 0.599,
+    "W": 1.0,
+    "Y": 0.484,
+}
 
 def net_charge(sequence: str) -> int:
     return sum(1 for aa in sequence if aa in POSITIVE_AA) - sum(1 for aa in sequence if aa in NEGATIVE_AA)
@@ -48,6 +71,54 @@ class PaneScorer:
         # However, they also mention excluding a score of zero.
         # If the score is extremely small, it might be rounded to zero.
         return float((c ** self.m) * (h ** self.n) * l)
+
+
+@dataclass(frozen=True)
+class AmpScoringPaneScorer:
+    """Pane JTB 2017 scorer as implemented by the AMP_scoring supplementary code."""
+
+    m: float = 0.9
+    n: float = 1.1
+    n_terminal_charge: float = 1.0
+    c_terminal_charge: float = 0.0
+    hydrophobicity_scale: Mapping[str, float] = field(default_factory=lambda: PARKER_GLY0_HYDROPHOBICITY)
+
+    def score_sequence(self, sequence: str) -> float:
+        seq = canonical_standard_sequence(sequence)
+        if seq is None:
+            raise ValueError(f"Invalid peptide sequence: {sequence!r}")
+
+        charge = self.n_terminal_charge + self.c_terminal_charge
+        charge += sum(1 for aa in seq if aa in POSITIVE_AA)
+        charge -= sum(1 for aa in seq if aa in NEGATIVE_AA)
+        if charge <= 0:
+            return 0.0
+
+        hydrophobicity_sum = sum(self.hydrophobicity_scale[aa] for aa in seq)
+        relative_score = (charge ** self.m) * (hydrophobicity_sum ** self.n)
+        relative_score /= _amp_scoring_max_score(
+            len(seq),
+            self.m,
+            self.n,
+            self.n_terminal_charge,
+            self.c_terminal_charge,
+        )
+        return float(relative_score * len(seq))
+
+
+@lru_cache(maxsize=None)
+def _amp_scoring_max_score(
+    length: int,
+    m: float,
+    n: float,
+    n_terminal_charge: float,
+    c_terminal_charge: float,
+) -> float:
+    return max(
+        ((n_terminal_charge + c_terminal_charge + length - hydrophobic_count) ** m)
+        * (((length - hydrophobic_count) * PARKER_GLY0_HYDROPHOBICITY["R"] + hydrophobic_count) ** n)
+        for hydrophobic_count in range(length)
+    )
 
 
 @dataclass(frozen=True)
