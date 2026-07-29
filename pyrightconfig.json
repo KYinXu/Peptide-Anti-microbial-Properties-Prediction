@@ -1,0 +1,10 @@
+{
+  "exclude": [
+    "**/esm2_per_residue",
+    "**/inputs",
+    "**/structures",
+    "**/node_modules",
+    "**/.venv",
+    "**/venv"
+  ]
+}
