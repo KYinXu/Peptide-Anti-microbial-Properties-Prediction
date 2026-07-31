@@ -18,6 +18,11 @@ Typical usage after ``run_data_pipeline`` + ``run_gnn_train_final_models`` (chec
 
   python scripts/data_evaluation/compare_model_predictions.py path/to/generated
 
+GNN inference appends per-model progress CSVs under ``<GENERATED>/compare_progress/``
+(batch flush + resume). Re-run the same command after a crash to continue. Use
+``--fresh-progress`` to start over, ``--batch_size`` / ``--checkpoint-every`` to tune
+throughput and flush frequency.
+
 If weights live elsewhere (e.g. ``checkpoints/``)::
 
   python scripts/data_evaluation/compare_model_predictions.py path/to/generated \\
@@ -50,9 +55,11 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from configs.load_config import argv_without_config_flags, load_compare_models_config, repo_root
 from gnn.checkpoint_meta import resolve_node_layout_for_checkpoint
+from gnn_progress_csv import append_progress_rows, load_progress_rows, progress_csv_path
 from gnn.data_utils import (
     NodeFeatureGroups,
     node_feature_groups_from_cli,
@@ -586,9 +593,18 @@ def _run_gnn_predictions(csv_path: str,
                          canonical_seqs_path: str | None = None,
                          *,
                          node_feature_groups=None,
-                         use_gnn_platt: bool = True):
-    """Run one GNN checkpoint and return ids/preds/prob/logits/margin."""
+                         use_gnn_platt: bool = True,
+                         progress_csv: Path | None = None,
+                         resume_progress: bool = True,
+                         checkpoint_every: int = 256,
+                         log_every: int = 1000):
+    """Run one GNN checkpoint and return ids/preds/prob/logits/margin.
+
+    When ``progress_csv`` is set, predictions are appended in batches and can be
+    resumed after a crash (skip peptide_ids already present in that CSV).
+    """
     import torch
+    from torch.utils.data import Subset
     from torch_geometric.loader import DataLoader
 
     from gnn.data_utils import PeptideGraphDataset
@@ -676,7 +692,6 @@ def _run_gnn_predictions(csv_path: str,
                 f"dataset rows produce {geo_dim_data}."
             )
 
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     if len(dataset) > 0:
         xw = int(dataset[0].x.shape[1])
         if xw != in_base_ckpt:
@@ -684,49 +699,122 @@ def _run_gnn_predictions(csv_path: str,
                 f"Node feature width mismatch: checkpoint implies data.x width {in_base_ckpt}, "
                 f"dataset produced {xw}."
             )
-    model = PeptideGNN(
-        architecture=architecture,
-        in_channels=in_base_ckpt,
-        hidden_channels=hidden,
-        num_layers=num_layers,
-        num_classes=2,
-        pooling=pooling,
-        geo_feature_dim=geo_dim_ckpt,
-        esm2_raw_dim=esm2_raw_ckpt,
-        esm2_hidden_dim=esm2_h_ckpt,
-    )
-    model.load_state_dict(sd0)
-    model = model.to(device)
-    model.eval()
-
-    all_probs = []
-    all_logit_amp = []
-    all_logit_nonamp = []
-    all_logit_margin = []
-    with torch.no_grad():
-        for batch in loader:
-            batch = batch.to(device)
-            out = model(batch)
-            logit_nonamp = out[:, 0].cpu().numpy()
-            logit_amp = out[:, 1].cpu().numpy()
-            logit_margin = (out[:, 1] - out[:, 0]).cpu().numpy()
-            if platt is not None:
-                probs = platt_prob_amp(logit_margin, platt["coef"], platt["intercept"])
-            else:
-                probs = softmax_prob_amp(out)
-            all_probs.extend(probs)
-            all_logit_amp.extend(logit_amp)
-            all_logit_nonamp.extend(logit_nonamp)
-            all_logit_margin.extend(logit_margin)
-    probs = np.array(all_probs)
-    logit_amp = np.array(all_logit_amp)
-    logit_nonamp = np.array(all_logit_nonamp)
-    logit_margin = np.array(all_logit_margin)
-    preds = (probs >= 0.5).astype(int)
 
     df = dataset.df
     id_col = 'peptide_id' if 'peptide_id' in df.columns else ('name' if 'name' in df.columns else None)
     ids = df[id_col].astype(str).tolist() if id_col else [str(i) for i in range(len(df))]
+
+    done: dict[str, dict] = {}
+    if progress_csv is not None:
+        progress_csv = Path(progress_csv)
+        if resume_progress and progress_csv.is_file():
+            done = load_progress_rows(progress_csv)
+            print(
+                f"  Progress resume: {len(done)} / {len(ids)} rows in {progress_csv}",
+                flush=True,
+            )
+        elif progress_csv.is_file() and not resume_progress:
+            progress_csv.unlink()
+            print(f"  Progress fresh: removed {progress_csv}", flush=True)
+
+    remaining_indices = [i for i, pid in enumerate(ids) if pid not in done]
+    print(
+        f"  Inference pending: {len(remaining_indices)} / {len(ids)} "
+        f"(batch_size={batch_size}, checkpoint_every={checkpoint_every})",
+        flush=True,
+    )
+
+    if remaining_indices:
+        model = PeptideGNN(
+            architecture=architecture,
+            in_channels=in_base_ckpt,
+            hidden_channels=hidden,
+            num_layers=num_layers,
+            num_classes=2,
+            pooling=pooling,
+            geo_feature_dim=geo_dim_ckpt,
+            esm2_raw_dim=esm2_raw_ckpt,
+            esm2_hidden_dim=esm2_h_ckpt,
+        )
+        model.load_state_dict(sd0)
+        model = model.to(device)
+        model.eval()
+
+        subset = Subset(dataset, remaining_indices)
+        loader = DataLoader(subset, batch_size=batch_size, shuffle=False)
+        pending_rows: list[dict] = []
+        n_new = 0
+        cursor = 0
+        ckpt_every = max(1, int(checkpoint_every))
+        log_every = max(1, int(log_every))
+
+        with torch.no_grad():
+            for batch in loader:
+                batch = batch.to(device)
+                out = model(batch)
+                logit_nonamp = out[:, 0].detach().cpu().numpy()
+                logit_amp = out[:, 1].detach().cpu().numpy()
+                logit_margin = (out[:, 1] - out[:, 0]).detach().cpu().numpy()
+                if platt is not None:
+                    probs = platt_prob_amp(logit_margin, platt["coef"], platt["intercept"])
+                else:
+                    probs = softmax_prob_amp(out)
+                probs = np.asarray(probs, dtype=np.float64).reshape(-1)
+                n = int(probs.shape[0])
+                batch_idxs = remaining_indices[cursor : cursor + n]
+                cursor += n
+                for j, di in enumerate(batch_idxs):
+                    pid = ids[di]
+                    row = {
+                        "peptide_id": pid,
+                        "pred": int(probs[j] >= 0.5),
+                        "prob_amp": float(probs[j]),
+                        "logit_amp": float(logit_amp[j]),
+                        "logit_nonamp": float(logit_nonamp[j]),
+                        "logit_margin": float(logit_margin[j]),
+                    }
+                    done[pid] = row
+                    pending_rows.append(row)
+                    n_new += 1
+                if progress_csv is not None and len(pending_rows) >= ckpt_every:
+                    append_progress_rows(progress_csv, pending_rows)
+                    pending_rows = []
+                    print(
+                        f"  checkpointed {n_new}/{len(remaining_indices)} new "
+                        f"({len(done)}/{len(ids)} total) → {progress_csv.name}",
+                        flush=True,
+                    )
+                elif progress_csv is None and (n_new % log_every == 0 or n_new == len(remaining_indices)):
+                    print(
+                        f"  progress {n_new}/{len(remaining_indices)} "
+                        f"({100.0 * n_new / max(1, len(remaining_indices)):.1f}%)",
+                        flush=True,
+                    )
+
+        if progress_csv is not None and pending_rows:
+            append_progress_rows(progress_csv, pending_rows)
+            print(
+                f"  checkpointed final {n_new}/{len(remaining_indices)} new → {progress_csv.name}",
+                flush=True,
+            )
+        elif progress_csv is None:
+            print(f"  finished {n_new}/{len(remaining_indices)}", flush=True)
+    else:
+        print("  All peptides already in progress CSV; skipping model forward.", flush=True)
+
+    missing = [pid for pid in ids if pid not in done]
+    if missing:
+        raise SystemExit(
+            f"GNN progress incomplete for {Path(model_path).name}: "
+            f"{len(missing)} peptide_ids missing after inference "
+            f"(first={missing[0]!r})."
+        )
+
+    preds = np.array([int(done[pid]["pred"]) for pid in ids], dtype=int)
+    probs = np.array([float(done[pid]["prob_amp"]) for pid in ids], dtype=float)
+    logit_amp = np.array([float(done[pid]["logit_amp"]) for pid in ids], dtype=float)
+    logit_nonamp = np.array([float(done[pid]["logit_nonamp"]) for pid in ids], dtype=float)
+    logit_margin = np.array([float(done[pid]["logit_margin"]) for pid in ids], dtype=float)
     return ids, preds, probs, logit_amp, logit_nonamp, logit_margin
 
 
@@ -1023,6 +1111,31 @@ def main():
             '(overrides configs/compare_models.json node_feature_groups).'
         ),
     )
+    ap.add_argument(
+        '--progress-dir',
+        type=str,
+        default=None,
+        help=(
+            'Directory for per-model GNN progress CSVs (batch write + resume). '
+            'Default: <GENERATED>/compare_progress or results/comparisons/compare_progress.'
+        ),
+    )
+    ap.add_argument(
+        '--checkpoint-every',
+        type=int,
+        default=256,
+        help='Append this many new predictions to the progress CSV between flushes (default: 256).',
+    )
+    ap.add_argument(
+        '--fresh-progress',
+        action='store_true',
+        help='Ignore/delete existing per-model progress CSVs and re-infer from scratch.',
+    )
+    ap.add_argument(
+        '--no-progress-csv',
+        action='store_true',
+        help='Disable progress CSV checkpointing (in-memory only; no mid-run resume).',
+    )
     args = ap.parse_args(argv_rest)
 
     node_feature_groups = (
@@ -1122,6 +1235,18 @@ def main():
     ]
 
     gnn_master_path, mode_cols, _has_qsar_merge = _build_gnn_feature_master(args, ws)
+    if getattr(args, "no_progress_csv", False):
+        progress_dir: Path | None = None
+    elif getattr(args, "progress_dir", None):
+        progress_dir = Path(args.progress_dir).expanduser().resolve()
+    elif ws is not None:
+        progress_dir = (ws / "compare_progress").resolve()
+    else:
+        progress_dir = (_ROOT / "results" / "comparisons" / "compare_progress").resolve()
+    if progress_dir is not None:
+        progress_dir.mkdir(parents=True, exist_ok=True)
+        print(f"GNN progress CSVs: {progress_dir}", flush=True)
+
     if run_gnn:
         if gnn_master_path is None:
             print(
@@ -1139,6 +1264,11 @@ def main():
                     print(f"Skipping {name}: need merged QSAR-12 (check --qsar_csv)", flush=True)
                 continue
             print(f"Running {args.architecture.upper()} ({name})...")
+            prog = (
+                progress_csv_path(progress_dir, args.architecture, name)
+                if progress_dir is not None
+                else None
+            )
             ids, preds, prob_amp, logit_amp, logit_nonamp, logit_margin = _run_gnn_predictions(
                 str(gnn_master_path), args.pdb_dir, path, args.architecture,
                 args.gnn_hidden, args.gnn_layers, args.gnn_pooling,
@@ -1147,6 +1277,9 @@ def main():
                 esm2_residue_dir=getattr(args, "gnn_esm2_residue_dir", None),
                 node_feature_groups=node_feature_groups,
                 use_gnn_platt=not args.no_gnn_platt,
+                progress_csv=prog,
+                resume_progress=not getattr(args, "fresh_progress", False),
+                checkpoint_every=int(getattr(args, "checkpoint_every", 256)),
             )
             results[name] = {
                 'ids': ids,

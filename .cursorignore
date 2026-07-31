@@ -7,3 +7,5 @@ sequence_to_svm_minimal/checkpoints/
 *.fasta
 **/nohup*.out
 *.jsonl
+*.log
+*.csv
