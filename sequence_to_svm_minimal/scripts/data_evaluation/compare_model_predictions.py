@@ -597,6 +597,7 @@ def _run_gnn_predictions(csv_path: str,
                          progress_csv: Path | None = None,
                          resume_progress: bool = True,
                          checkpoint_every: int = 256,
+                         num_workers: int = 0,
                          log_every: int = 1000):
     """Run one GNN checkpoint and return ids/preds/prob/logits/margin.
 
@@ -741,7 +742,12 @@ def _run_gnn_predictions(csv_path: str,
         model.eval()
 
         subset = Subset(dataset, remaining_indices)
-        loader = DataLoader(subset, batch_size=batch_size, shuffle=False)
+        loader = DataLoader(
+            subset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=max(0, int(num_workers)),
+        )
         pending_rows: list[dict] = []
         n_new = 0
         cursor = 0
