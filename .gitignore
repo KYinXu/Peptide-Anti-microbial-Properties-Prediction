@@ -4,6 +4,8 @@
 **/nohup*.out
 *.log
 .vscode/
+sprints/
+notes.txt
 
 # Model files (huge)
 sequence_to_svm_minimal/models/esmfold_v1_local/
@@ -19,6 +21,7 @@ __pycache__/
 **/results/evaluation
 sequence_to_svm_minimal/evaluation/
 sequence_to_svm_minimal/**/evaluation_plots/
+output.png
 
 # Generated data files
 **/data/**/structures/
