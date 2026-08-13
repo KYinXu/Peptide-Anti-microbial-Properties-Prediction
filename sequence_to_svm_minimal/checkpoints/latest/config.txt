@@ -1,1 +1,3 @@
-checkpoints from results/gnn/ready_models/run_20260505_162400/
+gat_ready_ESM VAE-only checkpoints from results/gnn/ready_models/run_20260505_162400/
+
+qsar from results/gnn/ready_models/gnn_qsar

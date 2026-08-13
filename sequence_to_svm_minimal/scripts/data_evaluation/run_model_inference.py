@@ -92,9 +92,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--svm-pkl", "--svm_pkl", dest="svm_pkl")
     parser.add_argument("--svm-z-file", "--svm_z_file", dest="svm_z_file")
     parser.add_argument(
+        "--svm-pipeline",
+        "--svm_pipeline",
+        dest="svm_pipeline",
+        help="StandardScaler+SVC Pipeline joblib (no z-score file needed)",
+    )
+    parser.add_argument(
         "--svm-descriptor-csv",
         "--svm_descriptor_csv",
         dest="svm_descriptor_csv",
+    )
+    parser.add_argument(
+        "--svm-only",
+        action="store_true",
+        help="Run SVM only (skip GNN checkpoint resolution and inference)",
     )
     parser.add_argument("--batch-size", "--batch_size", type=int, default=32)
     parser.add_argument(
@@ -154,6 +165,9 @@ def configure_paths(
         value = getattr(cli, name)
         if value:
             setattr(args, name, str(Path(value).expanduser().resolve()))
+    if cli.svm_pipeline:
+        args.svm_pkl = str(Path(cli.svm_pipeline).expanduser().resolve())
+        args.svm_z_file = None
     return workspace
 
 
@@ -223,10 +237,23 @@ def resolve_feature_columns(
 
 
 def validate_svm(args: argparse.Namespace) -> None:
-    paths = (args.svm_pkl, args.svm_z_file, args.svm_descriptor_csv)
-    missing = [str(path) for path in paths if not Path(path).is_file()]
+    required = [args.svm_pkl, args.svm_descriptor_csv]
+    if args.svm_z_file:
+        required.append(args.svm_z_file)
+    missing = [str(path) for path in required if not path or not Path(path).is_file()]
     if missing:
         raise SystemExit("Missing SVM input(s): " + ", ".join(missing))
+    if not args.svm_z_file:
+        try:
+            import joblib
+        except ImportError:
+            from sklearn.externals import joblib as joblib
+        est = joblib.load(args.svm_pkl)
+        if not inference._is_sklearn_pipeline(est):
+            raise SystemExit(
+                "Legacy SVC checkpoints require --svm-z-file "
+                "(or pass --svm-pipeline with a StandardScaler+SVC joblib)."
+            )
 
 
 def apply_checkpoint_metadata(
@@ -350,7 +377,7 @@ def build_output(
     args: argparse.Namespace,
     model_name: str,
     svm: dict,
-    gnn: dict,
+    gnn: dict | None,
 ) -> pd.DataFrame:
     source = pd.read_csv(args.geo_csv)
     id_column = "peptide_id" if "peptide_id" in source else "name"
@@ -366,21 +393,24 @@ def build_output(
             "SVM_distance": svm["distance"],
         },
     )
-    gnn_frame = prediction_frame(
-        model_name,
-        gnn,
-        {
-            f"{model_name}_logit_AMP": gnn["logit_amp"],
-            f"{model_name}_logit_nonAMP": gnn["logit_nonamp"],
-            f"{model_name}_logit_margin": gnn["margin"],
-        },
-    )
     output = output.merge(svm_frame, on="peptide_id", how="left", sort=False)
-    output = output.merge(gnn_frame, on="peptide_id", how="left", sort=False)
     add_z_score(output, "SVM", "SVM_distance")
-    add_z_score(output, model_name, f"{model_name}_logit_margin")
+    model_names = ["SVM"]
+    if gnn is not None:
+        gnn_frame = prediction_frame(
+            model_name,
+            gnn,
+            {
+                f"{model_name}_logit_AMP": gnn["logit_amp"],
+                f"{model_name}_logit_nonAMP": gnn["logit_nonamp"],
+                f"{model_name}_logit_margin": gnn["margin"],
+            },
+        )
+        output = output.merge(gnn_frame, on="peptide_id", how="left", sort=False)
+        add_z_score(output, model_name, f"{model_name}_logit_margin")
+        model_names.append(model_name)
     columns = ["peptide_id"] + (["sequence"] if "sequence" in output else [])
-    columns += inference._ordered_result_column_names(["SVM", model_name])
+    columns += inference._ordered_result_column_names(model_names)
     return output[[column for column in columns if column in output]]
 
 
@@ -390,32 +420,39 @@ def main() -> int:
     cfg = load_compare_models_config(None)
     args = runtime_args(cli, cfg)
     workspace = configure_paths(cli, args)
-    checkpoint = resolve_gnn_checkpoint(cli)
     validate_svm(args)
-    apply_checkpoint_metadata(cli, args, checkpoint)
 
-    master_csv, available_columns, _ = inference._build_gnn_feature_master(args, workspace)
-    if master_csv is None:
-        raise SystemExit("Workspace has no usable geometric feature CSV")
-    feature_columns = resolve_feature_columns(checkpoint, args, available_columns)
-    node_groups = node_feature_groups_from_config_value(cfg.get("node_feature_groups"))
-    svm_call = lambda: run_svm(args)
-    gnn_call = lambda: run_gnn(
-        cli,
-        args,
-        checkpoint,
-        master_csv,
-        feature_columns,
-        GNN_MODEL_NAME,
-        workspace,
-        node_groups,
-    )
-    svm, gnn = run_models(cli, svm_call, gnn_call)
-    output = build_output(args, GNN_MODEL_NAME, svm, gnn)
-    if cli.only_amp:
-        output = output[
-            (output["SVM_pred"] == 1) | (output["GNN_pred"] == 1)
-        ]
+    if cli.svm_only:
+        print("SVM-only mode: skipping GNN.", flush=True)
+        svm = run_svm(args)
+        output = build_output(args, GNN_MODEL_NAME, svm, None)
+        if cli.only_amp:
+            output = output[output["SVM_pred"] == 1]
+    else:
+        checkpoint = resolve_gnn_checkpoint(cli)
+        apply_checkpoint_metadata(cli, args, checkpoint)
+        master_csv, available_columns, _ = inference._build_gnn_feature_master(args, workspace)
+        if master_csv is None:
+            raise SystemExit("Workspace has no usable geometric feature CSV")
+        feature_columns = resolve_feature_columns(checkpoint, args, available_columns)
+        node_groups = node_feature_groups_from_config_value(cfg.get("node_feature_groups"))
+        svm_call = lambda: run_svm(args)
+        gnn_call = lambda: run_gnn(
+            cli,
+            args,
+            checkpoint,
+            master_csv,
+            feature_columns,
+            GNN_MODEL_NAME,
+            workspace,
+            node_groups,
+        )
+        svm, gnn = run_models(cli, svm_call, gnn_call)
+        output = build_output(args, GNN_MODEL_NAME, svm, gnn)
+        if cli.only_amp:
+            output = output[
+                (output["SVM_pred"] == 1) | (output["GNN_pred"] == 1)
+            ]
 
     destination = (
         Path(cli.output_csv).expanduser()

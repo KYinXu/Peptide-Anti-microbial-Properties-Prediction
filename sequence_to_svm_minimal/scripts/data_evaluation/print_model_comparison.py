@@ -207,10 +207,10 @@ def main():
     display_order = ["SVM", "ESM-only", "ESM+Geo20", "ESM+QSAR12", "ESM+Combined32"]
     label_map = {
         "SVM": "SVM",
-        "ESM-only": "GNN ESM-only",
-        "ESM+Geo20": "GNN ESM+Geo",
-        "ESM+QSAR12": "GNN ESM+QSAR",
-        "ESM+Combined32": "GNN ESM+QSAR+Geo",
+        "ESM-only": "GNN VAE-only",
+        "ESM+Geo20": "GNN VAE+Geo",
+        "ESM+QSAR12": "GNN VAE+QSAR",
+        "ESM+Combined32": "GNN VAE+QSAR+Geo",
     }
     ordered_models = [m for m in display_order if m in models]
     # Include any other models at the end

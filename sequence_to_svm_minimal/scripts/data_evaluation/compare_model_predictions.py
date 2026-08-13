@@ -514,46 +514,83 @@ def apply_pipeline_generated_workspace(
     return ws, skip_workspace_checkpoint_roots
 
 
-def _load_svm_predictions(descriptor_csv: str, z_file: str, pkl_path: str):
-    """Load SVM, Z-score descriptors, return (ids, preds, prob_amp, distance)."""
+def _is_sklearn_pipeline(est) -> bool:
+    return hasattr(est, "named_steps") and hasattr(est, "predict")
+
+
+def _read_zscore_file(z_file: str) -> tuple[list[str], np.ndarray, np.ndarray]:
+    with open(z_file, "r") as f:
+        desc_names = [x.strip() for x in f.readline().strip().split(",") if x.strip()]
+        means = np.array([float(x) for x in f.readline().strip().split(",")], dtype=np.float64)
+        stds = np.array([float(x) for x in f.readline().strip().split(",")], dtype=np.float64)
+    return desc_names, means, stds
+
+
+def _descriptor_matrix(df: pd.DataFrame, desc_names: list[str]) -> np.ndarray:
+    missing = [name for name in desc_names if name not in df.columns]
+    if missing:
+        raise ValueError(f"Descriptor(s) not in CSV columns: {missing}")
+    return df.loc[:, desc_names].values.astype(np.float64)
+
+
+def _svm_outputs_from_estimator(clf, X: np.ndarray):
+    """Return (preds, prob_amp, distance) for a fitted SVC or Pipeline."""
+    raw_preds = np.asarray(clf.predict(X)).ravel()
+    final = clf.named_steps["svm"] if _is_sklearn_pipeline(clf) and "svm" in clf.named_steps else clf
+    classes = getattr(final, "classes_", getattr(clf, "classes_", np.array([0, 1])))
+    pos_class = int(1 if 1 in classes else classes[-1])
+    if hasattr(clf, "predict_proba"):
+        proba = clf.predict_proba(X)
+        pos_idx = int(np.where(classes == pos_class)[0][0])
+        prob_amp = proba[:, pos_idx].ravel()
+    else:
+        prob_amp = np.where(raw_preds == pos_class, 1.0, 0.0).astype(np.float64)
+    if hasattr(clf, "decision_function"):
+        distance = np.asarray(clf.decision_function(X)).ravel()
+    else:
+        distance = np.full_like(prob_amp, np.nan, dtype=np.float64)
+    preds = (raw_preds == pos_class).astype(int)
+    return preds, prob_amp, distance
+
+
+def _load_svm_predictions(descriptor_csv: str, z_file: str | None, pkl_path: str):
+    """Load SVM (legacy SVC+zscores or Pipeline joblib); return (ids, preds, prob_amp, distance)."""
     try:
         import joblib
     except ImportError:
         from sklearn.externals import joblib as joblib
 
     df = pd.read_csv(descriptor_csv)
-    id_col = 'peptide_id' if 'peptide_id' in df.columns else ('name' if 'name' in df.columns else df.columns[0])
+    id_col = "peptide_id" if "peptide_id" in df.columns else ("name" if "name" in df.columns else df.columns[0])
     ids = df[id_col].astype(str).tolist()
 
-    with open(z_file, 'r') as f:
-        desc_names = [x.strip() for x in f.readline().strip().split(',')]
-        means = np.array([float(x) for x in f.readline().strip().split(',')])
-        stds = np.array([float(x) for x in f.readline().strip().split(',')])
-
-    mask = []
-    for name in desc_names:
-        if name not in df.columns:
-            raise ValueError(f"Descriptor '{name}' from Z file not in CSV columns")
-        mask.append(df.columns.tolist().index(name))
-    X = df.iloc[:, mask].values.astype(np.float64)
-    X = (X - means) / np.where(stds > 0, stds, 1.0)
-
     clf = joblib.load(pkl_path)
-    raw_preds = np.asarray(clf.predict(X)).ravel()
-    classes = getattr(clf, 'classes_', np.array([0, 1]))
-    pos_class = int(1 if 1 in classes else classes[-1])
-    if hasattr(clf, 'predict_proba'):
-        proba = clf.predict_proba(X)
-        pos_idx = int(np.where(classes == pos_class)[0][0])
-        prob_amp = proba[:, pos_idx].ravel()
-    else:
-        prob_amp = np.where(raw_preds == pos_class, 1.0, 0.0)
-    if hasattr(clf, 'decision_function'):
-        distance = np.asarray(clf.decision_function(X)).ravel()
-    else:
-        distance = np.full_like(prob_amp, np.nan, dtype=np.float64)
+    if _is_sklearn_pipeline(clf):
+        scaler = clf.named_steps.get("scaler")
+        if scaler is not None and getattr(scaler, "feature_names_in_", None) is not None:
+            desc_names = [str(x) for x in scaler.feature_names_in_]
+        elif z_file:
+            desc_names, _, _ = _read_zscore_file(z_file)
+        else:
+            raise ValueError(
+                f"Pipeline in {pkl_path} has no feature_names_in_; pass --svm_z_file for column order."
+            )
+        missing = [name for name in desc_names if name not in df.columns]
+        if missing:
+            raise ValueError(f"Descriptor(s) not in CSV columns: {missing}")
+        X_df = df.loc[:, desc_names]
+        preds, prob_amp, distance = _svm_outputs_from_estimator(clf, X_df)
+        return ids, preds, prob_amp, distance
 
-    preds = (raw_preds == pos_class).astype(int)
+    if not z_file:
+        raise ValueError(
+            f"Legacy SVC checkpoint {pkl_path} requires a z-score file "
+            "(or convert to a StandardScaler+SVC Pipeline)."
+        )
+    desc_names, means, stds = _read_zscore_file(z_file)
+    X = _descriptor_matrix(df, desc_names)
+    X = (X - means) / np.where(stds > 0, stds, 1.0)
+    preds, prob_amp, distance = _svm_outputs_from_estimator(clf, X)
     return ids, preds, prob_amp, distance
 
 
@@ -1234,10 +1271,10 @@ def main():
 
     feature_models = [
         # (display_name, checkpoint_path, feature_mode) — modes match run_gnn_train_final_models.FEATURE_CONFIGS
-        ('ESM-only', args.esm_only_pt, 'esm'),
-        ('ESM+Geo20', args.esm_geo_pt, 'geo20'),
-        ('ESM+QSAR12', args.esm_qsar_pt, 'qsar12'),
-        ('ESM+Combined32', args.esm_combined_pt, 'combined32'),
+        ('VAE-only', args.esm_only_pt, 'esm'),
+        ('VAE+Geo20', args.esm_geo_pt, 'geo20'),
+        ('VAE+QSAR12', args.esm_qsar_pt, 'qsar12'),
+        ('VAE+Combined32', args.esm_combined_pt, 'combined32'),
     ]
 
     gnn_master_path, mode_cols, _has_qsar_merge = _build_gnn_feature_master(args, ws)

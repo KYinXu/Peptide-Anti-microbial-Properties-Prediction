@@ -1,0 +1,20 @@
+{
+  "kind": "peptide_gnn",
+  "schema": 1,
+  "architecture": "gat",
+  "node_feature_groups": {
+    "onehot": true,
+    "pdb_continuous": false,
+    "vae_table": true,
+    "esm2_residue": false
+  },
+  "node_input_dim": 33,
+  "first_message_in_dim": 33,
+  "hidden_channels": 64,
+  "num_layers": 3,
+  "dropout": 0.2,
+  "pooling": "mean_max",
+  "geo_feature_dim": 12,
+  "esm2_raw_dim": 0,
+  "esm2_hidden_dim": 64
+}
