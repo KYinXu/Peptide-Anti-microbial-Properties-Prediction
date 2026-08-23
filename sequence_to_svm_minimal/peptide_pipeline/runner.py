@@ -15,7 +15,11 @@ from peptide_pipeline.steps.cluster_step import step_cluster
 from peptide_pipeline.steps.esm2_step import step_esm2
 from peptide_pipeline.steps.esmfold_step import step_esmfold
 from peptide_pipeline.steps.geometric_step import step_geometric
-from peptide_pipeline.sequence_io import read_sequence_records, write_canonical
+from peptide_pipeline.sequence_io import (
+    concatenate_canonical_files,
+    read_sequence_records,
+    write_canonical,
+)
 from peptide_pipeline.steps.normalize import normalize_to_canonical
 from peptide_pipeline.steps.qsar_step import step_qsar
 from peptide_pipeline.steps.comparison_step import step_compare_model_predictions
@@ -53,11 +57,8 @@ def run_pipeline(cfg: RunConfig) -> int:
             ctx.manifest["canonical_amp_seqs"] = str(ctx.canonical_amp)
             ctx.manifest["canonical_decoy_seqs"] = str(ctx.canonical_decoy)
             # Some downstream steps (ESM2, optional SVM) use a single canonical file.
-            # In train mode, also produce the combined file for compatibility.
-            combined = []
-            combined.extend(read_sequence_records(ctx.canonical_amp))
-            combined.extend(read_sequence_records(ctx.canonical_decoy))
-            write_canonical(ctx.canonical, combined)
+            # Stream-copy so AMP+DECOY are never held together in RAM.
+            concatenate_canonical_files(ctx.canonical, (ctx.canonical_amp, ctx.canonical_decoy))
             ctx.manifest["canonical_seqs"] = str(ctx.canonical)
             ctx.manifest["normalization"] = {
                 "mode": "train",

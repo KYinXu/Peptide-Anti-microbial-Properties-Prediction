@@ -17,7 +17,6 @@ SAFEGUARDS:
 import argparse
 import json
 import os
-import re
 import sys
 import time
 from datetime import datetime, timedelta
@@ -30,7 +29,11 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from peptide_pipeline.aa_sanitize import canonical_standard_aa_sequence
+from peptide_pipeline.esmfold_sequences import (
+    ParseStats,
+    iter_esmfold_inputs,
+    summarize_esmfold_work,
+)
 
 
 def load_checkpoint(checkpoint_file):
@@ -52,66 +55,92 @@ def load_checkpoint(checkpoint_file):
 def save_checkpoint(checkpoint_file, checkpoint_data):
     """Save progress checkpoint IMMEDIATELY"""
     with open(checkpoint_file, 'w') as f:
-        json.dump(checkpoint_data, f, indent=2)
+        json.dump(checkpoint_data, f, separators=(",", ":"))
 
 
-# First column like 1, 2, 10 (not 02264, not Q6FI13) → unlabeled PDB SEQ_<n>
-_PLAIN_POS_INT = re.compile(r"^[1-9]\d*$")
+def _input_iter_kwargs(args):
+    amp = args.amp_file if os.path.exists(args.amp_file) else None
+    decoy = args.decoy_file if os.path.exists(args.decoy_file) else None
+    return {
+        "unlabeled": args.unlabeled,
+        "amp_file": amp,
+        "decoy_file": decoy,
+        "amp_only": args.amp_only,
+        "decoy_only": args.decoy_only,
+    }
 
 
-def parse_sequence_file(input_file, label, prefix):
-    """
-    Parse sequence file in SVM format:
-    1 MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPN
-    2 GVVDSDDLPLVVAASNAGKSTVVQLLAAAG
+def _write_result_row(results_f, result):
+    results_f.write(
+        f"{result['unique_id']},"
+        f"{result['original_idx']},"
+        f"{result['sequence']},"
+        f"{result['length']},"
+        f"{result['label']},"
+        f"{result['status']},"
+        f"{result['pdb_file']},"
+        f"{result['time_seconds']},"
+        f"{result['timestamp']}\n"
+    )
+    results_f.flush()
 
-    Lines whose sequence is not entirely standard 20 amino acids (after uppercasing) are skipped.
 
-    Returns (list of (unique_id, original_idx, sequence, label) tuples, n_skipped_invalid).
+def _process_one_sequence(
+    unique_id,
+    orig_idx,
+    seq,
+    label,
+    *,
+    args,
+    sequences_dir,
+    amp_dir,
+    decoy_dir,
+    model,
+    output_dir,
+):
+    if args.unlabeled:
+        pdb_subdir = sequences_dir
+        class_name = "seq"
+    elif label == 1:
+        pdb_subdir = amp_dir
+        class_name = "AMP"
+    else:
+        pdb_subdir = decoy_dir
+        class_name = "DECOY"
 
-    Unlabeled (prefix SEQ): bare lines → SEQ_1, SEQ_2, …; two-field lines with a
-    numeric first token → SEQ_<n>; non-numeric first token (e.g. Q6FI13, 02264) → <id>.pdb.
-    """
-    sequences = []
-    n_skipped_invalid = 0
+    if len(seq) > args.max_length:
+        result = {
+            "unique_id": unique_id,
+            "original_idx": orig_idx,
+            "sequence": seq,
+            "length": len(seq),
+            "label": label,
+            "status": "skipped_too_long",
+            "pdb_file": "",
+            "time_seconds": 0,
+            "timestamp": datetime.now().isoformat(),
+        }
+        return result, class_name, False
 
-    with open(input_file, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-
-            parts = line.split(None, 1)
-            if len(parts) == 2:
-                idx, seq = parts
-                idx = idx.strip()
-                seq = seq.strip()
-            elif len(parts) == 1:
-                seq = parts[0].strip()
-                idx = str(len(sequences) + 1)
-            else:
-                continue
-
-            canon = canonical_standard_aa_sequence(seq)
-            if canon is None:
-                n_skipped_invalid += 1
-                continue
-
-            if len(parts) == 2:
-                if prefix == "SEQ":
-                    unique_id = (
-                        f"{prefix}_{idx}"
-                        if _PLAIN_POS_INT.fullmatch(idx)
-                        else idx
-                    )
-                else:
-                    unique_id = f"{prefix}_{idx}"
-            else:
-                unique_id = f"{prefix}_{idx}"
-
-            sequences.append((unique_id, idx, canon, label))
-
-    return sequences, n_skipped_invalid
+    start_time = time.time()
+    pdb_string = predict_single_structure(model, seq, args.device)
+    elapsed = time.time() - start_time
+    pdb_file = pdb_subdir / f"{unique_id}.pdb"
+    with open(pdb_file, "w") as f:
+        f.write(pdb_string)
+    del pdb_string
+    result = {
+        "unique_id": unique_id,
+        "original_idx": orig_idx,
+        "sequence": seq,
+        "length": len(seq),
+        "label": label,
+        "status": "success",
+        "pdb_file": str(pdb_file.relative_to(output_dir)),
+        "time_seconds": round(elapsed, 2),
+        "timestamp": datetime.now().isoformat(),
+    }
+    return result, class_name, True
 
 
 def load_esmfold_model(device="cuda"):
@@ -245,6 +274,7 @@ Examples:
             print(f"   Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
     
     output_dir = Path(args.output)
+    sequences_dir = amp_dir = decoy_dir = None
     if args.unlabeled:
         sequences_dir = output_dir / "sequences"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -268,184 +298,137 @@ Examples:
     print(f"\n{'='*60}")
     print(f"  Loading Sequences")
     print(f"{'='*60}")
-    
-    all_sequences = []
-    n_skipped_invalid_total = 0
 
     if args.unlabeled:
-        if os.path.exists(args.amp_file):
-            seqs, n_skip = parse_sequence_file(args.amp_file, label=0, prefix="SEQ")
-            n_skipped_invalid_total += n_skip
-            all_sequences.extend(seqs)
-            print(f"✅ Unlabeled sequences loaded: {len(seqs)} (no class distinction)")
-        else:
+        if not os.path.exists(args.amp_file):
             print(f"❌ Sequence file not found: {args.amp_file}")
             sys.exit(1)
+        print("✅ Unlabeled input (streamed; no class distinction)")
     else:
+        if not args.decoy_only and not os.path.exists(args.amp_file):
+            print(f"❌ AMP file not found: {args.amp_file}")
+            sys.exit(1)
+        if not args.amp_only and not os.path.exists(args.decoy_file):
+            print(f"❌ Decoy file not found: {args.decoy_file}")
+            sys.exit(1)
         if not args.decoy_only:
-            if os.path.exists(args.amp_file):
-                amp_seqs, n_skip = parse_sequence_file(args.amp_file, label=1, prefix="AMP")
-                n_skipped_invalid_total += n_skip
-                all_sequences.extend(amp_seqs)
-                print(f"✅ AMP sequences loaded: {len(amp_seqs)}")
-            else:
-                print(f"❌ AMP file not found: {args.amp_file}")
-                if not args.decoy_only:
-                    sys.exit(1)
-
+            print(f"✅ AMP file: {args.amp_file}")
         if not args.amp_only:
-            if os.path.exists(args.decoy_file):
-                decoy_seqs, n_skip = parse_sequence_file(
-                    args.decoy_file, label=-1, prefix="DECOY"
-                )
-                n_skipped_invalid_total += n_skip
-                all_sequences.extend(decoy_seqs)
-                print(f"✅ Decoy sequences loaded: {len(decoy_seqs)}")
-            else:
-                print(f"❌ Decoy file not found: {args.decoy_file}")
-                if not args.amp_only:
-                    sys.exit(1)
+            print(f"✅ Decoy file: {args.decoy_file}")
 
-    if n_skipped_invalid_total:
+    parse_stats = ParseStats()
+    summary = summarize_esmfold_work(
+        iter_esmfold_inputs(stats=parse_stats, **_input_iter_kwargs(args)),
+        completed_ids=completed_set,
+        max_length=args.max_length,
+    )
+
+    if parse_stats.n_skipped_invalid:
         print(
-            f"   Skipped {n_skipped_invalid_total} lines (non-standard letters or X; "
+            f"   Skipped {parse_stats.n_skipped_invalid} lines (non-standard letters or X; "
             "only standard 20 amino acids accepted)"
         )
 
-    print(f"   Total sequences: {len(all_sequences)}")
-    
-    sequences_to_process = [
-        seq for seq in all_sequences 
-        if seq[0] not in completed_set
-    ]
-    
+    print("   Mode: stream from disk (one sequence in memory at a time)")
+    print(f"   Total sequences: {summary.n_valid}")
     print(f"   Already completed: {len(completed_set)}")
-    print(f"   Remaining: {len(sequences_to_process)}")
-    
-    if not sequences_to_process:
+    print(f"   Remaining: {summary.n_remaining}")
+    print(f"   Foldable (len ≤ {args.max_length}): {summary.n_foldable}")
+
+    if summary.n_remaining == 0:
         print("\n✅ All sequences already processed!")
         sys.exit(0)
-    
-    model = load_esmfold_model(args.device)
-    
+
+    model = None
+    if summary.n_foldable > 0:
+        model = load_esmfold_model(args.device)
+    else:
+        print("   No foldable sequences; skipping ESMFold model load")
+
     print(f"\n{'='*60}")
     print(f"  Running ESMFold Inference")
     print(f"{'='*60}")
-    
+
     results_file = output_dir / "results_log.csv"
     results_exist = results_file.exists()
-    
+
     batch_start_time = time.time()
     successful = 0
     failed = 0
-    
-    with open(results_file, 'a') as results_f:
+
+    with open(results_file, "a") as results_f:
         if not results_exist:
-            results_f.write("unique_id,original_idx,sequence,length,label,status,pdb_file,time_seconds,timestamp\n")
-        
-        pbar = tqdm(sequences_to_process, desc="Folding", unit="seq")
-        
-        for unique_id, orig_idx, seq, label in pbar:
-            if args.unlabeled:
-                pdb_subdir = sequences_dir
-                class_name = "seq"
-            elif label == 1:
-                pdb_subdir = amp_dir
-                class_name = "AMP"
-            else:
-                pdb_subdir = decoy_dir
-                class_name = "DECOY"
-            
-            if len(seq) > args.max_length:
-                result = {
-                    'unique_id': unique_id,
-                    'original_idx': orig_idx,
-                    'sequence': seq,
-                    'length': len(seq),
-                    'label': label,
-                    'status': 'skipped_too_long',
-                    'pdb_file': '',
-                    'time_seconds': 0,
-                    'timestamp': datetime.now().isoformat()
-                }
-                checkpoint['failed_ids'].append(unique_id)
-                failed += 1
-            else:
+            results_f.write(
+                "unique_id,original_idx,sequence,length,label,status,pdb_file,time_seconds,timestamp\n"
+            )
+
+        pbar = tqdm(total=summary.n_remaining, desc="Folding", unit="seq")
+        try:
+            for unique_id, orig_idx, seq, label in iter_esmfold_inputs(**_input_iter_kwargs(args)):
+                if unique_id in completed_set:
+                    continue
                 try:
-                    start_time = time.time()
-                    pdb_string = predict_single_structure(model, seq, args.device)
-                    elapsed = time.time() - start_time
-                    
-                    # Save PDB IMMEDIATELY
-                    pdb_file = pdb_subdir / f"{unique_id}.pdb"
-                    with open(pdb_file, 'w') as f:
-                        f.write(pdb_string)
-                    pdb_file_rel = str(pdb_file.relative_to(output_dir))
-                    
-                    result = {
-                        'unique_id': unique_id,
-                        'original_idx': orig_idx,
-                        'sequence': seq,
-                        'length': len(seq),
-                        'label': label,
-                        'status': 'success',
-                        'pdb_file': pdb_file_rel,
-                        'time_seconds': round(elapsed, 2),
-                        'timestamp': datetime.now().isoformat()
-                    }
-                    
-                    checkpoint['completed_ids'].append(unique_id)
-                    if args.unlabeled:
-                        checkpoint['sequences_completed'] = checkpoint.get('sequences_completed', 0) + 1
-                    elif label == 1:
-                        checkpoint['amp_completed'] = checkpoint.get('amp_completed', 0) + 1
-                    else:
-                        checkpoint['decoy_completed'] = checkpoint.get('decoy_completed', 0) + 1
-                    successful += 1
-                    
+                    result, class_name, ok = _process_one_sequence(
+                        unique_id,
+                        orig_idx,
+                        seq,
+                        label,
+                        args=args,
+                        sequences_dir=sequences_dir,
+                        amp_dir=amp_dir,
+                        decoy_dir=decoy_dir,
+                        model=model,
+                        output_dir=output_dir,
+                    )
                 except Exception as e:
+                    class_name = "seq" if args.unlabeled else ("AMP" if label == 1 else "DECOY")
                     result = {
-                        'unique_id': unique_id,
-                        'original_idx': orig_idx,
-                        'sequence': seq,
-                        'length': len(seq),
-                        'label': label,
-                        'status': f'error: {str(e)[:100]}',
-                        'pdb_file': '',
-                        'time_seconds': 0,
-                        'timestamp': datetime.now().isoformat()
+                        "unique_id": unique_id,
+                        "original_idx": orig_idx,
+                        "sequence": seq,
+                        "length": len(seq),
+                        "label": label,
+                        "status": f"error: {str(e)[:100]}",
+                        "pdb_file": "",
+                        "time_seconds": 0,
+                        "timestamp": datetime.now().isoformat(),
                     }
-                    checkpoint['failed_ids'].append(unique_id)
+                    checkpoint["failed_ids"].append(unique_id)
                     failed += 1
                     tqdm.write(f"❌ Error on {unique_id}: {str(e)[:50]}")
-            
-            # Write IMMEDIATELY with flush
-            results_f.write(
-                f"{result['unique_id']},"
-                f"{result['original_idx']},"
-                f"{result['sequence']},"
-                f"{result['length']},"
-                f"{result['label']},"
-                f"{result['status']},"
-                f"{result['pdb_file']},"
-                f"{result['time_seconds']},"
-                f"{result['timestamp']}\n"
-            )
-            results_f.flush()
-            
-            # Checkpoint IMMEDIATELY
-            checkpoint['last_processed'] = unique_id
-            checkpoint['total_time_seconds'] = time.time() - batch_start_time
-            save_checkpoint(checkpoint_file, checkpoint)
-            
-            total_done = successful + failed
-            elapsed_total = time.time() - batch_start_time
-            eta = estimate_time(len(sequences_to_process), total_done, elapsed_total)
-            pbar.set_postfix({
-                'done': f"{successful}✓ {failed}✗",
-                'eta': eta,
-                'class': class_name
-            })
+                    ok = False
+
+                if ok:
+                    checkpoint["completed_ids"].append(unique_id)
+                    completed_set.add(unique_id)
+                    if args.unlabeled:
+                        checkpoint["sequences_completed"] = checkpoint.get("sequences_completed", 0) + 1
+                    elif label == 1:
+                        checkpoint["amp_completed"] = checkpoint.get("amp_completed", 0) + 1
+                    else:
+                        checkpoint["decoy_completed"] = checkpoint.get("decoy_completed", 0) + 1
+                    successful += 1
+                elif result["status"] == "skipped_too_long":
+                    checkpoint["failed_ids"].append(unique_id)
+                    failed += 1
+
+                _write_result_row(results_f, result)
+
+                checkpoint["last_processed"] = unique_id
+                checkpoint["total_time_seconds"] = time.time() - batch_start_time
+                save_checkpoint(checkpoint_file, checkpoint)
+
+                total_done = successful + failed
+                elapsed_total = time.time() - batch_start_time
+                eta = estimate_time(summary.n_remaining, total_done, elapsed_total)
+                pbar.update(1)
+                pbar.set_postfix({
+                    "done": f"{successful}✓ {failed}✗",
+                    "eta": eta,
+                    "class": class_name,
+                })
+        finally:
+            pbar.close()
     
     total_time = time.time() - batch_start_time
     

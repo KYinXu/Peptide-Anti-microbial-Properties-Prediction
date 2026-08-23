@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from peptide_pipeline.aa_sanitize import canonical_standard_aa_sequence
 
 
-def _iter_fasta_records(path: Path) -> list[tuple[str, str]]:
-    records: list[tuple[str, str]] = []
+def _iter_fasta_records(path: Path) -> Iterator[tuple[str, str]]:
     current_id: str | None = None
     chunks: list[str] = []
+    n_emitted = 0
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
@@ -18,36 +19,32 @@ def _iter_fasta_records(path: Path) -> list[tuple[str, str]]:
                 continue
             if line.startswith(">"):
                 if current_id is not None:
-                    records.append((current_id, "".join(chunks)))
+                    yield current_id, "".join(chunks)
+                    n_emitted += 1
                 header = line[1:].strip()
-                current_id = header.split()[0] if header else str(len(records) + 1)
+                current_id = header.split()[0] if header else str(n_emitted + 1)
                 chunks = []
             else:
                 chunks.append(line.strip())
         if current_id is not None:
-            records.append((current_id, "".join(chunks)))
-    return records
+            yield current_id, "".join(chunks)
 
 
 def is_fasta_suffix(path: Path) -> bool:
     return path.suffix.lower() in (".fa", ".fasta", ".faa")
 
 
-def read_sequence_records(
+def _strip_inline_comment(s: str) -> str:
+    if "#" not in s:
+        return s
+    return s.split("#", 1)[0].rstrip()
+
+
+def iter_sequence_records(
     path: Path, invalid_stats: dict | None = None
-) -> list[tuple[str, str]]:
-    """
-    Parse sequences from TXT or FASTA.
-
-    TXT: blank lines and full-line ``#`` comments skipped; each line is ``id seq`` or bare ``seq``
-    (auto 1..n index). FASTA: only when suffix is .fa/.fasta/.faa (same as normalize_to_canonical).
-
-    Records whose sequence is not entirely standard 20 amino acids (after uppercasing) are dropped.
-    If ``invalid_stats`` is passed, it is updated with key ``n_skipped_invalid`` (incremented per
-    dropped record).
-    """
+) -> Iterator[tuple[str, str]]:
+    """Yield ``(id, sequence)`` records without materializing the full file."""
     path = Path(path)
-    records: list[tuple[str, str]] = []
 
     def _skip_invalid() -> None:
         if invalid_stats is not None:
@@ -59,20 +56,8 @@ def read_sequence_records(
             if canon is None:
                 _skip_invalid()
                 continue
-            records.append((rid, canon))
-        return records
-
-    def _strip_inline_comment(s: str) -> str:
-        """
-        Allow inline comments in TXT inputs.
-
-        Examples:
-          "id ACDEFG  # comment" -> "id ACDEFG"
-          "ACDEFG # comment"     -> "ACDEFG"
-        """
-        if "#" not in s:
-            return s
-        return s.split("#", 1)[0].rstrip()
+            yield rid, canon
+        return
 
     auto_i = 0
     with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -92,16 +77,56 @@ def read_sequence_records(
             if canon is None:
                 _skip_invalid()
                 continue
-            records.append((idx, canon))
-    return records
+            yield idx, canon
 
 
-def write_canonical(path: Path, records: list[tuple[str, str]]) -> None:
-    """Write ``id sequence`` lines (one per record)."""
+def read_sequence_records(
+    path: Path, invalid_stats: dict | None = None
+) -> list[tuple[str, str]]:
+    """
+    Parse sequences from TXT or FASTA.
+
+    TXT: blank lines and full-line ``#`` comments skipped; each line is ``id seq`` or bare ``seq``
+    (auto 1..n index). FASTA: only when suffix is .fa/.fasta/.faa (same as normalize_to_canonical).
+
+    Records whose sequence is not entirely standard 20 amino acids (after uppercasing) are dropped.
+    If ``invalid_stats`` is passed, it is updated with key ``n_skipped_invalid`` (incremented per
+    dropped record).
+    """
+    return list(iter_sequence_records(path, invalid_stats=invalid_stats))
+
+
+def write_canonical(path: Path, records: Iterable[tuple[str, str]]) -> None:
+    """Write ``id sequence`` lines one record at a time (accepts lists or generators)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [f"{rid} {seq}" for rid, seq in records]
-    with open(path, "w", encoding="utf-8") as out:
-        out.write("\n".join(lines))
-        if lines:
-            out.write("\n")
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as out:
+            for rid, seq in records:
+                out.write(f"{rid} {seq}\n")
+        tmp.replace(path)
+    except Exception:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+        raise
+
+
+def concatenate_canonical_files(dest: Path, sources: Iterable[Path]) -> None:
+    """Copy canonical ``id seq`` files into ``dest`` without loading them all at once."""
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as out:
+            for src in sources:
+                with open(src, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if not line:
+                            continue
+                        out.write(line if line.endswith("\n") else f"{line}\n")
+        tmp.replace(dest)
+    except Exception:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+        raise

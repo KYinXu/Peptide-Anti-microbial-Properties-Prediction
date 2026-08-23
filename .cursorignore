@@ -1,7 +1,6 @@
 **/esm2_per_residue/**
 **/inputs/**
 **/structures/**
-**/notebooks/**
 sequence_to_svm_minimal/results/
 sequence_to_svm_minimal/checkpoints/
 *.fasta

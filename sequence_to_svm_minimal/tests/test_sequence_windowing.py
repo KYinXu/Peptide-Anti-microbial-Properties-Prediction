@@ -11,7 +11,17 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from peptide_pipeline.sequence_io import read_sequence_records
+from peptide_pipeline.esmfold_sequences import (
+    ParseStats,
+    iter_esmfold_sequence_file,
+    summarize_esmfold_work,
+)
+from peptide_pipeline.sequence_io import (
+    concatenate_canonical_files,
+    iter_sequence_records,
+    read_sequence_records,
+    write_canonical,
+)
 from peptide_pipeline.steps.normalize import normalize_to_canonical
 from peptide_pipeline.windowing import expand_records_to_windows, iter_window_slices
 
@@ -79,6 +89,65 @@ class TestSequenceWindowing(unittest.TestCase):
             self.assertEqual(st["n_written"], 1)
             self.assertEqual(st["n_skipped_invalid"], 1)
             self.assertEqual(out.read_text(encoding="utf-8").strip(), "1 WWW")
+
+    def test_write_canonical_from_generator(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "c.txt"
+
+            def gen():
+                yield "1", "ACDE"
+                yield "2", "FGHI"
+
+            write_canonical(out, gen())
+            self.assertEqual(out.read_text(encoding="utf-8"), "1 ACDE\n2 FGHI\n")
+
+    def test_concatenate_canonical_files_streams(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            t = Path(td)
+            a = t / "a.txt"
+            b = t / "b.txt"
+            dest = t / "out.txt"
+            a.write_text("1 AAAA\n", encoding="utf-8")
+            b.write_text("2 CCCC", encoding="utf-8")
+            concatenate_canonical_files(dest, (a, b))
+            self.assertEqual(dest.read_text(encoding="utf-8"), "1 AAAA\n2 CCCC\n")
+
+    def test_iter_sequence_records_is_lazy(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "s.txt"
+            p.write_text("1 ACDE\n2 FGHI\n", encoding="utf-8")
+            it = iter_sequence_records(p)
+            self.assertEqual(next(it), ("1", "ACDE"))
+            self.assertEqual(next(it), ("2", "FGHI"))
+
+    def test_esmfold_stream_ids_and_invalid_skip(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "s.txt"
+            p.write_text(
+                "1 ACDE\nACX\nFGHI\nQ6FI13 KLMN\n",
+                encoding="utf-8",
+            )
+            stats = ParseStats()
+            recs = list(iter_esmfold_sequence_file(p, label=0, prefix="SEQ", stats=stats))
+            self.assertEqual(stats.n_skipped_invalid, 1)
+            self.assertEqual(recs[0], ("SEQ_1", "1", "ACDE", 0))
+            self.assertEqual(recs[1][0], "SEQ_2")
+            self.assertEqual(recs[1][2], "FGHI")
+            self.assertEqual(recs[2][0], "Q6FI13")
+            self.assertEqual(recs[2][2], "KLMN")
+
+    def test_summarize_esmfold_work_does_not_require_materialized_list(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "s.txt"
+            p.write_text("1 ACDE\n2 AAAAAAAAAA\n3 FGHI\n", encoding="utf-8")
+            summary = summarize_esmfold_work(
+                iter_esmfold_sequence_file(p, 0, "SEQ"),
+                completed_ids={"SEQ_1"},
+                max_length=5,
+            )
+            self.assertEqual(summary.n_valid, 3)
+            self.assertEqual(summary.n_remaining, 2)
+            self.assertEqual(summary.n_foldable, 1)
 
 
 if __name__ == "__main__":

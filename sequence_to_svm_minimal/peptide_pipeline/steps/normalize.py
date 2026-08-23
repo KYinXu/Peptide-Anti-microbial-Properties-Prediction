@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from peptide_pipeline.sequence_io import read_sequence_records, write_canonical
+from peptide_pipeline.sequence_io import iter_sequence_records, write_canonical
 
 
 def _filter_len(seq: str, min_len: int | None, max_len: int | None) -> bool:
@@ -39,8 +39,6 @@ def normalize_to_canonical(
     }
 
     inv: dict = {}
-    records = read_sequence_records(input_path, invalid_stats=inv)
-    stats["n_skipped_invalid"] = inv.get("n_skipped_invalid", 0)
 
     if stats["format"] == "txt":
         with open(input_path, "r", encoding="utf-8", errors="replace") as f:
@@ -48,18 +46,19 @@ def normalize_to_canonical(
                 if line.strip() == "":
                     stats["n_skipped_empty"] += 1
 
-    lines_out: list[tuple[str, str]] = []
-    for idx, seq in records:
-        if not seq:
-            stats["n_skipped_empty"] += 1
-            continue
-        if not _filter_len(seq, min_len, max_len):
-            stats["n_skipped_len"] += 1
-            continue
-        lines_out.append((idx, seq))
+    def _filtered_records():
+        for idx, seq in iter_sequence_records(input_path, invalid_stats=inv):
+            if not seq:
+                stats["n_skipped_empty"] += 1
+                continue
+            if not _filter_len(seq, min_len, max_len):
+                stats["n_skipped_len"] += 1
+                continue
+            stats["n_written"] += 1
+            yield idx, seq
 
-    stats["n_written"] = len(lines_out)
-    write_canonical(output_path, lines_out)
+    write_canonical(output_path, _filtered_records())
+    stats["n_skipped_invalid"] = inv.get("n_skipped_invalid", 0)
     return stats
 
 
