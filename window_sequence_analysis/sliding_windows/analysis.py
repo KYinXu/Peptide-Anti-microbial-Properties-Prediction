@@ -6,7 +6,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from window_sequence_analysis.sliding_windows.common import BestWindow, ProfileConfig, SequenceRecord, WindowRecord
+from .common import BestWindow, ProfileConfig, SequenceRecord, WindowRecord
 
 
 def update_profiles(

@@ -9,12 +9,11 @@ from pathlib import Path
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    __package__ = "window_sequence_analysis"
 
-from window_sequence_analysis.data_loader import NormalizedSequenceDataset
-from window_sequence_analysis.models.svm import SvmWindowScorer
-from window_sequence_analysis.sliding_windows.common import ProfileConfig
-from window_sequence_analysis.sliding_windows.progress import build_progress_reporter
-from window_sequence_analysis.sliding_windows.runner import run_window_profile_analysis
+from .data_loader import NormalizedSequenceDataset
+from .models import SvmWindowScorer
+from .sliding_windows import ProfileConfig, build_progress_reporter, run_window_profile_analysis
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,15 +67,9 @@ def parse_args() -> argparse.Namespace:
         help="Significant digits for serialized float profiles (default: 6).",
     )
     parser.add_argument(
-        "--progress-every",
-        type=int,
-        default=1,
-        help="Print progress to stderr every N completed sequences (default: 1).",
-    )
-    parser.add_argument(
         "--quiet",
         action="store_true",
-        help="Disable progress reporting.",
+        help="Disable the tqdm progress bar.",
     )
     return parser.parse_args()
 
@@ -104,11 +97,6 @@ def validate_config(config: ProfileConfig) -> None:
         raise ValueError("--precision must be at least 1.")
 
 
-def validate_args(args: argparse.Namespace) -> None:
-    if args.progress_every < 1:
-        raise ValueError("--progress-every must be at least 1.")
-
-
 def resolve_checkpoint_paths(args: argparse.Namespace) -> tuple[Path, Path]:
     svm_pkl = args.svm_pkl or find_single_checkpoint_file(args.checkpoint_dir, SVM_PICKLE_SUFFIXES, "SVM pickle")
     zscores = args.zscores or find_single_checkpoint_file(args.checkpoint_dir, ZSCORE_SUFFIXES, "z-score")
@@ -133,11 +121,13 @@ def main() -> int:
     try:
         config = config_from_args(args)
         validate_config(config)
-        validate_args(args)
         svm_pkl, zscores = resolve_checkpoint_paths(args)
         dataset = NormalizedSequenceDataset.from_csv(args.input)
         scorer = SvmWindowScorer.from_paths(svm_pkl, zscores)
-        progress = build_progress_reporter(quiet=args.quiet, every=args.progress_every)
+        progress = build_progress_reporter(
+            quiet=args.quiet,
+            total=None if args.quiet else dataset.count_records(),
+        )
         count = run_window_profile_analysis(
             dataset.records(),
             scorer,

@@ -6,14 +6,8 @@ from typing import Any, Iterator
 
 import numpy as np
 
-from window_sequence_analysis.sliding_windows.common import (
-    BestWindow,
-    ProfileConfig,
-    SequenceRecord,
-    WindowRecord,
-    WindowScorer,
-)
-from window_sequence_analysis.sliding_windows.analysis import build_output_row, finalize_positions, update_profiles
+from .analysis import build_output_row, finalize_positions, update_profiles
+from .common import BestWindow, ProfileConfig, SequenceRecord, WindowRecord, WindowScorer
 
 
 def profile_sequence(record: SequenceRecord, scorer: WindowScorer, config: ProfileConfig) -> dict[str, Any]:

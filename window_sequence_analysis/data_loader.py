@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Iterator
 
 from data_normalizer.shared.records import normalize_sequence
-from window_sequence_analysis.sliding_windows.common import SequenceRecord
+
+from .sliding_windows.common import SequenceRecord
 
 
 REQUIRED_COLUMNS = {"id", "sequence"}
@@ -34,6 +35,11 @@ class NormalizedSequenceDataset:
             raise ValueError(f"Normalized sequence CSV is missing required column(s): {missing}")
         label_columns = [name for name in fieldnames if name not in REQUIRED_COLUMNS]
         return cls(path=path, fieldnames=fieldnames, label_columns=label_columns)
+
+    def count_records(self) -> int:
+        with self.path.open(newline="", encoding="utf-8-sig") as handle:
+            reader = csv.DictReader(handle)
+            return sum(1 for _ in reader)
 
     def records(self) -> Iterator[SequenceRecord]:
         with self.path.open(newline="", encoding="utf-8-sig") as handle:

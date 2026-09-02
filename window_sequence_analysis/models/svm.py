@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from window_sequence_analysis.sliding_windows.common import WindowRecord, WindowScores
+from ..sliding_windows.common import WindowRecord, WindowScores
 
 
 CHARGE = {

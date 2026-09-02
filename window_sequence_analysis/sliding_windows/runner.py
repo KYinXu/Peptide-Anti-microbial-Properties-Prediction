@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
-from window_sequence_analysis.sliding_windows.common import ProfileConfig, SequenceRecord, WindowScorer
-from window_sequence_analysis.sliding_windows.progress import NullProgressReporter, ProgressReporter
-from window_sequence_analysis.sliding_windows.results_io import ProfileCsvWriter
-from window_sequence_analysis.sliding_windows.sequence import profile_sequence
+from .common import ProfileConfig, SequenceRecord, WindowScorer
+from .progress import NullProgressReporter, ProgressReporter
+from .results_io import ProfileCsvWriter
+from .sequence import profile_sequence
 
 
 def run_window_profile_analysis(
