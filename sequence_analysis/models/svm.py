@@ -127,7 +127,7 @@ def load_grar740104_matrix() -> dict[str, dict[str, float]]:
         from propy import AAIndex
     except Exception as error:
         raise RuntimeError("Could not import ProPy. Install propy3 before running SVM inference.") from error
-    aaindex_dir = SVM_MINIMAL_DIR / "descriptors" / "aaindex"
+    aaindex_dir = REPO_ROOT / "descriptors" / "aaindex"
     return AAIndex.GetAAIndex23("GRAR740104", path=str(aaindex_dir))
 
 

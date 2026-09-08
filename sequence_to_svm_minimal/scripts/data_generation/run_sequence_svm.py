@@ -10,9 +10,11 @@ import os
 import sys
 import subprocess
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DESC_PY = os.path.join(ROOT, "descriptors", "descripGen_12_py3.py")
-PRED_PY = os.path.join(ROOT, "predictionsParameters", "predictSVC.py")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+SVM_MINIMAL = os.path.dirname(os.path.dirname(_HERE))
+REPO_ROOT = os.path.dirname(SVM_MINIMAL)
+DESC_PY = os.path.join(REPO_ROOT, "descriptors", "descripGen_12_py3.py")
+PRED_PY = os.path.join(SVM_MINIMAL, "predictionsParameters", "predictSVC.py")
 
 
 def _count_sequence_file_rows(path: str) -> int:
@@ -83,7 +85,7 @@ def main():
         str(args.start),
         str(stop)
     ]
-    run(cmd_desc, cwd=ROOT)
+    run(cmd_desc, cwd=SVM_MINIMAL)
 
     # 2) Run SVM predictions
     descriptors_csv = os.path.join(outdir, "descriptors.csv")
@@ -94,7 +96,7 @@ def main():
         scaler,
         model
     ]
-    run(cmd_pred, cwd=ROOT)
+    run(cmd_pred, cwd=SVM_MINIMAL)
 
     # 3) Report outputs
     print("\nDONE.")

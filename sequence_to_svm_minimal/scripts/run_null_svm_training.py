@@ -207,7 +207,7 @@ def load_grar740104_matrix():
             "Could not import ProPy. Install the project requirements, including propy3, "
             "before training the QSAR-12 SVM."
         ) from error
-    aaindex_dir = BASE_DIR / "descriptors" / "aaindex"
+    aaindex_dir = BASE_DIR.parent / "descriptors" / "aaindex"
     try:
         return AAIndex.GetAAIndex23("GRAR740104", path=str(aaindex_dir))
     except Exception as error:
