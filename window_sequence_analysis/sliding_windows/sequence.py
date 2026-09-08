@@ -45,7 +45,7 @@ def profile_sequence(record: SequenceRecord, scorer: WindowScorer, config: Profi
         p_amp_profile,
         distance_profile,
     )
-    return build_output_row(record, p_amp_profile, distance_profile, coverage, best, window_count, config)
+    return build_output_row(record, p_amp_profile, distance_profile, best, window_count, config)
 
 
 def iter_window_batches(sequence: str, config: ProfileConfig) -> Iterator[tuple[int, list[WindowRecord]]]:

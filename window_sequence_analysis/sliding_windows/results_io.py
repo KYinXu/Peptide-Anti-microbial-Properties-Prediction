@@ -31,10 +31,9 @@ OUTPUT_METRIC_COLUMNS = [
     "best_window_end_0based_exclusive",
     "best_window_start_1based",
     "best_window_end_1based_inclusive",
-    "best_window_length",
-    "best_window_sequence",
-    "coverage_profile",
-    "p_amp_mean_profile",
+        "best_window_length",
+        "best_window_sequence",
+        "p_amp_mean_profile",
     "hyperplane_distance_mean_profile",
 ]
 

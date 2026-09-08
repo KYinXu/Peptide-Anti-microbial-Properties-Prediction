@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
 
 from ..sliding_windows.common import WindowRecord, WindowScores
+from .sklearn_pickle_compat import alias_legacy_sklearn_modules, prepare_legacy_svm
 
 
 CHARGE = {
@@ -61,6 +63,17 @@ class SvmWindowScorer:
         return score_scaled_matrix(self.svm, x_scaled)
 
 
+@dataclass(frozen=True)
+class SvmScorerFactory:
+    """Picklable constructor so worker processes can load their own scorer."""
+
+    svm_pkl: Path
+    zscores: Path
+
+    def __call__(self) -> SvmWindowScorer:
+        return SvmWindowScorer.from_paths(self.svm_pkl, self.zscores)
+
+
 def read_zscores(path: Path) -> tuple[list[str], np.ndarray, np.ndarray]:
     if not path.is_file():
         raise FileNotFoundError(f"Z-score file not found: {path}")
@@ -82,7 +95,8 @@ def load_svm(path: Path) -> Any:
         import joblib
     except ImportError:
         from sklearn.externals import joblib  # type: ignore
-    return joblib.load(path)
+    alias_legacy_sklearn_modules()
+    return prepare_legacy_svm(joblib.load(path), path.parent)
 
 
 def descriptor_matrix(windows: list[WindowRecord], names: list[str]) -> np.ndarray:

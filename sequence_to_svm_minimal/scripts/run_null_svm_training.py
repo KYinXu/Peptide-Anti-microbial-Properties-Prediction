@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train a Lee-style QSAR-12 SVM directly from AMP and decoy peptide sequences."""
+"""Train a QSAR-12 SVM with the last four sequence-order descriptors nulled."""
 
 from __future__ import annotations
 
@@ -21,12 +21,13 @@ from sklearn.metrics import (
 )
 from sklearn.svm import SVC
 
-# Ensure `sequence_to_svm_minimal/` is on sys.path even when launched elsewhere.
 BASE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BASE_DIR))
+sys.path.insert(0, str(BASE_DIR.parent))
 
 from peptide_pipeline.aa_sanitize import canonical_standard_aa_sequence
 from peptide_pipeline.sequence_io import read_sequence_records
+from sequence_analysis.utils.descriptor_ablation import null_descriptor_values, parse_null_descriptor_names
 
 
 QSAR_COLUMNS = (
@@ -43,6 +44,13 @@ QSAR_COLUMNS = (
     "QSO50_GRAR740104",
     "QSO29_GRAR740104",
 )
+SEQUENCE_ORDER_QSAR_COLUMNS = (
+    "tau2_GRAR740104",
+    "tau4_GRAR740104",
+    "QSO50_GRAR740104",
+    "QSO29_GRAR740104",
+)
+DEFAULT_NULL_QSAR_COLUMNS = SEQUENCE_ORDER_QSAR_COLUMNS
 
 CHARGE = {
     "A": 0,
@@ -68,30 +76,14 @@ CHARGE = {
 }
 
 
-def compute_metrics(y_true: np.ndarray, sigma: np.ndarray) -> dict:
-    """Compute binary metrics using sigma >= 0 as the AMP-like decision rule."""
-    y_pred = np.where(sigma >= 0, 1, -1)
-    has_both_classes = len(np.unique(y_true)) == 2
-    tp = int(((y_true == 1) & (y_pred == 1)).sum())
-    tn = int(((y_true == -1) & (y_pred == -1)).sum())
-    fp = int(((y_true == -1) & (y_pred == 1)).sum())
-    fn = int(((y_true == 1) & (y_pred == -1)).sum())
-    return {
-        "accuracy": accuracy_score(y_true, y_pred),
-        "sensitivity": tp / (tp + fn) if (tp + fn) else float("nan"),
-        "specificity": tn / (tn + fp) if (tn + fp) else float("nan"),
-        "precision": precision_score(y_true, y_pred, pos_label=1, zero_division=0),
-        "recall": recall_score(y_true, y_pred, pos_label=1, zero_division=0),
-        "f1": f1_score(y_true, y_pred, pos_label=1, zero_division=0),
-        "auc_roc_sigma": roc_auc_score(y_true, sigma) if has_both_classes else float("nan"),
-        "auc_pr_sigma": average_precision_score((y_true == 1).astype(int), sigma) if has_both_classes else float("nan"),
-        "mcc": matthews_corrcoef(y_true, y_pred),
-    }
-
-
 def parse_args() -> argparse.Namespace:
-    default_out_dir = BASE_DIR / "results" / "svm"
-    parser = argparse.ArgumentParser(description="Train a Lee-style QSAR-12 linear SVM from peptide sequences.")
+    default_out_dir = BASE_DIR / "results" / "null_svm"
+    parser = argparse.ArgumentParser(
+        description=(
+            "Train a QSAR-12 SVM from peptide sequences while forcing the last "
+            "four GRAR740104 sequence-order descriptors to zero."
+        )
+    )
     parser.add_argument(
         "--amp_sequences",
         "--positive_sequences",
@@ -109,15 +101,9 @@ def parse_args() -> argparse.Namespace:
         "--out_dir",
         type=Path,
         default=default_out_dir,
-        help="Output directory for SVM .pkl, Z-score file, and optional descriptor CSV.",
+        help="Output directory for SVM .pkl, Z-score file, and training summaries.",
     )
-    parser.add_argument(
-        "--kernel",
-        type=str,
-        default="rbf",
-        choices=["rbf", "linear"],
-        help="SVM kernel.",
-    )
+    parser.add_argument("--kernel", type=str, default="rbf", choices=["rbf", "linear"], help="SVM kernel.")
     parser.add_argument("--C", type=float, default=1.0, help="SVM regularization parameter.")
     parser.add_argument(
         "--balance_classes",
@@ -139,9 +125,39 @@ def parse_args() -> argparse.Namespace:
         "--write_descriptor_csv",
         type=Path,
         default=None,
-        help="Path to write the computed QSAR-12 training descriptor table.",
+        help="Path to write the nulled QSAR-12 training descriptor table.",
+    )
+    parser.add_argument(
+        "--null-descriptors",
+        "--null_descriptors",
+        action="append",
+        default=[],
+        help=(
+            "Descriptor names to force to 0.0 before fitting. Accepts comma-separated "
+            "names and may be repeated. Defaults to the four GRAR740104 sequence-order descriptors."
+        ),
     )
     return parser.parse_args()
+
+
+def compute_metrics(y_true: np.ndarray, sigma: np.ndarray) -> dict:
+    y_pred = np.where(sigma >= 0, 1, -1)
+    has_both_classes = len(np.unique(y_true)) == 2
+    tp = int(((y_true == 1) & (y_pred == 1)).sum())
+    tn = int(((y_true == -1) & (y_pred == -1)).sum())
+    fp = int(((y_true == -1) & (y_pred == 1)).sum())
+    fn = int(((y_true == 1) & (y_pred == -1)).sum())
+    return {
+        "accuracy": accuracy_score(y_true, y_pred),
+        "sensitivity": tp / (tp + fn) if (tp + fn) else float("nan"),
+        "specificity": tn / (tn + fp) if (tn + fp) else float("nan"),
+        "precision": precision_score(y_true, y_pred, pos_label=1, zero_division=0),
+        "recall": recall_score(y_true, y_pred, pos_label=1, zero_division=0),
+        "f1": f1_score(y_true, y_pred, pos_label=1, zero_division=0),
+        "auc_roc_sigma": roc_auc_score(y_true, sigma) if has_both_classes else float("nan"),
+        "auc_pr_sigma": average_precision_score((y_true == 1).astype(int), sigma) if has_both_classes else float("nan"),
+        "mcc": matthews_corrcoef(y_true, y_pred),
+    }
 
 
 def prefixed_id(prefix: str, peptide_id: str) -> str:
@@ -171,6 +187,16 @@ def read_sequence_file(path: Path, prefix: str) -> list[tuple[str, str]]:
     if not records:
         raise ValueError(f"No valid sequences found in {path}.")
     return [(prefixed_id(prefix, peptide_id), sequence) for peptide_id, sequence in records]
+
+
+def null_descriptors_from_args(args: argparse.Namespace) -> tuple[str, ...]:
+    if args.null_descriptors:
+        return parse_null_descriptor_names(args.null_descriptors, QSAR_COLUMNS)
+    return DEFAULT_NULL_QSAR_COLUMNS
+
+
+def needs_sequence_order(null_descriptors: tuple[str, ...]) -> bool:
+    return bool(set(SEQUENCE_ORDER_QSAR_COLUMNS) - set(null_descriptors))
 
 
 def load_grar740104_matrix():
@@ -222,7 +248,11 @@ def require_finite_descriptors(features: dict[str, float], sequence: str) -> Non
         )
 
 
-def compute_qsar12(sequence: str, grar740104_matrix) -> dict[str, float]:
+def compute_ablatable_qsar12(
+    sequence: str,
+    null_descriptors: tuple[str, ...],
+    grar740104_matrix,
+) -> dict[str, float]:
     try:
         from propy import ProCheck
         from propy.PyPro import GetProDes
@@ -235,7 +265,11 @@ def compute_qsar12(sequence: str, grar740104_matrix) -> dict[str, float]:
     descriptor = GetProDes(sequence)
     dpc = descriptor.GetDPComp()
     ctd = descriptor.GetCTD()
-    sequence_order = compute_sequence_order_descriptors(descriptor, sequence, grar740104_matrix)
+    sequence_order = (
+        compute_sequence_order_descriptors(descriptor, sequence, grar740104_matrix)
+        if grar740104_matrix is not None
+        else {name: 0.0 for name in SEQUENCE_ORDER_QSAR_COLUMNS}
+    )
     methionine = sequence.count("M")
     lysine = sequence.count("K")
     features = {
@@ -245,22 +279,24 @@ def compute_qsar12(sequence: str, grar740104_matrix) -> dict[str, float]:
         "_SolventAccessibilityD1025": float(ctd["_SolventAccessibilityD1025"]),
         **sequence_order,
     }
+    null_descriptor_values(features, null_descriptors)
     require_finite_descriptors(features, sequence)
     return features
 
 
-def build_descriptor_table(
+def build_null_descriptor_table(
     amp_records: list[tuple[str, str]],
     decoy_records: list[tuple[str, str]],
+    null_descriptors: tuple[str, ...],
 ) -> pd.DataFrame:
-    grar740104_matrix = load_grar740104_matrix()
+    grar740104_matrix = load_grar740104_matrix() if needs_sequence_order(null_descriptors) else None
     labeled_records = [(peptide_id, sequence, 1) for peptide_id, sequence in amp_records]
     labeled_records += [(peptide_id, sequence, -1) for peptide_id, sequence in decoy_records]
     rows = []
     for index, (peptide_id, sequence, label) in enumerate(labeled_records, start=1):
         if index == 1 or index % 100 == 0:
-            print(f"   Computed descriptors for {index}/{len(labeled_records)} sequences...")
-        features = compute_qsar12(sequence, grar740104_matrix)
+            print(f"   Computed nulled descriptors for {index}/{len(labeled_records)} sequences...")
+        features = compute_ablatable_qsar12(sequence, null_descriptors, grar740104_matrix)
         rows.append({"peptide_id": peptide_id, "sequence": sequence, "label": label, **features})
     return pd.DataFrame(rows)
 
@@ -294,38 +330,79 @@ def downsample_balanced_training_table(df: pd.DataFrame, random_state: int) -> p
     return balanced.sample(frac=1.0, random_state=random_state).reset_index(drop=True)
 
 
-def p_amp_probabilities(svm: SVC, X: np.ndarray) -> np.ndarray:
-    probabilities = svm.predict_proba(X)
+def p_amp_probabilities(svm: SVC, x: np.ndarray) -> np.ndarray:
+    probabilities = svm.predict_proba(x)
     pos_idx = int(np.where(svm.classes_ == 1)[0][0])
     return probabilities[:, pos_idx]
 
 
-def write_score_outputs(path: Path, df: pd.DataFrame, svm: SVC, X: np.ndarray) -> None:
-    sigma = np.asarray(svm.decision_function(X)).ravel()
+def write_score_outputs(path: Path, df: pd.DataFrame, svm: SVC, x: np.ndarray) -> None:
+    sigma = np.asarray(svm.decision_function(x)).ravel()
     out = df[["peptide_id", "sequence", "label"]].copy()
     out["prediction"] = np.where(sigma >= 0, 1, -1)
     out["sigma"] = sigma
-    out["P(AMP)"] = p_amp_probabilities(svm, X)
+    out["P(AMP)"] = p_amp_probabilities(svm, x)
     out = out.sort_values("sigma", ascending=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(path, index=False)
 
 
-def main():
+def normalized_feature_matrix(fit_df: pd.DataFrame, feature_cols: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    x_raw = fit_df[feature_cols].values.astype(np.float64)
+    means = x_raw.mean(axis=0)
+    stds = x_raw.std(axis=0)
+    constant_features = [feature_cols[index] for index in np.flatnonzero(stds == 0)]
+    if constant_features:
+        print(
+            "WARNING: These descriptors are constant in the fitting data and cannot influence the SVM: "
+            + ", ".join(constant_features)
+        )
+    stds_safe = np.where(stds > 0, stds, 1.0)
+    return (x_raw - means) / stds_safe, means, stds_safe
+
+
+def fit_validation_report(args: argparse.Namespace, svm: SVC, x: np.ndarray, y: np.ndarray) -> None:
+    if args.no_validation_split:
+        print("\nValidation split: disabled (--no_validation_split)")
+        return
+
+    from sklearn.model_selection import StratifiedShuffleSplit
+
+    splitter = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=args.random_state)
+    train_idx, val_idx = next(splitter.split(x, y))
+    svm.fit(x[train_idx], y[train_idx])
+    sigma_val = np.asarray(svm.decision_function(x[val_idx])).ravel()
+    metrics = compute_metrics(y[val_idx], sigma_val)
+
+    print("\nValidation metrics using sigma >= 0:")
+    for k, v in metrics.items():
+        print(f"  {k:10s}: {v:.4f}")
+
+
+def write_zscores(path: Path, feature_cols: list[str], means: np.ndarray, stds: np.ndarray) -> None:
+    with path.open("w") as handle:
+        handle.write(",".join(feature_cols) + "\n")
+        handle.write(",".join(f"{m:.10f}" for m in means) + "\n")
+        handle.write(",".join(f"{s:.10f}" for s in stds) + "\n")
+
+
+def main() -> None:
     args = parse_args()
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print("\n=== Training Lee-style QSAR-12 SVM from sequences ===")
+    print("\n=== Training QSAR-12 SVM with nulled sequence-order descriptors ===")
     print(f"AMP sequences  : {args.amp_sequences}")
     print(f"Decoy sequences: {args.decoy_sequences}")
     print(f"Out dir        : {out_dir}")
+    null_descriptors = null_descriptors_from_args(args)
+    print("Nulled columns : " + ", ".join(null_descriptors))
 
     amp_records = read_sequence_file(args.amp_sequences, "AMP_")
     decoy_records = read_sequence_file(args.decoy_sequences, "DECOY_")
     print(f"Loaded {len(amp_records)} AMP and {len(decoy_records)} decoy sequences.")
 
-    all_df = build_descriptor_table(amp_records, decoy_records)
+    all_df = build_null_descriptor_table(amp_records, decoy_records, null_descriptors)
     validate_training_table(all_df, require_validation_split=not args.no_validation_split)
     print(f"Computed descriptors for {len(all_df)} total sequences.")
 
@@ -339,23 +416,11 @@ def main():
     descriptor_csv = args.write_descriptor_csv or (out_dir / "svm_qsar12_training_descriptors.csv")
     descriptor_csv.parent.mkdir(parents=True, exist_ok=True)
     fit_df.to_csv(descriptor_csv, index=False)
-    print(f"Saved training descriptor CSV: {descriptor_csv}")
+    print(f"Saved nulled training descriptor CSV: {descriptor_csv}")
 
     y = fit_df["label"].values.astype(np.int64)
     feature_cols = list(QSAR_COLUMNS)
-    X_raw = fit_df[feature_cols].values.astype(np.float64)
-
-    # Z-score normalization (full dataset) and save stats for compare_model_predictions.py
-    means = X_raw.mean(axis=0)
-    stds = X_raw.std(axis=0)
-    constant_features = [feature_cols[index] for index in np.flatnonzero(stds == 0)]
-    if constant_features:
-        print(
-            "WARNING: These descriptors are constant in the fitting data and cannot influence the SVM: "
-            + ", ".join(constant_features)
-        )
-    stds_safe = np.where(stds > 0, stds, 1.0)
-    X = (X_raw - means) / stds_safe
+    x, means, stds = normalized_feature_matrix(fit_df, feature_cols)
 
     class_weight = None if args.no_class_weight else "balanced"
     print(f"Class weights: {class_weight or 'disabled'}")
@@ -368,49 +433,23 @@ def main():
         class_weight=class_weight,
         random_state=args.random_state,
     )
-    if args.no_validation_split:
-        print("\nValidation split: disabled (--no_validation_split)")
-    else:
-        # Simple train/val split (stratified 80/20) for reporting metrics
-        from sklearn.model_selection import StratifiedShuffleSplit
+    fit_validation_report(args, svm, x, y)
 
-        splitter = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=args.random_state)
-        train_idx, val_idx = next(splitter.split(X, y))
-        X_train, X_val = X[train_idx], X[val_idx]
-        y_train, y_val = y[train_idx], y[val_idx]
+    svm.fit(x, y)
 
-        svm.fit(X_train, y_train)
-        sigma_val = np.asarray(svm.decision_function(X_val)).ravel()
-        metrics = compute_metrics(y_val, sigma_val)
-
-        print("\nValidation metrics using sigma >= 0:")
-        for k, v in metrics.items():
-            print(f"  {k:10s}: {v:.4f}")
-
-    # Retrain on full normalized dataset
-    svm.fit(X, y)
-
-    # Save SVM model
     svm_path = out_dir / "svm_qsar12_model.pkl"
     joblib.dump(svm, svm_path)
     print(f"\nSaved SVM model: {svm_path}")
 
     train_scores_path = out_dir / "svm_qsar12_training_scores.csv"
-    write_score_outputs(train_scores_path, fit_df, svm, X)
+    write_score_outputs(train_scores_path, fit_df, svm, x)
     print(f"Saved training score output: {train_scores_path}")
 
-    # Save Z-score descriptor file expected by _load_svm_predictions:
-    # line 1: comma-separated descriptor names in order
-    # line 2: comma-separated means
-    # line 3: comma-separated stds
     z_path = out_dir / "svm_qsar12_zscores.txt"
-    with z_path.open("w") as f:
-        f.write(",".join(feature_cols) + "\n")
-        f.write(",".join(f"{m:.10f}" for m in means) + "\n")
-        f.write(",".join(f"{s:.10f}" for s in stds_safe) + "\n")
+    write_zscores(z_path, feature_cols, means, stds)
     print(f"Saved Z-score file: {z_path}")
 
-    print("\nDone. To use this SVM in compare_model_predictions.py, run it with:")
+    print("\nDone. To use this null-tail SVM in compare_model_predictions.py, run it with:")
     print(f"  --svm_descriptor_csv {descriptor_csv}")
     print(f"  --svm_z_file {z_path}")
     print(f"  --svm_pkl {svm_path}")
@@ -419,4 +458,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

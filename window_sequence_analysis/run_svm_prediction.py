@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -12,12 +13,12 @@ if __package__ in {None, ""}:
     __package__ = "window_sequence_analysis"
 
 from .data_loader import NormalizedSequenceDataset
-from .models import SvmWindowScorer
+from .models import SvmScorerFactory
 from .sliding_windows import ProfileConfig, build_progress_reporter, run_window_profile_analysis
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CHECKPOINT_DIR = ROOT / "checkpoints" / "svm"
+DEFAULT_CHECKPOINT_DIR = ROOT / "checkpoints" / "original_svm"
 DEFAULT_RESULTS_DIR = ROOT / "results"
 DEFAULT_OUTPUT = DEFAULT_RESULTS_DIR / "window_sequence_profiles.csv"
 SVM_PICKLE_SUFFIXES = {".pkl"}
@@ -71,7 +72,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable the tqdm progress bar.",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=default_worker_count(),
+        help="Process-pool workers for sequences (default: all CPUs). Use 1 for serial.",
+    )
     return parser.parse_args()
+
+
+def default_worker_count() -> int:
+    return max(1, os.cpu_count() or 1)
 
 
 def config_from_args(args: argparse.Namespace) -> ProfileConfig:
@@ -95,6 +106,11 @@ def validate_config(config: ProfileConfig) -> None:
         raise ValueError("--batch-starts must be at least 1.")
     if config.precision < 1:
         raise ValueError("--precision must be at least 1.")
+
+
+def validate_workers(workers: int) -> None:
+    if workers < 1:
+        raise ValueError("--workers must be at least 1.")
 
 
 def resolve_checkpoint_paths(args: argparse.Namespace) -> tuple[Path, Path]:
@@ -121,9 +137,11 @@ def main() -> int:
     try:
         config = config_from_args(args)
         validate_config(config)
+        validate_workers(args.workers)
         svm_pkl, zscores = resolve_checkpoint_paths(args)
         dataset = NormalizedSequenceDataset.from_csv(args.input)
-        scorer = SvmWindowScorer.from_paths(svm_pkl, zscores)
+        scorer_factory = SvmScorerFactory(svm_pkl, zscores)
+        scorer = scorer_factory()
         progress = build_progress_reporter(
             quiet=args.quiet,
             total=None if args.quiet else dataset.count_records(),
@@ -135,6 +153,8 @@ def main() -> int:
             args.output,
             label_columns=dataset.label_columns,
             progress=progress,
+            workers=args.workers,
+            scorer_factory=scorer_factory,
         )
     except Exception as error:
         print(f"Error: {error}", file=sys.stderr)

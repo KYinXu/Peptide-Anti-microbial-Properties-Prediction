@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 
@@ -56,7 +56,6 @@ def build_output_row(
     record: SequenceRecord,
     p_amp_profile: np.ndarray,
     distance_profile: np.ndarray,
-    coverage: np.ndarray,
     best: BestWindow,
     window_count: int,
     config: ProfileConfig,
@@ -87,7 +86,6 @@ def build_output_row(
         "best_window_end_1based_inclusive": None if best.end < 0 else best.end,
         "best_window_length": None if best.length == 0 else best.length,
         "best_window_sequence": best.sequence,
-        "coverage_profile": format_int_profile(coverage),
         "p_amp_mean_profile": format_float_profile(p_amp_profile, config.precision),
         "hyperplane_distance_mean_profile": format_float_profile(distance_profile, config.precision),
     }
@@ -128,7 +126,3 @@ def none_if_not_finite(value: float) -> float | None:
 
 def format_float_profile(values: np.ndarray, precision: int) -> str:
     return ";".join("nan" if not np.isfinite(value) else f"{float(value):.{precision}g}" for value in values)
-
-
-def format_int_profile(values: Iterable[int]) -> str:
-    return ";".join(str(int(value)) for value in values)
