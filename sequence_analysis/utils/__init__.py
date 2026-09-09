@@ -2,6 +2,7 @@
 
 from .data_loader import NormalizedSequenceDataset, SequenceRecord
 from .descriptor_ablation import (
+    add_svm_descriptor_ablation_arguments,
     null_descriptor_frame,
     null_descriptor_values,
     parse_null_descriptor_names,
@@ -19,6 +20,7 @@ __all__ = [
     "NormalizedSequenceDataset",
     "NumericSummary",
     "SequenceRecord",
+    "add_svm_descriptor_ablation_arguments",
     "first_present",
     "null_descriptor_frame",
     "null_descriptor_values",

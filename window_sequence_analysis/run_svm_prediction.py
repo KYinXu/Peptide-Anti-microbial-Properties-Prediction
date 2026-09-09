@@ -19,8 +19,7 @@ from .sliding_windows import ProfileConfig, build_progress_reporter, run_window_
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHECKPOINT_DIR = ROOT / "checkpoints" / "original_svm"
-DEFAULT_RESULTS_DIR = ROOT / "results"
-DEFAULT_OUTPUT = DEFAULT_RESULTS_DIR / "window_sequence_profiles.csv"
+OUTPUT_FILENAME = "window_sequence_profiles.csv"
 SVM_PICKLE_SUFFIXES = {".pkl"}
 ZSCORE_SUFFIXES = {".csv", ".txt"}
 
@@ -61,7 +60,12 @@ def parse_args() -> argparse.Namespace:
             "names and may be repeated; use the same values passed to run_null_svm_training."
         ),
     )
-    parser.add_argument("--output", "-o", type=Path, default=DEFAULT_OUTPUT, help=f"Output CSV path (default: {DEFAULT_OUTPUT}).")
+    parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        help=f"Output CSV path (default: <input directory>/results/{OUTPUT_FILENAME}).",
+    )
     parser.add_argument("--window-min-len", type=int, default=10, help="Minimum window length (default: 10).")
     parser.add_argument("--window-max-len", type=int, default=35, help="Maximum window length (default: 35).")
     parser.add_argument("--stride", type=int, default=1, help="Window start stride (default: 1).")
@@ -103,6 +107,10 @@ def config_from_args(args: argparse.Namespace) -> ProfileConfig:
         batch_starts=args.batch_starts,
         precision=args.precision,
     )
+
+
+def output_path_from_args(args: argparse.Namespace) -> Path:
+    return args.output or args.input.parent / "results" / OUTPUT_FILENAME
 
 
 def validate_config(config: ProfileConfig) -> None:
@@ -150,6 +158,7 @@ def main() -> int:
         validate_workers(args.workers)
         svm_pkl, zscores = resolve_checkpoint_paths(args)
         dataset = NormalizedSequenceDataset.from_csv(args.input)
+        output = output_path_from_args(args)
         scorer_factory = SvmScorerFactory(svm_pkl, zscores, tuple(args.null_descriptors))
         scorer = scorer_factory()
         progress = build_progress_reporter(
@@ -160,7 +169,7 @@ def main() -> int:
             dataset.records(),
             scorer,
             config,
-            args.output,
+            output,
             label_columns=dataset.label_columns,
             progress=progress,
             workers=args.workers,
@@ -169,7 +178,7 @@ def main() -> int:
     except Exception as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
-    print(f"Saved {count} sequence profile row(s) to {args.output.resolve()}")
+    print(f"Saved {count} sequence profile row(s) to {output.resolve()}")
     return 0
 
 

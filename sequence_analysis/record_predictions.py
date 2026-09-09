@@ -21,6 +21,7 @@ from .print_predictions import (
     ZSCORE_SUFFIXES,
     find_single_checkpoint_file,
 )
+from .utils import add_svm_descriptor_ablation_arguments
 from .utils.data_loader import NormalizedSequenceDataset, SequenceRecord
 
 
@@ -45,13 +46,6 @@ def parse_args() -> argparse.Namespace:
         help="Z-score CSV/TXT file path. Defaults to the .csv or .txt file in --checkpoint-dir.",
     )
     parser.add_argument(
-        "--null-descriptors",
-        "--null_descriptors",
-        action="append",
-        default=[],
-        help="Descriptor names to force to 0.0 before scaling. Accepts comma-separated names and may be repeated.",
-    )
-    parser.add_argument(
         "--output",
         "-o",
         type=Path,
@@ -64,6 +58,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Include the raw descriptor values used for SVM inference in the prediction CSV.",
     )
+    add_svm_descriptor_ablation_arguments(parser)
     return parser.parse_args()
 
 

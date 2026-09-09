@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Iterable, MutableMapping
 from typing import TypeVar
 
 
 T = TypeVar("T", int, float)
+
+
+def add_svm_descriptor_ablation_arguments(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group("SVM descriptor ablation")
+    group.add_argument(
+        "--null-descriptors",
+        "--null_descriptors",
+        action="append",
+        default=[],
+        help="Descriptor names to force to 0.0 before scaling. Accepts comma-separated names and may be repeated.",
+    )
 
 
 def split_descriptor_tokens(values: Iterable[str] | None) -> list[str]:

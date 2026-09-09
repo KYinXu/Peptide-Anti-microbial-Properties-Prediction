@@ -15,6 +15,7 @@ if __package__ in {None, ""}:
     __package__ = "sequence_analysis"
 
 from .models import SvmSequencePrediction, SvmSequenceScorer
+from .utils import add_svm_descriptor_ablation_arguments
 from .utils.data_loader import NormalizedSequenceDataset
 
 
@@ -41,6 +42,7 @@ def parse_args() -> argparse.Namespace:
         help="Z-score CSV/TXT file path. Defaults to the .csv or .txt file in --checkpoint-dir.",
     )
     parser.add_argument("--top", type=int, default=None, help="Optional limit on rows printed in alphabetical order.")
+    add_svm_descriptor_ablation_arguments(parser)
     return parser.parse_args()
 
 
@@ -67,7 +69,13 @@ def display_prediction(value: int) -> str:
     return "AMP" if value == 1 else "."
 
 
-def print_svm_summary(predictions: list[SvmSequencePrediction], svm_pkl: Path, zscores: Path, top_n: int | None) -> None:
+def print_svm_summary(
+    predictions: list[SvmSequencePrediction],
+    svm_pkl: Path,
+    zscores: Path,
+    top_n: int | None,
+    null_descriptors: tuple[str, ...] = (),
+) -> None:
     if not predictions:
         print("No predictions.")
         return
@@ -79,6 +87,7 @@ def print_svm_summary(predictions: list[SvmSequencePrediction], svm_pkl: Path, z
     print("SVM Sequence Inference")
     print(f"Model: {svm_pkl}")
     print(f"Z-scores: {zscores}")
+    print(f"Nulled descriptors: {', '.join(null_descriptors) if null_descriptors else '(none)'}")
     print(f"Rows scored: {len(predictions)}")
     print(f"Predictions: +1={counts.get(1, 0)}, -1={counts.get(-1, 0)}")
     print(f"sigma: min={sigmas.min():.2f}, mean={sigmas.mean():.2f}, max={sigmas.max():.2f}")
@@ -102,8 +111,18 @@ def main() -> int:
         dataset = NormalizedSequenceDataset.from_csv(args.input)
         if args.model == "svm":
             svm_pkl, zscores = resolve_checkpoint_paths(args)
-            scorer = SvmSequenceScorer.from_paths(svm_pkl, zscores)
-            print_svm_summary(scorer.score(list(dataset.records())), svm_pkl, zscores, args.top)
+            scorer = SvmSequenceScorer.from_paths(
+                svm_pkl,
+                zscores,
+                null_descriptors=args.null_descriptors,
+            )
+            print_svm_summary(
+                scorer.score(list(dataset.records())),
+                svm_pkl,
+                zscores,
+                args.top,
+                scorer.null_descriptors,
+            )
     except Exception as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
