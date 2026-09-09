@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
 
+from sequence_analysis.utils.descriptor_ablation import null_descriptor_values, parse_null_descriptor_names
+
 from ..sliding_windows.common import WindowRecord, WindowScores
 from .sklearn_pickle_compat import alias_legacy_sklearn_modules, prepare_legacy_svm
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
 CHARGE = {
     "A": 0,
     "C": 0,
@@ -38,27 +42,53 @@ STANDARD_AA = set(CHARGE)
 INVALID_RESIDUE_SUBSTITUTIONS = {
     "U": "C",
 }
+SEQUENCE_ORDER_QSAR_COLUMNS = (
+    "tau2_GRAR740104",
+    "tau4_GRAR740104",
+    "QSO50_GRAR740104",
+    "QSO29_GRAR740104",
+)
 
 
 class SvmWindowScorer:
     """Scores sequence windows with a pickled SVM and external z-score file."""
 
-    def __init__(self, svm: Any, descriptor_names: list[str], means: np.ndarray, stds: np.ndarray) -> None:
+    def __init__(
+        self,
+        svm: Any,
+        descriptor_names: list[str],
+        means: np.ndarray,
+        stds: np.ndarray,
+        null_descriptors: Iterable[str] = (),
+    ) -> None:
         self.svm = svm
         self.descriptor_names = descriptor_names
         self.means = means
         self.stds = stds
+        self.null_descriptors = tuple(null_descriptors)
+        self.grar740104_matrix = load_grar740104_matrix() if needs_sequence_order(self.null_descriptors) else None
 
     @classmethod
-    def from_paths(cls, svm_pkl: Path, zscores: Path) -> "SvmWindowScorer":
+    def from_paths(
+        cls,
+        svm_pkl: Path,
+        zscores: Path,
+        null_descriptors: Iterable[str] = (),
+    ) -> "SvmWindowScorer":
         descriptor_names, means, stds = read_zscores(zscores)
-        return cls(load_svm(svm_pkl), descriptor_names, means, stds)
+        resolved_nulls = parse_null_descriptor_names(null_descriptors, descriptor_names)
+        return cls(load_svm(svm_pkl), descriptor_names, means, stds, resolved_nulls)
 
     def score(self, windows: list[WindowRecord]) -> WindowScores:
         if not windows:
             empty = np.asarray([], dtype=np.float64)
             return WindowScores(p_amp=empty, hyperplane_distance=empty)
-        x_raw = descriptor_matrix(windows, self.descriptor_names)
+        x_raw = descriptor_matrix(
+            windows,
+            self.descriptor_names,
+            self.grar740104_matrix,
+            self.null_descriptors,
+        )
         x_scaled = (x_raw - self.means) / self.stds
         return score_scaled_matrix(self.svm, x_scaled)
 
@@ -69,9 +99,10 @@ class SvmScorerFactory:
 
     svm_pkl: Path
     zscores: Path
+    null_descriptors: tuple[str, ...] = ()
 
     def __call__(self) -> SvmWindowScorer:
-        return SvmWindowScorer.from_paths(self.svm_pkl, self.zscores)
+        return SvmWindowScorer.from_paths(self.svm_pkl, self.zscores, self.null_descriptors)
 
 
 def read_zscores(path: Path) -> tuple[list[str], np.ndarray, np.ndarray]:
@@ -99,10 +130,29 @@ def load_svm(path: Path) -> Any:
     return prepare_legacy_svm(joblib.load(path), path.parent)
 
 
-def descriptor_matrix(windows: list[WindowRecord], names: list[str]) -> np.ndarray:
+def load_grar740104_matrix() -> dict[str, dict[str, float]]:
+    try:
+        from propy import AAIndex
+    except Exception as error:
+        raise RuntimeError("Could not import ProPy. Install propy3 before running SVM inference.") from error
+    aaindex_dir = REPO_ROOT / "descriptors" / "aaindex"
+    return AAIndex.GetAAIndex23("GRAR740104", path=str(aaindex_dir))
+
+
+def needs_sequence_order(null_descriptors: Iterable[str]) -> bool:
+    return bool(set(SEQUENCE_ORDER_QSAR_COLUMNS) - set(null_descriptors))
+
+
+def descriptor_matrix(
+    windows: list[WindowRecord],
+    names: list[str],
+    grar740104_matrix: dict[str, dict[str, float]] | None,
+    null_descriptors: Iterable[str] = (),
+) -> np.ndarray:
     rows = []
     for window in windows:
-        values = qsar_descriptors(normalize_svm_sequence(window.sequence))
+        values = qsar_descriptors(normalize_svm_sequence(window.sequence), grar740104_matrix)
+        null_descriptor_values(values, null_descriptors)
         missing = [name for name in names if name not in values]
         if missing:
             raise ValueError(f"Unsupported descriptor(s) in z-score file: {missing}")
@@ -118,7 +168,10 @@ def normalize_svm_sequence(sequence: str) -> str:
     return substituted
 
 
-def qsar_descriptors(sequence: str) -> dict[str, float]:
+def qsar_descriptors(
+    sequence: str,
+    grar740104_matrix: dict[str, dict[str, float]] | None,
+) -> dict[str, float]:
     from propy import ProCheck
     from propy.PyPro import GetProDes
 
@@ -127,8 +180,14 @@ def qsar_descriptors(sequence: str) -> dict[str, float]:
     descriptor = GetProDes(sequence)
     dpc = descriptor.GetDPComp()
     ctd = descriptor.GetCTD()
-    socn = safe_descriptor_call(lambda: descriptor.GetSOCN(maxlag=30))
-    qso = safe_descriptor_call(lambda: descriptor.GetQSO(maxlag=30, weight=0.05))
+    if grar740104_matrix is None:
+        socn = {}
+        qso = {}
+    else:
+        socn = safe_descriptor_call(lambda: descriptor.GetSOCNp(maxlag=30, distancematrix=grar740104_matrix))
+        qso = safe_descriptor_call(
+            lambda: descriptor.GetQSOp(maxlag=30, weight=0.05, distancematrix=grar740104_matrix)
+        )
     length = len(sequence)
     methionine = sequence.count("M")
     lysine = sequence.count("K")

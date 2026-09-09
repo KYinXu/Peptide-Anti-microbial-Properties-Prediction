@@ -109,7 +109,7 @@ def parse_args() -> argparse.Namespace:
         "--out_dir",
         type=Path,
         default=default_out_dir,
-        help="Output directory for SVM .pkl, Z-score file, and optional descriptor CSV.",
+        help="Output directory for SVM .pkl, Z-score file, and a summary/ folder with the two CSV tables.",
     )
     parser.add_argument(
         "--kernel",
@@ -336,7 +336,7 @@ def main():
     else:
         print("Class downsampling: disabled; fitting with all examples")
 
-    descriptor_csv = args.write_descriptor_csv or (out_dir / "svm_qsar12_training_descriptors.csv")
+    descriptor_csv = args.write_descriptor_csv or (out_dir / "summary" / "svm_qsar12_training_descriptors.csv")
     descriptor_csv.parent.mkdir(parents=True, exist_ok=True)
     fit_df.to_csv(descriptor_csv, index=False)
     print(f"Saved training descriptor CSV: {descriptor_csv}")
@@ -395,7 +395,7 @@ def main():
     joblib.dump(svm, svm_path)
     print(f"\nSaved SVM model: {svm_path}")
 
-    train_scores_path = out_dir / "svm_qsar12_training_scores.csv"
+    train_scores_path = out_dir / "summary" / "svm_qsar12_training_scores.csv"
     write_score_outputs(train_scores_path, fit_df, svm, X)
     print(f"Saved training score output: {train_scores_path}")
 

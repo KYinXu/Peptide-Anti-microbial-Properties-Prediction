@@ -90,11 +90,18 @@ class SvmSequenceScorer:
         return cls(load_svm(svm_pkl), descriptor_names, means, stds, resolved_nulls)
 
     def score(self, records: list[SequenceRecord]) -> list[SvmSequencePrediction]:
+        predictions, _ = self.score_with_descriptors(records)
+        return predictions
+
+    def score_with_descriptors(
+        self,
+        records: list[SequenceRecord],
+    ) -> tuple[list[SvmSequencePrediction], np.ndarray]:
         if not records:
-            return []
+            return [], np.empty((0, len(self.descriptor_names)), dtype=np.float64)
         x_raw = descriptor_matrix(records, self.descriptor_names, self.grar740104_matrix, self.null_descriptors)
         x_scaled = (x_raw - self.means) / self.stds
-        return score_scaled_matrix(records, self.svm, x_scaled)
+        return score_scaled_matrix(records, self.svm, x_scaled), x_raw
 
 
 def read_zscores(path: Path) -> tuple[list[str], np.ndarray, np.ndarray]:

@@ -51,6 +51,16 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Z-score CSV/TXT file path. Defaults to the .csv or .txt file in --checkpoint-dir.",
     )
+    parser.add_argument(
+        "--null-descriptors",
+        "--null_descriptors",
+        action="append",
+        default=[],
+        help=(
+            "Descriptor names to force to 0.0 before z-score scaling. Accepts comma-separated "
+            "names and may be repeated; use the same values passed to run_null_svm_training."
+        ),
+    )
     parser.add_argument("--output", "-o", type=Path, default=DEFAULT_OUTPUT, help=f"Output CSV path (default: {DEFAULT_OUTPUT}).")
     parser.add_argument("--window-min-len", type=int, default=10, help="Minimum window length (default: 10).")
     parser.add_argument("--window-max-len", type=int, default=35, help="Maximum window length (default: 35).")
@@ -140,7 +150,7 @@ def main() -> int:
         validate_workers(args.workers)
         svm_pkl, zscores = resolve_checkpoint_paths(args)
         dataset = NormalizedSequenceDataset.from_csv(args.input)
-        scorer_factory = SvmScorerFactory(svm_pkl, zscores)
+        scorer_factory = SvmScorerFactory(svm_pkl, zscores, tuple(args.null_descriptors))
         scorer = scorer_factory()
         progress = build_progress_reporter(
             quiet=args.quiet,
