@@ -81,8 +81,9 @@ class SvmWindowScorer:
 
     def score(self, windows: list[WindowRecord]) -> WindowScores:
         if not windows:
-            empty = np.asarray([], dtype=np.float64)
-            return WindowScores(p_amp=empty, hyperplane_distance=empty)
+            empty_float = np.asarray([], dtype=np.float64)
+            empty_int = np.asarray([], dtype=np.int64)
+            return WindowScores(prediction=empty_int, sigma=empty_float, p_amp=empty_float)
         x_raw = descriptor_matrix(
             windows,
             self.descriptor_names,
@@ -215,16 +216,17 @@ def safe_descriptor_call(call: Callable[[], dict[str, float]]) -> dict[str, floa
 
 
 def score_scaled_matrix(svm: Any, x_scaled: np.ndarray) -> WindowScores:
+    if not hasattr(svm, "predict"):
+        raise TypeError("SVM model must expose predict to compute class predictions.")
     if not hasattr(svm, "predict_proba"):
         raise TypeError("SVM model must expose predict_proba to compute P(AMP).")
     if not hasattr(svm, "decision_function"):
-        raise TypeError("SVM model must expose decision_function to compute hyperplane distance.")
-    classes = np.asarray(getattr(svm, "classes_", [0, 1]))
+        raise TypeError("SVM model must expose decision_function to compute sigma.")
+    classes = np.asarray(getattr(svm, "classes_", [-1, 1]))
     positive_class = 1 if 1 in classes else classes[-1]
     positive_index = int(np.where(classes == positive_class)[0][0])
-    p_amp = np.asarray(svm.predict_proba(x_scaled))[:, positive_index].ravel()
-    distance = np.asarray(svm.decision_function(x_scaled)).ravel()
-    return WindowScores(
-        p_amp=p_amp.astype(np.float64),
-        hyperplane_distance=distance.astype(np.float64),
-    )
+    raw_predictions = np.asarray(svm.predict(x_scaled)).ravel()
+    prediction = np.where(raw_predictions == positive_class, 1, -1).astype(np.int64)
+    sigma = np.asarray(svm.decision_function(x_scaled)).ravel().astype(np.float64)
+    p_amp = np.asarray(svm.predict_proba(x_scaled))[:, positive_index].ravel().astype(np.float64)
+    return WindowScores(prediction=prediction, sigma=sigma, p_amp=p_amp)

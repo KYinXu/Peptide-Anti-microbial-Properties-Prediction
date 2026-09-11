@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Run SVM prediction for compact per-residue window sequence profiles."""
+"""Run raw per-window predictions for normalized sequences."""
 
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -15,29 +14,24 @@ if __package__ in {None, ""}:
 from analysis_outputs import RunConfiguration, RunOutput, RunSpec, execute_csv_run
 
 from .data_loader import NormalizedSequenceDataset
-from .models import SvmScorerFactory, SvmWindowScorer
-from .run_options import (
-    add_profile_arguments,
-    add_window_arguments,
-    profile_config_from_args,
-    validate_profile_config,
-)
-from .sliding_windows import ProfileConfig, build_progress_reporter, run_window_profile_analysis
-from .sliding_windows.progress import ProgressReporter
+from .models import SvmScorerFactory
+from .run_options import add_window_arguments, validate_window_config, window_config_from_args
+from .sliding_windows import WindowConfig, build_progress_reporter, run_raw_window_analysis
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHECKPOINT_DIR = ROOT / "checkpoints" / "svm_no_class_weight"
-OUTPUT_FILENAME = "window_sequence_profiles.csv"
+OUTPUT_FILENAME = "raw_window_predictions.csv"
 SVM_PICKLE_SUFFIXES = {".pkl"}
 ZSCORE_SUFFIXES = {".csv", ".txt"}
+SUPPORTED_MODELS = ("svm",)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Score all sequence windows with an SVM and save compact per-residue "
-            "P(AMP) and hyperplane-distance profiles."
+            "Score all sequence windows with a selected model and save one CSV row per "
+            "window with prediction, sigma, and P(AMP)."
         )
     )
     parser.add_argument(
@@ -45,7 +39,13 @@ def parse_args() -> argparse.Namespace:
         "-i",
         type=Path,
         required=True,
-        help="Normalized CSV with required id and sequence columns; extra columns are preserved.",
+        help="Normalized CSV with required id and sequence columns.",
+    )
+    parser.add_argument(
+        "--model",
+        choices=SUPPORTED_MODELS,
+        default="svm",
+        help="Model adapter to use (default: svm).",
     )
     parser.add_argument(
         "--checkpoint-dir",
@@ -76,40 +76,24 @@ def parse_args() -> argparse.Namespace:
         help=f"Output CSV name and root (default: <input directory>/results/{OUTPUT_FILENAME}).",
     )
     add_window_arguments(parser)
-    add_profile_arguments(parser)
     parser.add_argument(
         "--quiet",
         action="store_true",
         help="Disable the tqdm progress bar.",
     )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=default_worker_count(),
-        help="Process-pool workers for sequences (default: all CPUs). Use 1 for serial.",
-    )
     return parser.parse_args()
 
 
-def default_worker_count() -> int:
-    return max(1, os.cpu_count() or 1)
-
-
-def config_from_args(args: argparse.Namespace) -> ProfileConfig:
-    return profile_config_from_args(args)
+def config_from_args(args: argparse.Namespace) -> WindowConfig:
+    return window_config_from_args(args)
 
 
 def output_path_from_args(args: argparse.Namespace) -> Path:
     return args.output or args.input.parent / "results" / OUTPUT_FILENAME
 
 
-def validate_config(config: ProfileConfig) -> None:
-    validate_profile_config(config)
-
-
-def validate_workers(workers: int) -> None:
-    if workers < 1:
-        raise ValueError("--workers must be at least 1.")
+def validate_config(config: WindowConfig) -> None:
+    validate_window_config(config)
 
 
 def resolve_checkpoint_paths(args: argparse.Namespace) -> tuple[Path, Path]:
@@ -131,24 +115,24 @@ def find_single_checkpoint_file(directory: Path, suffixes: set[str], description
     return candidates[0]
 
 
-def execute_profile_run(
-    args: argparse.Namespace,
-    dataset: NormalizedSequenceDataset,
-    config: ProfileConfig,
-    scorer: SvmWindowScorer,
-    scorer_factory: SvmScorerFactory,
-    progress: ProgressReporter,
-    svm_pkl: Path,
-    zscores: Path,
-) -> RunOutput:
+def run_svm_raw_prediction(args: argparse.Namespace) -> int:
+    config = config_from_args(args)
+    validate_config(config)
+    svm_pkl, zscores = resolve_checkpoint_paths(args)
+    dataset = NormalizedSequenceDataset.from_csv(args.input)
+    scorer = SvmScorerFactory(svm_pkl, zscores, tuple(args.null_descriptors))()
+    progress = build_progress_reporter(
+        quiet=args.quiet,
+        total=None if args.quiet else dataset.count_records(),
+    )
     output_target = output_path_from_args(args)
     spec = RunSpec(
         output_root=output_target.parent,
         output_filename=output_target.name,
-        runner="window_sequence_analysis.profile",
-        model="svm",
+        runner="window_sequence_analysis.raw",
+        model=args.model,
         config=RunConfiguration(
-            output_mode="profile",
+            output_mode="raw",
             arguments=vars(args),
             effective={
                 "window": config,
@@ -161,50 +145,32 @@ def execute_profile_run(
     )
 
     def write_csv(run: RunOutput) -> int:
-        return run_window_profile_analysis(
+        return run_raw_window_analysis(
             dataset.records(),
             scorer,
             config,
             run.csv_path,
-            label_columns=dataset.label_columns,
             progress=progress,
-            workers=args.workers,
-            scorer_factory=scorer_factory,
             run_id=run.run_id,
         )
 
-    return execute_csv_run(spec, write_csv)
+    run = execute_csv_run(spec, write_csv)
+    row_count = run.manifest["output"]["row_count"]
+    print(f"Saved {row_count} window prediction row(s) to {run.csv_path}")
+    print(f"Run manifest: {run.manifest_path}")
+    return row_count
 
 
 def main() -> int:
     args = parse_args()
     try:
-        config = config_from_args(args)
-        validate_config(config)
-        validate_workers(args.workers)
-        svm_pkl, zscores = resolve_checkpoint_paths(args)
-        dataset = NormalizedSequenceDataset.from_csv(args.input)
-        scorer_factory = SvmScorerFactory(svm_pkl, zscores, tuple(args.null_descriptors))
-        scorer = scorer_factory()
-        progress = build_progress_reporter(
-            quiet=args.quiet,
-            total=None if args.quiet else dataset.count_records(),
-        )
-        run = execute_profile_run(
-            args,
-            dataset,
-            config,
-            scorer,
-            scorer_factory,
-            progress,
-            svm_pkl,
-            zscores,
-        )
+        if args.model == "svm":
+            run_svm_raw_prediction(args)
+        else:
+            raise ValueError(f"Unsupported model: {args.model}")
     except Exception as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
-    print(f"Saved {run.manifest['output']['row_count']} sequence profile row(s) to {run.csv_path}")
-    print(f"Run manifest: {run.manifest_path}")
     return 0
 
 

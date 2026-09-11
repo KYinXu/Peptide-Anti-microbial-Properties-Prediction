@@ -16,14 +16,16 @@ from data_normalizer.shared.writers import write_normalized_csv
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = ROOT / "results" / "normalized_sequences.csv"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Normalize TXT rows into the standard id/sequence CSV format.")
     parser.add_argument("--input", "-i", type=Path, required=True, help="Input TXT with `id sequence` rows.")
-    parser.add_argument("--output", "-o", type=Path, default=DEFAULT_OUTPUT, help=f"Output CSV path (default: {DEFAULT_OUTPUT}).")
-    return parser.parse_args()
+    parser.add_argument("--output", "-o", type=Path, help="Output CSV path (default: <input directory>/sequences.csv).")
+    args = parser.parse_args()
+    if args.output is None:
+        args.output = args.input.parent / "sequences.csv"
+    return args
 
 
 def normalize_txt_to_csv(input_txt: Path, output_csv: Path) -> int:

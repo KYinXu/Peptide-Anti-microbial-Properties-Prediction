@@ -1,4 +1,4 @@
-"""Low-level residue-profile accumulation for one sliding-window analysis."""
+"""Profile summaries and output rows for sliding-window analysis."""
 
 from __future__ import annotations
 
@@ -9,19 +9,13 @@ import numpy as np
 from .common import BestWindow, ProfileConfig, SequenceRecord, WindowRecord
 
 
-def update_profiles(
+def update_best_window(
     windows: list[WindowRecord],
     p_amp: np.ndarray,
     distance: np.ndarray,
-    p_amp_sum: np.ndarray,
-    distance_sum: np.ndarray,
-    coverage: np.ndarray,
     best: BestWindow,
 ) -> None:
     for window, probability, hyperplane_distance in zip(windows, p_amp, distance):
-        p_amp_sum[window.start : window.end] += probability
-        distance_sum[window.start : window.end] += hyperplane_distance
-        coverage[window.start : window.end] += 1
         if probability > best.p_amp:
             best.p_amp = float(probability)
             best.hyperplane_distance = float(hyperplane_distance)
@@ -29,27 +23,6 @@ def update_profiles(
             best.end = window.end
             best.length = window.length
             best.sequence = window.sequence
-
-
-def finalize_positions(
-    start: int,
-    end: int,
-    p_amp_sum: np.ndarray,
-    distance_sum: np.ndarray,
-    coverage: np.ndarray,
-    p_amp_profile: np.ndarray,
-    distance_profile: np.ndarray,
-) -> None:
-    if end < start:
-        return
-    slc = slice(start, end + 1)
-    covered = coverage[slc] > 0
-    p_values = np.full(end - start + 1, np.nan, dtype=np.float64)
-    d_values = np.full(end - start + 1, np.nan, dtype=np.float64)
-    p_values[covered] = p_amp_sum[slc][covered] / coverage[slc][covered]
-    d_values[covered] = distance_sum[slc][covered] / coverage[slc][covered]
-    p_amp_profile[slc] = p_values
-    distance_profile[slc] = d_values
 
 
 def build_output_row(
@@ -62,6 +35,8 @@ def build_output_row(
 ) -> dict[str, Any]:
     max_p_amp_index = finite_argmax(p_amp_profile)
     max_distance_index = finite_argmax(distance_profile)
+    p_amp_serialized = format_float_profile(p_amp_profile, config.precision)
+    distance_serialized = format_float_profile(distance_profile, config.precision)
     row: dict[str, Any] = {
         "id": record.id,
         "sequence_length": len(record.sequence),
@@ -69,7 +44,7 @@ def build_output_row(
         "window_max_len": config.max_len,
         "stride": config.stride,
         "window_count": window_count,
-        "profile_aggregation": "mean_over_covering_windows",
+        "profile_aggregation": f"{config.aggregation}_over_covering_windows",
         "profile_index_base": 1,
         "profile_delimiter": ";",
         "p_amp_mean": finite_mean(p_amp_profile),
@@ -86,8 +61,12 @@ def build_output_row(
         "best_window_end_1based_inclusive": None if best.end < 0 else best.end,
         "best_window_length": None if best.length == 0 else best.length,
         "best_window_sequence": best.sequence,
-        "p_amp_mean_profile": format_float_profile(p_amp_profile, config.precision),
-        "hyperplane_distance_mean_profile": format_float_profile(distance_profile, config.precision),
+        "p_amp_profile": p_amp_serialized,
+        "hyperplane_distance_profile": distance_serialized,
+        "p_amp_mean_profile": p_amp_serialized,
+        "hyperplane_distance_mean_profile": distance_serialized,
+        "p_amp_max_profile": p_amp_serialized if config.aggregation == "max" else None,
+        "hyperplane_distance_max_profile": distance_serialized if config.aggregation == "max" else None,
     }
     for key, value in record.extras.items():
         row[key if key not in row else f"label_{key}"] = value

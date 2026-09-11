@@ -17,7 +17,6 @@ from data_normalizer.shared.writers import write_normalized_csv
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = ROOT / "results" / "normalized_sequences.csv"
 FASTA_EXTENSIONS = {".fa", ".fasta", ".faa", ".fna"}
 
 
@@ -26,8 +25,11 @@ def parse_args() -> argparse.Namespace:
         description="Normalize FASTA headers and sequence lines into one CSV row per sequence."
     )
     parser.add_argument("--input", "-i", type=Path, required=True, help="Input FASTA file (.fa, .fasta, .faa, .fna).")
-    parser.add_argument("--output", "-o", type=Path, default=DEFAULT_OUTPUT, help=f"Output CSV path (default: {DEFAULT_OUTPUT}).")
-    return parser.parse_args()
+    parser.add_argument("--output", "-o", type=Path, help="Output CSV path (default: <input directory>/sequences.csv).")
+    args = parser.parse_args()
+    if args.output is None:
+        args.output = args.input.parent / "sequences.csv"
+    return args
 
 
 def normalize_fasta_to_csv(input_fasta: Path, output_csv: Path) -> int:

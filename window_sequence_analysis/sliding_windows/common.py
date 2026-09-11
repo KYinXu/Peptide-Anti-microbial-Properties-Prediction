@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Literal, Protocol
 
 import numpy as np
 
@@ -25,17 +25,31 @@ class WindowRecord:
 
 @dataclass(frozen=True)
 class WindowScores:
+    prediction: np.ndarray
+    sigma: np.ndarray
     p_amp: np.ndarray
-    hyperplane_distance: np.ndarray
+
+    @property
+    def hyperplane_distance(self) -> np.ndarray:
+        return self.sigma
+
+
+ProfileAggregation = Literal["mean", "max"]
+PROFILE_AGGREGATIONS: tuple[ProfileAggregation, ...] = ("mean", "max")
 
 
 @dataclass(frozen=True)
-class ProfileConfig:
+class WindowConfig:
     min_len: int = 10
     max_len: int = 35
     stride: int = 1
     batch_starts: int = 64
+
+
+@dataclass(frozen=True)
+class ProfileConfig(WindowConfig):
     precision: int = 6
+    aggregation: ProfileAggregation = "mean"
 
 
 @dataclass
@@ -52,4 +66,4 @@ class WindowScorer(Protocol):
     """Model adapter interface used by the sliding profile code."""
 
     def score(self, windows: list[WindowRecord]) -> WindowScores:
-        """Return one P(AMP) and hyperplane-distance value per input window."""
+        """Return one prediction, sigma, and P(AMP) value per input window."""

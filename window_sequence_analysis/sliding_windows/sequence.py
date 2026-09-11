@@ -4,51 +4,45 @@ from __future__ import annotations
 
 from typing import Any, Iterator
 
-import numpy as np
-
-from .analysis import build_output_row, finalize_positions, update_profiles
-from .common import BestWindow, ProfileConfig, SequenceRecord, WindowRecord, WindowScorer
+from .aggregation import ResidueProfileAccumulator
+from .analysis import build_output_row, update_best_window
+from .common import BestWindow, ProfileConfig, SequenceRecord, WindowConfig, WindowRecord, WindowScorer
 
 
 def profile_sequence(record: SequenceRecord, scorer: WindowScorer, config: ProfileConfig) -> dict[str, Any]:
     length = len(record.sequence)
-    p_amp_sum = np.zeros(length, dtype=np.float64)
-    distance_sum = np.zeros(length, dtype=np.float64)
-    coverage = np.zeros(length, dtype=np.int32)
-    p_amp_profile = np.full(length, np.nan, dtype=np.float64)
-    distance_profile = np.full(length, np.nan, dtype=np.float64)
+    accumulator = ResidueProfileAccumulator.create(
+        length,
+        ("p_amp", "hyperplane_distance"),
+        config.aggregation,
+    )
     best = BestWindow()
     window_count = 0
-    finalized_through = -1
 
-    for batch_end_start, windows in iter_window_batches(record.sequence, config):
+    for _, windows in iter_window_batches(record.sequence, config):
         scores = scorer.score(windows)
-        update_profiles(windows, scores.p_amp, scores.hyperplane_distance, p_amp_sum, distance_sum, coverage, best)
-        window_count += len(windows)
-        finalize_positions(
-            finalized_through + 1,
-            batch_end_start,
-            p_amp_sum,
-            distance_sum,
-            coverage,
-            p_amp_profile,
-            distance_profile,
+        accumulator.update(
+            windows,
+            {
+                "p_amp": scores.p_amp,
+                "hyperplane_distance": scores.hyperplane_distance,
+            },
         )
-        finalized_through = batch_end_start
+        update_best_window(windows, scores.p_amp, scores.hyperplane_distance, best)
+        window_count += len(windows)
 
-    finalize_positions(
-        finalized_through + 1,
-        length - 1,
-        p_amp_sum,
-        distance_sum,
-        coverage,
-        p_amp_profile,
-        distance_profile,
+    profiles = accumulator.profiles()
+    return build_output_row(
+        record,
+        profiles["p_amp"],
+        profiles["hyperplane_distance"],
+        best,
+        window_count,
+        config,
     )
-    return build_output_row(record, p_amp_profile, distance_profile, best, window_count, config)
 
 
-def iter_window_batches(sequence: str, config: ProfileConfig) -> Iterator[tuple[int, list[WindowRecord]]]:
+def iter_window_batches(sequence: str, config: WindowConfig) -> Iterator[tuple[int, list[WindowRecord]]]:
     length = len(sequence)
     if length < config.min_len:
         return

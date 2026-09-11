@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import csv
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Iterable
+
+from analysis_outputs import RunCsvWriter
 
 
 OUTPUT_PREFIX_COLUMNS = [
@@ -31,35 +32,25 @@ OUTPUT_METRIC_COLUMNS = [
     "best_window_end_0based_exclusive",
     "best_window_start_1based",
     "best_window_end_1based_inclusive",
-        "best_window_length",
-        "best_window_sequence",
-        "p_amp_mean_profile",
+    "best_window_length",
+    "best_window_sequence",
+    "p_amp_profile",
+    "hyperplane_distance_profile",
+    "p_amp_mean_profile",
     "hyperplane_distance_mean_profile",
+    "p_amp_max_profile",
+    "hyperplane_distance_max_profile",
 ]
 
 
-class ProfileCsvWriter:
-    def __init__(self, path: Path, label_columns: Iterable[str] = ()) -> None:
-        self.path = path
-        self.columns = profile_columns(label_columns)
-        self.handle: Any = None
-        self.writer: csv.DictWriter | None = None
-
-    def __enter__(self) -> "ProfileCsvWriter":
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.handle = self.path.open("w", newline="", encoding="utf-8")
-        self.writer = csv.DictWriter(self.handle, fieldnames=self.columns, extrasaction="ignore")
-        self.writer.writeheader()
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        if self.handle is not None:
-            self.handle.close()
-
-    def write_row(self, row: dict[str, Any]) -> None:
-        if self.writer is None:
-            raise RuntimeError("ProfileCsvWriter must be opened before writing rows.")
-        self.writer.writerow(row)
+class ProfileCsvWriter(RunCsvWriter):
+    def __init__(
+        self,
+        path: Path,
+        label_columns: Iterable[str] = (),
+        run_id: str | None = None,
+    ) -> None:
+        super().__init__(path, profile_columns(label_columns), run_id)
 
 
 def profile_columns(label_columns: Iterable[str] = ()) -> list[str]:

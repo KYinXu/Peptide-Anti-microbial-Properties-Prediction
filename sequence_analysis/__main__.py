@@ -1,6 +1,6 @@
-"""Allow `python -m sequence_analysis` to run one-time prediction inference."""
+"""Allow `python -m sequence_analysis` to save sequence predictions."""
 
-from .print_predictions import main
+from .record_predictions import main
 
 raise SystemExit(main())
 
