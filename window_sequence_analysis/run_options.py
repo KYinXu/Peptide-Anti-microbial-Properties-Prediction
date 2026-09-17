@@ -29,8 +29,8 @@ def add_profile_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--profile-aggregation",
         choices=PROFILE_AGGREGATIONS,
-        default="mean",
-        help="Aggregate scores from covering windows by mean or maximum (default: mean).",
+        default="both",
+        help="Aggregate scores from covering windows by mean, maximum, or both (default: both).",
     )
     parser.add_argument(
         "--precision",

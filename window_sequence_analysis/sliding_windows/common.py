@@ -34,8 +34,8 @@ class WindowScores:
         return self.sigma
 
 
-ProfileAggregation = Literal["mean", "max"]
-PROFILE_AGGREGATIONS: tuple[ProfileAggregation, ...] = ("mean", "max")
+ProfileAggregation = Literal["mean", "max", "both"]
+PROFILE_AGGREGATIONS: tuple[ProfileAggregation, ...] = ("mean", "max", "both")
 
 
 @dataclass(frozen=True)
@@ -49,7 +49,7 @@ class WindowConfig:
 @dataclass(frozen=True)
 class ProfileConfig(WindowConfig):
     precision: int = 6
-    aggregation: ProfileAggregation = "mean"
+    aggregation: ProfileAggregation = "both"
 
 
 @dataclass

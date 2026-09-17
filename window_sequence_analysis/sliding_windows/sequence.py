@@ -34,8 +34,7 @@ def profile_sequence(record: SequenceRecord, scorer: WindowScorer, config: Profi
     profiles = accumulator.profiles()
     return build_output_row(
         record,
-        profiles["p_amp"],
-        profiles["hyperplane_distance"],
+        profiles,
         best,
         window_count,
         config,

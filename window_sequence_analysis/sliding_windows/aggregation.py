@@ -13,7 +13,8 @@ from .common import PROFILE_AGGREGATIONS, ProfileAggregation, WindowRecord
 @dataclass
 class ResidueProfileAccumulator:
     aggregation: ProfileAggregation
-    values: dict[str, np.ndarray]
+    sum_values: dict[str, np.ndarray]
+    max_values: dict[str, np.ndarray]
     coverage: dict[str, np.ndarray]
 
     @classmethod
@@ -25,11 +26,14 @@ class ResidueProfileAccumulator:
     ) -> "ResidueProfileAccumulator":
         if aggregation not in PROFILE_AGGREGATIONS:
             raise ValueError(f"Unsupported profile aggregation: {aggregation}")
-        initial = 0.0 if aggregation == "mean" else float("-inf")
         return cls(
             aggregation=aggregation,
-            values={
-                name: np.full(length, initial, dtype=np.float64)
+            sum_values={
+                name: np.zeros(length, dtype=np.float64)
+                for name in metric_names
+            },
+            max_values={
+                name: np.full(length, float("-inf"), dtype=np.float64)
                 for name in metric_names
             },
             coverage={
@@ -49,34 +53,39 @@ class ResidueProfileAccumulator:
                 score = float(scores[window_index])
                 if not np.isfinite(score):
                     continue
-                target = self.values[name][window.start : window.end]
-                if self.aggregation == "mean":
-                    target += score
-                else:
-                    np.maximum(target, score, out=target)
+                
+                if self.aggregation in ("mean", "both"):
+                    self.sum_values[name][window.start : window.end] += score
+                
+                if self.aggregation in ("max", "both"):
+                    target_max = self.max_values[name][window.start : window.end]
+                    np.maximum(target_max, score, out=target_max)
+                    
                 self.coverage[name][window.start : window.end] += 1
 
     def profiles(self) -> dict[str, np.ndarray]:
-        return {
-            name: self._finalize_metric(name)
-            for name in self.values
-        }
-
-    def _finalize_metric(self, name: str) -> np.ndarray:
-        covered = self.coverage[name] > 0
-        profile = np.full(len(covered), np.nan, dtype=np.float64)
-        if self.aggregation == "mean":
-            profile[covered] = self.values[name][covered] / self.coverage[name][covered]
-        else:
-            profile[covered] = self.values[name][covered]
-        return profile
+        result = {}
+        for name in self.coverage:
+            covered = self.coverage[name] > 0
+            
+            if self.aggregation in ("mean", "both"):
+                mean_profile = np.full(len(covered), np.nan, dtype=np.float64)
+                mean_profile[covered] = self.sum_values[name][covered] / self.coverage[name][covered]
+                result[f"{name}_mean"] = mean_profile
+                
+            if self.aggregation in ("max", "both"):
+                max_profile = np.full(len(covered), np.nan, dtype=np.float64)
+                max_profile[covered] = self.max_values[name][covered]
+                result[f"{name}_max"] = max_profile
+                
+        return result
 
     def _validate_metrics(
         self,
         windows: Sequence[WindowRecord],
         metric_scores: Mapping[str, np.ndarray],
     ) -> None:
-        expected = set(self.values)
+        expected = set(self.coverage)
         supplied = set(metric_scores)
         if supplied != expected:
             raise ValueError(
