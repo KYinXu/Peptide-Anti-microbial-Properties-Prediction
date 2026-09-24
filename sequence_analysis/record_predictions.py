@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run sequence SVM inference and save predictions to CSV."""
+"""Run sequence model inference and save predictions to CSV."""
 
 from __future__ import annotations
 
@@ -15,7 +15,14 @@ if __package__ in {None, ""}:
 
 from analysis_outputs import RunConfiguration, RunCsvWriter, RunOutput, RunSpec, execute_csv_run
 
-from .models import SvmSequencePrediction, SvmSequenceScorer
+from .models import (
+    DEFAULT_GNN_ROOT,
+    GnnSequencePrediction,
+    GnnSequenceScorer,
+    SvmSequencePrediction,
+    SvmSequenceScorer,
+    resolve_gnn_model_dir,
+)
 from .print_predictions import (
     DEFAULT_CHECKPOINT_DIR,
     SVM_PICKLE_SUFFIXES,
@@ -32,13 +39,31 @@ PREDICTION_COLUMNS = ("prediction", "sigma", "p_amp")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run sequence SVM inference and save predictions to CSV.")
+    parser = argparse.ArgumentParser(description="Run sequence model inference and save predictions to CSV.")
+    parser.add_argument("--model", choices=["svm", "gnn"], default="svm", help="Model adapter to use.")
+    parser.add_argument(
+        "--gnn-model",
+        type=Path,
+        help=f"GNN model directory or gnn_model.pt. Defaults to {DEFAULT_GNN_ROOT}.",
+    )
+    parser.add_argument("--batch-size", type=int, default=32, help="GNN inference batch size.")
+    parser.add_argument("--device", type=str, default=None, help="Torch device for GNN inference and folding.")
+    parser.add_argument(
+        "--force-process",
+        action="store_true",
+        help="Regenerate GNN structures and QSAR features before scoring.",
+    )
     parser.add_argument("--input", "-i", type=Path, required=True, help="Normalized CSV with id and sequence columns.")
     parser.add_argument(
         "--checkpoint-dir",
         type=Path,
-        default=DEFAULT_CHECKPOINT_DIR,
-        help=f"Directory containing one SVM pickle and one z-score CSV/TXT file (default: {DEFAULT_CHECKPOINT_DIR}).",
+        default=None,
+        help=(
+            "SVM: directory with one pickle and one z-score file "
+            f"(default: {DEFAULT_CHECKPOINT_DIR}). "
+            "GNN: directory with gnn_model.pt, or a parent of one "
+            f"(default: {DEFAULT_GNN_ROOT})."
+        ),
     )
     parser.add_argument("--svm-pkl", type=Path, help="SVM pickle path. Defaults to the .pkl file in --checkpoint-dir.")
     parser.add_argument(
@@ -56,15 +81,16 @@ def parse_args() -> argparse.Namespace:
         "--include-descriptors",
         "--save-descriptors",
         action="store_true",
-        help="Include the raw descriptor values used for SVM inference in the prediction CSV.",
+        help="Include the raw descriptor values used for inference in the prediction CSV.",
     )
     add_svm_descriptor_ablation_arguments(parser)
     return parser.parse_args()
 
 
 def resolve_checkpoint_paths(args: argparse.Namespace) -> tuple[Path, Path]:
-    svm_pkl = args.svm_pkl or find_single_checkpoint_file(args.checkpoint_dir, SVM_PICKLE_SUFFIXES, "SVM pickle")
-    zscores = args.zscores or find_single_checkpoint_file(args.checkpoint_dir, ZSCORE_SUFFIXES, "z-score")
+    checkpoint_dir = args.checkpoint_dir or DEFAULT_CHECKPOINT_DIR
+    svm_pkl = args.svm_pkl or find_single_checkpoint_file(checkpoint_dir, SVM_PICKLE_SUFFIXES, "SVM pickle")
+    zscores = args.zscores or find_single_checkpoint_file(checkpoint_dir, ZSCORE_SUFFIXES, "z-score")
     return svm_pkl, zscores
 
 
@@ -74,7 +100,7 @@ def output_path_from_args(args: argparse.Namespace) -> Path:
 
 def prediction_row(
     record: SequenceRecord,
-    prediction: SvmSequencePrediction,
+    prediction: SvmSequencePrediction | GnnSequencePrediction,
     descriptors: dict[str, float],
 ) -> dict[str, object]:
     return {
@@ -92,7 +118,7 @@ def write_predictions(
     output: Path,
     extra_columns: list[str],
     records: list[SequenceRecord],
-    predictions: list[SvmSequencePrediction],
+    predictions: list[SvmSequencePrediction | GnnSequencePrediction],
     descriptor_names: tuple[str, ...] = (),
     descriptor_values: np.ndarray | None = None,
     run_id: str | None = None,
@@ -118,29 +144,27 @@ def execute_prediction_run(
     args: argparse.Namespace,
     dataset: NormalizedSequenceDataset,
     records: list[SequenceRecord],
-    predictions: list[SvmSequencePrediction],
+    predictions: list[SvmSequencePrediction | GnnSequencePrediction],
     descriptor_names: tuple[str, ...],
     descriptor_values: np.ndarray | None,
-    scorer: SvmSequenceScorer,
-    svm_pkl: Path,
-    zscores: Path,
+    *,
+    model_name: str,
+    model_files: dict[str, Path],
+    effective: dict[str, object],
 ) -> RunOutput:
     output_target = output_path_from_args(args)
     spec = RunSpec(
         output_root=output_target.parent,
         output_filename=output_target.name,
         runner="sequence_analysis.predictions",
-        model="svm",
+        model=model_name,
         config=RunConfiguration(
             output_mode="sequence",
             arguments=vars(args),
-            effective={
-                "include_descriptors": args.include_descriptors,
-                "null_descriptors": scorer.null_descriptors,
-            },
+            effective=effective,
         ),
         inputs={"sequences": args.input},
-        model_files={"svm_pickle": svm_pkl, "zscores": zscores},
+        model_files=model_files,
         repository_root=ROOT,
     )
 
@@ -159,19 +183,47 @@ def execute_prediction_run(
     return execute_csv_run(spec, write_csv)
 
 
+def score_svm(args: argparse.Namespace, records: list[SequenceRecord]):
+    svm_pkl, zscores = resolve_checkpoint_paths(args)
+    scorer = SvmSequenceScorer.from_paths(svm_pkl, zscores, null_descriptors=args.null_descriptors)
+    predictions, descriptor_values = scorer.score_with_descriptors(records)
+    return predictions, descriptor_values, scorer, {"svm_pickle": svm_pkl, "zscores": zscores}
+
+
+def score_gnn(args: argparse.Namespace, records: list[SequenceRecord]):
+    if args.null_descriptors:
+        raise ValueError("GNN inference does not null QSAR columns. Omit --null-descriptors.")
+    model_dir = resolve_gnn_model_dir(args.gnn_model, args.checkpoint_dir)
+    scorer = GnnSequenceScorer.from_paths(
+        model_dir,
+        batch_size=args.batch_size,
+        device=args.device,
+        force_process=args.force_process,
+    )
+    predictions, descriptor_values = scorer.score_with_descriptors(records, args.input)
+    return predictions, descriptor_values, scorer, {"gnn_model": model_dir}
+
+
 def main() -> int:
     args = parse_args()
     try:
         dataset = NormalizedSequenceDataset.from_csv(args.input)
         records = list(dataset.records())
-        svm_pkl, zscores = resolve_checkpoint_paths(args)
-        scorer = SvmSequenceScorer.from_paths(
-            svm_pkl,
-            zscores,
-            null_descriptors=args.null_descriptors,
-        )
-        predictions, descriptor_values = scorer.score_with_descriptors(records)
-        descriptor_names = tuple(scorer.descriptor_names) if args.include_descriptors else ()
+        if args.model == "svm":
+            predictions, descriptor_values, scorer, model_files = score_svm(args, records)
+            effective = {
+                "include_descriptors": args.include_descriptors,
+                "null_descriptors": scorer.null_descriptors,
+            }
+            names = scorer.descriptor_names
+        else:
+            predictions, descriptor_values, scorer, model_files = score_gnn(args, records)
+            effective = {
+                "include_descriptors": args.include_descriptors,
+                "tabular_columns": scorer.feature_cols,
+            }
+            names = scorer.feature_cols
+        descriptor_names = tuple(names) if args.include_descriptors else ()
         saved_descriptors = descriptor_values if args.include_descriptors else None
         run = execute_prediction_run(
             args,
@@ -180,9 +232,9 @@ def main() -> int:
             predictions,
             descriptor_names,
             saved_descriptors,
-            scorer,
-            svm_pkl,
-            zscores,
+            model_name=args.model,
+            model_files=model_files,
+            effective=effective,
         )
     except Exception as error:
         print(f"Error: {error}", file=sys.stderr)

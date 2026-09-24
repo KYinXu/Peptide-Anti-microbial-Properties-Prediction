@@ -14,7 +14,14 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "sequence_analysis"
 
-from .models import SvmSequencePrediction, SvmSequenceScorer
+from .models import (
+    DEFAULT_GNN_ROOT,
+    GnnSequencePrediction,
+    GnnSequenceScorer,
+    SvmSequencePrediction,
+    SvmSequenceScorer,
+    resolve_gnn_model_dir,
+)
 from .utils import add_svm_descriptor_ablation_arguments
 from .utils.data_loader import NormalizedSequenceDataset
 
@@ -28,12 +35,29 @@ ZSCORE_SUFFIXES = {".csv", ".txt"}
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run sequence-level model inference and print a CLI summary.")
     parser.add_argument("--input", "-i", type=Path, required=True, help="Normalized CSV with id and sequence columns.")
-    parser.add_argument("--model", choices=["svm"], default="svm", help="Model adapter to use.")
+    parser.add_argument("--model", choices=["svm", "gnn"], default="svm", help="Model adapter to use.")
+    parser.add_argument(
+        "--gnn-model",
+        type=Path,
+        help=f"GNN model directory or gnn_model.pt. Defaults to {DEFAULT_GNN_ROOT}.",
+    )
+    parser.add_argument("--batch-size", type=int, default=32, help="GNN inference batch size.")
+    parser.add_argument("--device", type=str, default=None, help="Torch device for GNN inference and folding.")
+    parser.add_argument(
+        "--force-process",
+        action="store_true",
+        help="Regenerate GNN structures and QSAR features before scoring.",
+    )
     parser.add_argument(
         "--checkpoint-dir",
         type=Path,
-        default=DEFAULT_CHECKPOINT_DIR,
-        help=f"Directory containing one SVM pickle and one z-score CSV/TXT file (default: {DEFAULT_CHECKPOINT_DIR}).",
+        default=None,
+        help=(
+            "SVM: directory with one pickle and one z-score file "
+            f"(default: {DEFAULT_CHECKPOINT_DIR}). "
+            "GNN: directory with gnn_model.pt, or a parent of one "
+            f"(default: {DEFAULT_GNN_ROOT})."
+        ),
     )
     parser.add_argument("--svm-pkl", type=Path, help="SVM pickle path. Defaults to the .pkl file in --checkpoint-dir.")
     parser.add_argument(
@@ -47,8 +71,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_checkpoint_paths(args: argparse.Namespace) -> tuple[Path, Path]:
-    svm_pkl = args.svm_pkl or find_single_checkpoint_file(args.checkpoint_dir, SVM_PICKLE_SUFFIXES, "SVM pickle")
-    zscores = args.zscores or find_single_checkpoint_file(args.checkpoint_dir, ZSCORE_SUFFIXES, "z-score")
+    checkpoint_dir = args.checkpoint_dir or DEFAULT_CHECKPOINT_DIR
+    svm_pkl = args.svm_pkl or find_single_checkpoint_file(checkpoint_dir, SVM_PICKLE_SUFFIXES, "SVM pickle")
+    zscores = args.zscores or find_single_checkpoint_file(checkpoint_dir, ZSCORE_SUFFIXES, "z-score")
     return svm_pkl, zscores
 
 
@@ -69,12 +94,11 @@ def display_prediction(value: int) -> str:
     return "AMP" if value == 1 else "."
 
 
-def print_svm_summary(
-    predictions: list[SvmSequencePrediction],
-    svm_pkl: Path,
-    zscores: Path,
+def print_score_summary(
+    title: str,
+    details: list[str],
+    predictions: list[SvmSequencePrediction | GnnSequencePrediction],
     top_n: int | None,
-    null_descriptors: tuple[str, ...] = (),
 ) -> None:
     if not predictions:
         print("No predictions.")
@@ -84,10 +108,9 @@ def print_svm_summary(
     counts = Counter(prediction.prediction for prediction in predictions)
     rows_to_print = predictions if top_n is None else predictions[:top_n]
 
-    print("SVM Sequence Inference")
-    print(f"Model: {svm_pkl}")
-    print(f"Z-scores: {zscores}")
-    print(f"Nulled descriptors: {', '.join(null_descriptors) if null_descriptors else '(none)'}")
+    print(title)
+    for line in details:
+        print(line)
     print(f"Rows scored: {len(predictions)}")
     print(f"Predictions: +1={counts.get(1, 0)}, -1={counts.get(-1, 0)}")
     print(f"sigma: min={sigmas.min():.2f}, mean={sigmas.mean():.2f}, max={sigmas.max():.2f}")
@@ -103,12 +126,29 @@ def print_svm_summary(
         print(f"{index:>4}  {prediction.id:<{id_width}}  {pred:>5}  {prediction.sigma:>12.2f}  {prediction.p_amp:>10.2f}")
 
 
+def print_svm_summary(
+    predictions: list[SvmSequencePrediction],
+    svm_pkl: Path,
+    zscores: Path,
+    top_n: int | None,
+    null_descriptors: tuple[str, ...] = (),
+) -> None:
+    nulled = ", ".join(null_descriptors) if null_descriptors else "(none)"
+    print_score_summary(
+        "SVM Sequence Inference",
+        [f"Model: {svm_pkl}", f"Z-scores: {zscores}", f"Nulled descriptors: {nulled}"],
+        predictions,
+        top_n,
+    )
+
+
 def main() -> int:
     args = parse_args()
     try:
         if args.top is not None and args.top < 1:
             raise ValueError("--top must be at least 1 when provided.")
         dataset = NormalizedSequenceDataset.from_csv(args.input)
+        records = list(dataset.records())
         if args.model == "svm":
             svm_pkl, zscores = resolve_checkpoint_paths(args)
             scorer = SvmSequenceScorer.from_paths(
@@ -117,11 +157,31 @@ def main() -> int:
                 null_descriptors=args.null_descriptors,
             )
             print_svm_summary(
-                scorer.score(list(dataset.records())),
+                scorer.score(records),
                 svm_pkl,
                 zscores,
                 args.top,
                 scorer.null_descriptors,
+            )
+        elif args.model == "gnn":
+            if args.null_descriptors:
+                raise ValueError("GNN inference does not null QSAR columns. Omit --null-descriptors.")
+            model_dir = resolve_gnn_model_dir(args.gnn_model, args.checkpoint_dir)
+            gnn = GnnSequenceScorer.from_paths(
+                model_dir,
+                batch_size=args.batch_size,
+                device=args.device,
+                force_process=args.force_process,
+            )
+            print_score_summary(
+                "GNN Sequence Inference",
+                [
+                    f"Model: {model_dir}",
+                    "sigma: logit margin (AMP - non-AMP); prediction is +1 when P(AMP) >= 0.5",
+                    f"Tabular columns: {', '.join(gnn.feature_cols) if gnn.feature_cols else '(none)'}",
+                ],
+                gnn.score(records, args.input),
+                args.top,
             )
     except Exception as error:
         print(f"Error: {error}", file=sys.stderr)
