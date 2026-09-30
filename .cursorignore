@@ -8,3 +8,4 @@ sequence_to_svm_minimal/checkpoints/
 *.jsonl
 *.log
 *.csv
+*.tsv

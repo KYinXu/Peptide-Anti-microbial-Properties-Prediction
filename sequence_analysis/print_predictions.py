@@ -27,7 +27,7 @@ from .utils.data_loader import NormalizedSequenceDataset
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CHECKPOINT_DIR = ROOT / "checkpoints" / "original_svm"
+DEFAULT_CHECKPOINT_DIR = ROOT / "checkpoints" / "svm_no_class_weight"
 SVM_PICKLE_SUFFIXES = {".pkl"}
 ZSCORE_SUFFIXES = {".csv", ".txt"}
 
