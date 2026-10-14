@@ -16,8 +16,8 @@ from ..variants.common import VariantRecord
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SVM_MINIMAL_ROOT = REPO_ROOT / "sequence_to_svm_minimal"
 GNN_MINIMAL_ROOT = REPO_ROOT / "gnn_minimal"
-DEFAULT_CHECKPOINT_DIR = SVM_MINIMAL_ROOT / "checkpoints" / "latest"
-DEFAULT_CHECKPOINT_NAME = "gat_ready_QSAR.pt"
+DEFAULT_CHECKPOINT_DIR = REPO_ROOT / "checkpoints" / "gnn" / "gnn_vae_qsar"
+DEFAULT_CHECKPOINT_NAME = "gnn_model.pt"
 PT_SUFFIXES = {".pt"}
 
 
@@ -86,7 +86,6 @@ class GnnScorer:
             return {}
 
         _ensure_import_paths()
-        from gnn.checkpoint_meta import load_peptide_gnn_meta
         from gnn.models import esm2_raw_dim_from_state_dict
         import torch
 
@@ -97,6 +96,7 @@ class GnnScorer:
         state = torch.load(self.checkpoint, map_location="cpu", weights_only=True)
         need_esm2 = esm2_raw_dim_from_state_dict(state) > 0
         feature_cols = _resolve_feature_columns(self.checkpoint)
+        scaler_path = _tabular_scaler_path(self.checkpoint)
 
         from process_data import ensure_processed_data
 
@@ -115,7 +115,7 @@ class GnnScorer:
         pdb_dir = gen_dir / "structures"
         esm2_dir = gen_dir / "esm2_per_residue" if need_esm2 else None
 
-        meta = load_peptide_gnn_meta(self.checkpoint) or {}
+        meta = _load_checkpoint_meta(self.checkpoint)
         architecture = str(meta.get("architecture", "gat"))
         hidden = int(meta.get("hidden_channels", 64))
         num_layers = int(meta.get("num_layers", 3))
@@ -134,6 +134,7 @@ class GnnScorer:
             pooling,
             self.batch_size,
             geometric_feature_cols=feature_cols,
+            tabular_scaler_path=str(scaler_path) if scaler_path else None,
             esm2_residue_dir=str(esm2_dir) if esm2_dir else None,
             use_gnn_platt=True,
             progress_csv=None,
@@ -141,6 +142,7 @@ class GnnScorer:
             checkpoint_every=10_000,
             num_workers=0,
         )
+        probability, pred = _apply_directory_platt(self.checkpoint, margin, probability, pred)
 
         margins = np.asarray(margin, dtype=float)
         finite = margins[np.isfinite(margins)]
@@ -227,21 +229,97 @@ def _write_variants_csv(variants: list[VariantRecord], path: Path) -> None:
     frame.to_csv(path, index=False)
 
 
+def _first_existing(paths: list[Path]) -> Path | None:
+    for path in paths:
+        if path.is_file():
+            return path
+    return None
+
+
+def _tabular_scaler_path(checkpoint: Path) -> Path | None:
+    return _first_existing(
+        [
+            checkpoint.with_name(checkpoint.stem + "_tabular_scaler.joblib"),
+            checkpoint.parent / "tabular_scaler.joblib",
+        ]
+    )
+
+
+def _meta_path(checkpoint: Path) -> Path | None:
+    return _first_existing(
+        [
+            checkpoint.with_name(checkpoint.stem + "_gnn_meta.json"),
+            checkpoint.parent / "model_summary.json",
+        ]
+    )
+
+
+def _platt_path(checkpoint: Path) -> Path | None:
+    return _first_existing(
+        [
+            checkpoint.with_name(checkpoint.stem + "_platt.json"),
+            checkpoint.parent / "gnn_platt_scaling",
+        ]
+    )
+
+
+def _read_summary_meta(path: Path) -> dict:
+    import json
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if isinstance(data, dict) and "node_feature_groups" in data:
+        return data
+    return {}
+
+
+def _load_checkpoint_meta(checkpoint: Path) -> dict:
+    path = _meta_path(checkpoint)
+    if path is None:
+        return {}
+    if path.name != checkpoint.stem + "_gnn_meta.json":
+        return _read_summary_meta(path)
+    _ensure_import_paths()
+    from gnn.checkpoint_meta import load_peptide_gnn_meta
+
+    return load_peptide_gnn_meta(checkpoint) or {}
+
+
+def _apply_directory_platt(checkpoint: Path, margin, probability, pred):
+    stem_platt = checkpoint.with_name(checkpoint.stem + "_platt.json")
+    platt_path = _platt_path(checkpoint)
+    if platt_path is None or platt_path == stem_platt:
+        return probability, pred
+    _ensure_import_paths()
+    from gnn.platt import load_platt_json, platt_prob_amp
+
+    platt = load_platt_json(platt_path)
+    if platt is None:
+        return probability, pred
+    calibrated = platt_prob_amp(
+        np.asarray(margin, dtype=float),
+        platt["coef"],
+        platt["intercept"],
+    )
+    return calibrated, (calibrated >= 0.5).astype(int)
+
+
 def _resolve_feature_columns(checkpoint: Path) -> list[str]:
     _ensure_import_paths()
     from gnn.extra_feature_scaler import load_extra_feature_scaler
 
-    scaler_path = checkpoint.with_name(checkpoint.stem + "_tabular_scaler.joblib")
-    if scaler_path.is_file():
+    scaler_path = _tabular_scaler_path(checkpoint)
+    if scaler_path is not None:
         return list(load_extra_feature_scaler(str(scaler_path)).feature_cols)
 
-    meta_path = checkpoint.with_name(checkpoint.stem + "_gnn_meta.json")
-    if meta_path.is_file():
-        import json
-
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        if int(meta.get("geo_feature_dim", 0)) == 0:
-            return []
+    meta = _load_checkpoint_meta(checkpoint)
+    columns = list(meta.get("tabular_feature_cols") or [])
+    if columns:
+        return columns
+    if int(meta.get("geo_feature_dim", 0)) == 0:
+        return []
     return []
 
 

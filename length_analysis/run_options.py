@@ -11,6 +11,10 @@ SUPPORTED_MODELS = ("gnn",)
 DEFAULT_MAX_FLANK_FRACTION = 0.5
 DEFAULT_STRIDE = 1
 DEFAULT_BATCH_SIZE = 32
+DEFAULT_PROTEOME_FASTA = (
+    Path(__file__).resolve().parent
+    / "uniprotkb_UP000005640_AND_model_organis_2026_06_27.fasta"
+)
 
 
 @dataclass(frozen=True)
@@ -58,6 +62,9 @@ def add_provenance_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--proteome-fasta",
         type=Path,
-        required=True,
-        help="Proteome FASTA whose headers match source_protein_id.",
+        default=DEFAULT_PROTEOME_FASTA,
+        help=(
+            "Proteome FASTA whose headers match source_protein_id "
+            f"(default: {DEFAULT_PROTEOME_FASTA.name})."
+        ),
     )

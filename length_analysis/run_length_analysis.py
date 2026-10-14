@@ -14,7 +14,7 @@ if __package__ in {None, ""}:
 from analysis_outputs import RunConfiguration, RunOutput, RunSpec, execute_csv_run
 
 from .data_loader import SubsetSequenceDataset
-from .models import GnnScorerFactory, resolve_gnn_checkpoint
+from .models.gnn import DEFAULT_CHECKPOINT_DIR, GnnScorerFactory, resolve_gnn_checkpoint
 from .provenance import recover_parents, load_candidate_index
 from .run_options import (
     SUPPORTED_MODELS,
@@ -27,7 +27,6 @@ from .scoring.runner import NullProgressReporter, run_length_scoring
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CHECKPOINT_DIR = ROOT / "sequence_to_svm_minimal" / "checkpoints" / "latest"
 OUTPUT_FILENAME = "length_predictions.csv"
 
 
@@ -61,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--gnn-checkpoint",
         type=Path,
-        help="Explicit GNN .pt path. Defaults to gat_ready_QSAR.pt in --checkpoint-dir when present.",
+        help="Explicit GNN .pt path. Defaults to gnn_model.pt in --checkpoint-dir when present.",
     )
     parser.add_argument(
         "--output",
