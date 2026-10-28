@@ -31,7 +31,9 @@ class GnnSequenceScorer:
     Structures, QSAR-12, and graph features are built beside ``source_csv``
     in ``generated/``, using the same non-nulled QSAR path as ``gnn_minimal``.
     ``sigma`` is the logit margin (AMP minus non-AMP). ``prediction`` is +1
-    when calibrated P(AMP) is at least 0.5.
+    when P(AMP) is at least 0.5. ``fitting`` selects that probability:
+    ``"platt"`` or ``"softmax"``. When omitted, Platt is used if
+    ``gnn_platt_scaling`` is present and softmax is used otherwise.
     """
 
     def __init__(
@@ -41,12 +43,14 @@ class GnnSequenceScorer:
         batch_size: int = 32,
         device: str | None = None,
         force_process: bool = False,
+        fitting: str | None = None,
     ) -> None:
         self.model_dir = model_dir.resolve()
         self.batch_size = batch_size
         self.device = device
         self.force_process = force_process
         self.meta, self.scaler_path, self.feature_cols = load_model_contract(self.model_dir)
+        self.fitting, self.platt_payload = resolve_probability_fitting(self.model_dir, fitting)
 
     @classmethod
     def from_paths(
@@ -56,12 +60,14 @@ class GnnSequenceScorer:
         batch_size: int = 32,
         device: str | None = None,
         force_process: bool = False,
+        fitting: str | None = None,
     ) -> "GnnSequenceScorer":
         return cls(
             model_dir,
             batch_size=batch_size,
             device=device,
             force_process=force_process,
+            fitting=fitting,
         )
 
     def score(self, records: list[SequenceRecord], source_csv: Path) -> list[GnnSequencePrediction]:
@@ -84,6 +90,7 @@ class GnnSequenceScorer:
             self.feature_cols,
             batch_size=self.batch_size,
             device=self.device,
+            platt_payload=self.platt_payload,
         )
         return align_predictions(records, scored, self.feature_cols)
 
@@ -109,6 +116,29 @@ def resolve_gnn_model_dir(model_path: Path | None = None, checkpoint_dir: Path |
         listed = ", ".join(str(path) for path in matches)
         raise ValueError(f"Multiple GNN checkpoints under {directory}: {listed}. Pass --gnn-model.")
     return resolve_model_dir(matches[0])
+
+
+def resolve_probability_fitting(model_dir: Path, fitting: str | None) -> tuple[str, dict | None]:
+    """Return the P(AMP) method and Platt payload.
+
+    ``fitting`` is ``"softmax"``, ``"platt"``, or ``None``. ``None`` uses Platt
+    when ``gnn_platt_scaling`` is present and softmax otherwise.
+    """
+    if fitting not in {None, "softmax", "platt"}:
+        raise ValueError("fitting must be 'softmax', 'platt', or omitted.")
+    if fitting == "softmax":
+        return "softmax", None
+    _ensure_gnn_import_path()
+    from core.artifacts import platt_scaling_path
+    from core.platt import load_platt_json
+
+    platt_path = platt_scaling_path(model_dir)
+    payload = load_platt_json(platt_path)
+    if payload is not None:
+        return "platt", payload
+    if fitting == "platt":
+        raise FileNotFoundError(f"Platt scaling file not found: {platt_path}")
+    return "softmax", None
 
 
 def load_model_contract(model_dir: Path) -> tuple[dict, Path | None, list[str]]:
@@ -166,16 +196,16 @@ def score_feature_frame(
     *,
     batch_size: int,
     device: str | None,
+    platt_payload: dict | None = None,
 ):
     _ensure_gnn_import_path()
     import torch
     from torch_geometric.loader import DataLoader
 
-    from core.artifacts import model_checkpoint_path, platt_scaling_path
+    from core.artifacts import model_checkpoint_path
     from core.checkpoint_meta import resolve_node_layout_for_checkpoint
     from core.data_utils import PeptideGraphDataset
     from core.models import esm2_raw_dim_from_state_dict
-    from core.platt import load_platt_json
 
     generated = Path(frame.attrs["generated_dir"])
     checkpoint = model_checkpoint_path(model_dir)
@@ -201,9 +231,7 @@ def score_feature_frame(
     model.load_state_dict(state)
     model = model.to(torch_device)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    probabilities, margins = _collect_scores(
-        model, loader, torch_device, load_platt_json(platt_scaling_path(model_dir))
-    )
+    probabilities, margins = _collect_scores(model, loader, torch_device, platt_payload)
     scored = frame.copy()
     scored["peptide_id"] = scored["peptide_id"].astype(str)
     scored["_p_amp"] = probabilities

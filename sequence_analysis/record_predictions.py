@@ -53,6 +53,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Regenerate GNN structures and QSAR features before scoring.",
     )
+    parser.add_argument(
+        "--fitting",
+        "-s",
+        choices=["softmax", "platt"],
+        default=None,
+        help="P(AMP) mapping. Default: platt when gnn_platt_scaling exists, otherwise softmax.",
+    )
     parser.add_argument("--input", "-i", type=Path, required=True, help="Normalized CSV with id and sequence columns.")
     parser.add_argument(
         "--checkpoint-dir",
@@ -199,6 +206,7 @@ def score_gnn(args: argparse.Namespace, records: list[SequenceRecord]):
         batch_size=args.batch_size,
         device=args.device,
         force_process=args.force_process,
+        fitting=args.fitting,
     )
     predictions, descriptor_values = scorer.score_with_descriptors(records, args.input)
     return predictions, descriptor_values, scorer, {"gnn_model": model_dir}
@@ -210,6 +218,8 @@ def main() -> int:
         dataset = NormalizedSequenceDataset.from_csv(args.input)
         records = list(dataset.records())
         if args.model == "svm":
+            if args.fitting is not None:
+                raise ValueError("--fitting applies only to --model gnn.")
             predictions, descriptor_values, scorer, model_files = score_svm(args, records)
             effective = {
                 "include_descriptors": args.include_descriptors,
@@ -221,6 +231,7 @@ def main() -> int:
             effective = {
                 "include_descriptors": args.include_descriptors,
                 "tabular_columns": scorer.feature_cols,
+                "fitting": scorer.fitting,
             }
             names = scorer.feature_cols
         descriptor_names = tuple(names) if args.include_descriptors else ()

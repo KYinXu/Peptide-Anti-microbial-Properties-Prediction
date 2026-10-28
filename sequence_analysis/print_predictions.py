@@ -49,6 +49,13 @@ def parse_args() -> argparse.Namespace:
         help="Regenerate GNN structures and QSAR features before scoring.",
     )
     parser.add_argument(
+        "--fitting",
+        "-s",
+        choices=["softmax", "platt"],
+        default=None,
+        help="P(AMP) mapping. Default: platt when gnn_platt_scaling exists, otherwise softmax.",
+    )
+    parser.add_argument(
         "--checkpoint-dir",
         type=Path,
         default=None,
@@ -150,6 +157,8 @@ def main() -> int:
         dataset = NormalizedSequenceDataset.from_csv(args.input)
         records = list(dataset.records())
         if args.model == "svm":
+            if args.fitting is not None:
+                raise ValueError("--fitting applies only to --model gnn.")
             svm_pkl, zscores = resolve_checkpoint_paths(args)
             scorer = SvmSequenceScorer.from_paths(
                 svm_pkl,
@@ -172,12 +181,14 @@ def main() -> int:
                 batch_size=args.batch_size,
                 device=args.device,
                 force_process=args.force_process,
+                fitting=args.fitting,
             )
+            probability = "Platt-calibrated P(AMP)" if gnn.fitting == "platt" else "softmax P(AMP)"
             print_score_summary(
                 "GNN Sequence Inference",
                 [
                     f"Model: {model_dir}",
-                    "sigma: logit margin (AMP - non-AMP); prediction is +1 when P(AMP) >= 0.5",
+                    f"sigma: logit margin (AMP - non-AMP); prediction is +1 when {probability} >= 0.5",
                     f"Tabular columns: {', '.join(gnn.feature_cols) if gnn.feature_cols else '(none)'}",
                 ],
                 gnn.score(records, args.input),
