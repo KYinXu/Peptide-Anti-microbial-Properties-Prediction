@@ -1,0 +1,7 @@
+"id",sequence,length,description
+"gld-1",LWQIPEQSRCQAIHNVVHA,19,gld-1 — optimized 19-mer from α-gliadin NRR1 (the lead ISG); distal to the celiac 33-mer
+"gld-1A",LAAQLWQIPEQSRAQAIHNVVH,22,gld-1A — gld-1 variant with all cysteines → alanine
+"gld-2",LWQIPEQSQCQAIHNVVHA,19,gld-2 — single mutation of gld-1 (cationic R → Q) to reduce cationic charge
+"gld-3",LWQIPEQSQCQAIHNVVQA,19,gld-3 — double mutation of gld-1 (two cationic residues → Q)
+"gld-4",RCCQQLRDVSAKCRSVAVSQVAR,23,gld-4 — cognate ISG from wheat HMW glutenin subunit 12 (core of SEQ 12)
+"gld-4A",RAAQQLRDVSAKARSVAVSQVAR,23,gld-4A — gld-4 variant with cysteines → alanine
