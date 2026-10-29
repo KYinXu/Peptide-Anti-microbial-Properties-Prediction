@@ -32,8 +32,8 @@ class GnnSequenceScorer:
     in ``generated/``, using the same non-nulled QSAR path as ``gnn_minimal``.
     ``sigma`` is the logit margin (AMP minus non-AMP). ``prediction`` is +1
     when P(AMP) is at least 0.5. ``fitting`` selects that probability:
-    ``"platt"`` or ``"softmax"``. When omitted, Platt is used if
-    ``gnn_platt_scaling`` is present and softmax is used otherwise.
+    ``"platt"``, ``"softmax"``, or ``"temperature"``. When omitted, Platt is
+    used if ``gnn_platt_scaling`` is present and softmax is used otherwise.
     """
 
     def __init__(
@@ -50,7 +50,7 @@ class GnnSequenceScorer:
         self.device = device
         self.force_process = force_process
         self.meta, self.scaler_path, self.feature_cols = load_model_contract(self.model_dir)
-        self.fitting, self.platt_payload = resolve_probability_fitting(self.model_dir, fitting)
+        self.fitting, self.calibration = resolve_probability_fitting(self.model_dir, fitting)
 
     @classmethod
     def from_paths(
@@ -90,7 +90,7 @@ class GnnSequenceScorer:
             self.feature_cols,
             batch_size=self.batch_size,
             device=self.device,
-            platt_payload=self.platt_payload,
+            calibration=self.calibration,
         )
         return align_predictions(records, scored, self.feature_cols)
 
@@ -119,18 +119,29 @@ def resolve_gnn_model_dir(model_path: Path | None = None, checkpoint_dir: Path |
 
 
 def resolve_probability_fitting(model_dir: Path, fitting: str | None) -> tuple[str, dict | None]:
-    """Return the P(AMP) method and Platt payload.
+    """Return the P(AMP) method and its calibration payload.
 
-    ``fitting`` is ``"softmax"``, ``"platt"``, or ``None``. ``None`` uses Platt
-    when ``gnn_platt_scaling`` is present and softmax otherwise.
+    ``fitting`` is ``"softmax"``, ``"platt"``, ``"temperature"``, or ``None``.
+    ``None`` uses Platt when ``gnn_platt_scaling`` is present and softmax otherwise.
     """
-    if fitting not in {None, "softmax", "platt"}:
-        raise ValueError("fitting must be 'softmax', 'platt', or omitted.")
+    if fitting not in {None, "softmax", "platt", "temperature"}:
+        raise ValueError("fitting must be 'softmax', 'platt', 'temperature', or omitted.")
     if fitting == "softmax":
         return "softmax", None
     _ensure_gnn_import_path()
-    from core.artifacts import platt_scaling_path
+    from core.artifacts import platt_scaling_path, temperature_scaling_path
     from core.platt import load_platt_json
+    from core.temperature import load_temperature_json
+
+    if fitting == "temperature":
+        temperature_path = temperature_scaling_path(model_dir)
+        payload = load_temperature_json(temperature_path)
+        if payload is None:
+            raise FileNotFoundError(
+                f"Temperature scaling file not found: {temperature_path}. "
+                "Fit it with gnn_minimal/fit_temperature.py."
+            )
+        return "temperature", payload
 
     platt_path = platt_scaling_path(model_dir)
     payload = load_platt_json(platt_path)
@@ -196,7 +207,7 @@ def score_feature_frame(
     *,
     batch_size: int,
     device: str | None,
-    platt_payload: dict | None = None,
+    calibration: dict | None = None,
 ):
     _ensure_gnn_import_path()
     import torch
@@ -231,7 +242,7 @@ def score_feature_frame(
     model.load_state_dict(state)
     model = model.to(torch_device)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    probabilities, margins = _collect_scores(model, loader, torch_device, platt_payload)
+    probabilities, margins = _collect_scores(model, loader, torch_device, calibration)
     scored = frame.copy()
     scored["peptide_id"] = scored["peptide_id"].astype(str)
     scored["_p_amp"] = probabilities
@@ -284,9 +295,23 @@ def align_predictions(
     return predictions, np.asarray(descriptor_rows, dtype=np.float64)
 
 
-def _collect_scores(model, loader, device, platt_payload) -> tuple[np.ndarray, np.ndarray]:
+def _probability(logits, margin, calibration):
     import torch
     from core.platt import platt_prob_amp
+    from core.temperature import temperature_prob_amp
+
+    if calibration is None:
+        return torch.softmax(logits, dim=1)[:, 1].detach().cpu().numpy()
+    method = calibration.get("method")
+    if method == "platt":
+        return platt_prob_amp(margin, calibration["coef"], calibration["intercept"])
+    if method == "temperature":
+        return temperature_prob_amp(margin, calibration["temperature"])
+    raise ValueError(f"Unknown probability fitting: {method}")
+
+
+def _collect_scores(model, loader, device, calibration) -> tuple[np.ndarray, np.ndarray]:
+    import torch
 
     model.eval()
     probabilities = []
@@ -296,10 +321,7 @@ def _collect_scores(model, loader, device, platt_payload) -> tuple[np.ndarray, n
             batch = batch.to(device)
             logits = model(batch)
             margin = (logits[:, 1] - logits[:, 0]).detach().cpu().numpy()
-            if platt_payload is not None:
-                probability = platt_prob_amp(margin, platt_payload["coef"], platt_payload["intercept"])
-            else:
-                probability = torch.softmax(logits, dim=1)[:, 1].detach().cpu().numpy()
+            probability = _probability(logits, margin, calibration)
             margins.append(margin)
             probabilities.append(np.asarray(probability, dtype=np.float64))
     if not probabilities:

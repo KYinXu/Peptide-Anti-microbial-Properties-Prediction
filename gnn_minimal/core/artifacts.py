@@ -7,6 +7,7 @@ from pathlib import Path
 GNN_MODEL_PT = "gnn_model.pt"
 MODEL_SUMMARY_JSON = "model_summary.json"
 GNN_PLATT_SCALING = "gnn_platt_scaling"
+GNN_TEMPERATURE_SCALING = "gnn_temperature_scaling"
 TABULAR_SCALER_JOBLIB = "tabular_scaler.joblib"
 
 
@@ -34,6 +35,10 @@ def model_summary_path(model_dir: str | Path) -> Path:
 
 def platt_scaling_path(model_dir: str | Path) -> Path:
     return Path(model_dir) / GNN_PLATT_SCALING
+
+
+def temperature_scaling_path(model_dir: str | Path) -> Path:
+    return Path(model_dir) / GNN_TEMPERATURE_SCALING
 
 
 def tabular_scaler_path(model_dir: str | Path) -> Path:

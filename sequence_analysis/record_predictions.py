@@ -55,8 +55,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--fitting",
-        "-s",
-        choices=["softmax", "platt"],
+        "-f",
+        choices=["softmax", "platt", "temperature"],
         default=None,
         help="P(AMP) mapping. Default: platt when gnn_platt_scaling exists, otherwise softmax.",
     )

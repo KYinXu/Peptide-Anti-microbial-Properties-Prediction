@@ -50,8 +50,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--fitting",
-        "-s",
-        choices=["softmax", "platt"],
+        "-f",
+        choices=["softmax", "platt", "temperature"],
         default=None,
         help="P(AMP) mapping. Default: platt when gnn_platt_scaling exists, otherwise softmax.",
     )
@@ -133,6 +133,15 @@ def print_score_summary(
         print(f"{index:>4}  {prediction.id:<{id_width}}  {pred:>5}  {prediction.sigma:>12.2f}  {prediction.p_amp:>10.2f}")
 
 
+def _probability_label(scorer: GnnSequenceScorer) -> str:
+    if scorer.fitting == "platt":
+        return "Platt-calibrated P(AMP)"
+    if scorer.fitting == "temperature":
+        temperature = float(scorer.calibration["temperature"])
+        return f"temperature-scaled P(AMP) (T={temperature:.3f})"
+    return "softmax P(AMP)"
+
+
 def print_svm_summary(
     predictions: list[SvmSequencePrediction],
     svm_pkl: Path,
@@ -183,7 +192,7 @@ def main() -> int:
                 force_process=args.force_process,
                 fitting=args.fitting,
             )
-            probability = "Platt-calibrated P(AMP)" if gnn.fitting == "platt" else "softmax P(AMP)"
+            probability = _probability_label(gnn)
             print_score_summary(
                 "GNN Sequence Inference",
                 [

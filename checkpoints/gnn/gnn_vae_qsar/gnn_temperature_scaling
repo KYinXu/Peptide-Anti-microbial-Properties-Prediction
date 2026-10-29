@@ -1,0 +1,8 @@
+{
+  "method": "temperature",
+  "score": "logit_margin",
+  "temperature": 0.7657719447752268,
+  "n_calib": 666,
+  "seed": 42,
+  "val_size": 0.2
+}
