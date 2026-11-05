@@ -20,9 +20,7 @@ from torch_geometric.loader import DataLoader
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core.artifacts import (
-    GNN_PLATT_SCALING,
     model_checkpoint_path,
-    platt_scaling_path,
     resolve_model_dir,
     tabular_scaler_path,
 )
@@ -31,9 +29,10 @@ from core.checkpoint_meta import (
     resolve_node_layout_for_checkpoint,
 )
 from core.data_utils import PeptideGraphDataset
+from core.determinism import enable_deterministic_inference
 from core.extra_feature_scaler import load_extra_feature_scaler
 from core.models import PeptideGNN, esm2_raw_dim_from_state_dict, esm2_hidden_dim_from_state_dict
-from core.platt import load_platt_json, platt_prob_amp
+from core.calibration import describe_calibration, prob_amp, resolve_calibration
 from process_data import (
     ensure_processed_data,
     input_has_labels,
@@ -41,18 +40,17 @@ from process_data import (
 )
 
 
-def get_predictions_and_probs(model, loader, device, platt_payload=None):
+def get_predictions_and_probs(model, loader, device, method="softmax", payload=None):
     model.eval()
     all_probs = []
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(device)
             out = model(batch)
-            if platt_payload is not None:
-                margins = (out[:, 1] - out[:, 0]).cpu().numpy()
-                probs = platt_prob_amp(margins, platt_payload["coef"], platt_payload["intercept"])
-            else:
+            if method == "softmax":
                 probs = F.softmax(out, dim=1)[:, 1].cpu().numpy()
+            else:
+                probs = prob_amp((out[:, 1] - out[:, 0]).cpu().numpy(), method, payload)
             all_probs.extend(probs)
     return np.array(all_probs)
 
@@ -120,12 +118,20 @@ def main():
         required=True,
         help="CSV with id,sequence (label optional), or an existing generated/ folder",
     )
+    parser.add_argument(
+        "--fitting", "-f", choices=["temperature", "platt", "softmax"], default=None,
+        help=(
+            "P(AMP) mapping. Default: temperature when gnn_temperature_scaling exists, "
+            "else platt, else softmax."
+        ),
+    )
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--save_predictions", type=str, default="predictions.csv", help="Path to save predictions")
     parser.add_argument("--force-process", action="store_true", help="Regenerate processed features before inference")
     parser.add_argument("--device", type=str, default=None, help="Device for on-demand processing (default: auto)")
 
     args = parser.parse_args()
+    enable_deterministic_inference()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     process_device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -240,11 +246,10 @@ def main():
     model.load_state_dict(sd0)
     model = model.to(device)
 
-    platt_payload = load_platt_json(platt_scaling_path(model_dir))
-    if platt_payload:
-        print(f"Loaded Platt scaling from {GNN_PLATT_SCALING}")
+    method, payload = resolve_calibration(model_dir, args.fitting)
+    print(f"Calibration: {describe_calibration(method, payload)}")
 
-    probs = get_predictions_and_probs(model, test_loader, device, platt_payload)
+    probs = get_predictions_and_probs(model, test_loader, device, method, payload)
     preds = (probs >= 0.5).astype(int)
 
     df = dataset.df

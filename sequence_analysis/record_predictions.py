@@ -58,7 +58,9 @@ def parse_args() -> argparse.Namespace:
         "-f",
         choices=["softmax", "platt", "temperature"],
         default=None,
-        help="P(AMP) mapping. Default: platt when gnn_platt_scaling exists, otherwise softmax.",
+        help=(
+            "P(AMP) mapping. Default: temperature when gnn_temperature_scaling exists, else platt, else softmax."
+        ),
     )
     parser.add_argument("--input", "-i", type=Path, required=True, help="Normalized CSV with id and sequence columns.")
     parser.add_argument(
@@ -209,7 +211,7 @@ def score_gnn(args: argparse.Namespace, records: list[SequenceRecord]):
         fitting=args.fitting,
     )
     predictions, descriptor_values = scorer.score_with_descriptors(records, args.input)
-    return predictions, descriptor_values, scorer, {"gnn_model": model_dir}
+    return predictions, descriptor_values, scorer, {"gnn_model": scorer.checkpoint}
 
 
 def main() -> int:

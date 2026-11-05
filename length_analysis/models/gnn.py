@@ -41,12 +41,14 @@ class GnnScorerFactory:
         device: str | None = None,
         skip_if_exists: bool = True,
         force_process: bool = False,
+        fitting: str | None = None,
     ) -> None:
         self.checkpoint = checkpoint
         self.batch_size = batch_size
         self.device = device
         self.skip_if_exists = skip_if_exists
         self.force_process = force_process
+        self.fitting = fitting
 
     def __call__(self) -> "GnnScorer":
         return GnnScorer(
@@ -55,6 +57,7 @@ class GnnScorerFactory:
             device=self.device,
             skip_if_exists=self.skip_if_exists,
             force_process=self.force_process,
+            fitting=self.fitting,
         )
 
 
@@ -67,6 +70,7 @@ class GnnScorer:
         device: str | None = None,
         skip_if_exists: bool = True,
         force_process: bool = False,
+        fitting: str | None = None,
     ) -> None:
         if not checkpoint.is_file():
             raise FileNotFoundError(f"GNN checkpoint not found: {checkpoint}")
@@ -75,6 +79,7 @@ class GnnScorer:
         self.device = device
         self.skip_if_exists = skip_if_exists
         self.force_process = force_process
+        self.fitting = fitting
 
     def score_variants(
         self,
@@ -142,7 +147,7 @@ class GnnScorer:
             checkpoint_every=10_000,
             num_workers=0,
         )
-        probability, pred = _apply_directory_platt(self.checkpoint, margin, probability, pred)
+        probability, pred = _apply_calibration(self.checkpoint, margin, probability, pred, self.fitting)
 
         margins = np.asarray(margin, dtype=float)
         finite = margins[np.isfinite(margins)]
@@ -254,15 +259,6 @@ def _meta_path(checkpoint: Path) -> Path | None:
     )
 
 
-def _platt_path(checkpoint: Path) -> Path | None:
-    return _first_existing(
-        [
-            checkpoint.with_name(checkpoint.stem + "_platt.json"),
-            checkpoint.parent / "gnn_platt_scaling",
-        ]
-    )
-
-
 def _read_summary_meta(path: Path) -> dict:
     import json
 
@@ -287,22 +283,42 @@ def _load_checkpoint_meta(checkpoint: Path) -> dict:
     return load_peptide_gnn_meta(checkpoint) or {}
 
 
-def _apply_directory_platt(checkpoint: Path, margin, probability, pred):
-    stem_platt = checkpoint.with_name(checkpoint.stem + "_platt.json")
-    platt_path = _platt_path(checkpoint)
-    if platt_path is None or platt_path == stem_platt:
-        return probability, pred
-    _ensure_import_paths()
-    from gnn.platt import load_platt_json, platt_prob_amp
+def _stem_platt(checkpoint: Path) -> dict | None:
+    """Load the legacy ``<stem>_platt.json`` that ``core.artifacts`` does not name."""
+    from core.platt import load_platt_json
 
-    platt = load_platt_json(platt_path)
-    if platt is None:
-        return probability, pred
-    calibrated = platt_prob_amp(
-        np.asarray(margin, dtype=float),
-        platt["coef"],
-        platt["intercept"],
-    )
+    path = checkpoint.with_name(checkpoint.stem + "_platt.json")
+    return load_platt_json(path) if path.is_file() else None
+
+
+def _apply_calibration(checkpoint: Path, margin, probability, pred, fitting: str | None):
+    """Recompute P(AMP) from the logit margin under the resolved calibration.
+
+    Beyond the shared cascade this honours the legacy ``<stem>_platt.json`` naming,
+    which only this module's checkpoints use. Recomputing from the margin matches
+    what ``_run_gnn_predictions`` already did for that file, and makes the method
+    explicit instead of implicit. Output is left untouched only when no calibration
+    is fitted anywhere.
+    """
+    _ensure_import_paths()
+    from core.calibration import describe_calibration, prob_amp, resolve_calibration
+
+    try:
+        method, payload = resolve_calibration(checkpoint.parent, fitting)
+    except FileNotFoundError:
+        payload = _stem_platt(checkpoint) if fitting == "platt" else None
+        if payload is None:
+            raise
+        method = "platt"
+
+    if method == "softmax" and fitting is None:
+        payload = _stem_platt(checkpoint)
+        if payload is None:
+            return probability, pred
+        method = "platt"
+
+    print(f"Calibration: {describe_calibration(method, payload)}", flush=True)
+    calibrated = prob_amp(np.asarray(margin, dtype=float), method, payload)
     return calibrated, (calibrated >= 0.5).astype(int)
 
 

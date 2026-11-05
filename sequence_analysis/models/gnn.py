@@ -32,8 +32,9 @@ class GnnSequenceScorer:
     in ``generated/``, using the same non-nulled QSAR path as ``gnn_minimal``.
     ``sigma`` is the logit margin (AMP minus non-AMP). ``prediction`` is +1
     when P(AMP) is at least 0.5. ``fitting`` selects that probability:
-    ``"platt"``, ``"softmax"``, or ``"temperature"``. When omitted, Platt is
-    used if ``gnn_platt_scaling`` is present and softmax is used otherwise.
+    ``"platt"``, ``"softmax"``, or ``"temperature"``. When omitted, temperature
+    scaling is used if ``gnn_temperature_scaling`` is present, else Platt if
+    ``gnn_platt_scaling`` is present, else softmax.
     """
 
     def __init__(
@@ -49,7 +50,7 @@ class GnnSequenceScorer:
         self.batch_size = batch_size
         self.device = device
         self.force_process = force_process
-        self.meta, self.scaler_path, self.feature_cols = load_model_contract(self.model_dir)
+        self.meta, self.checkpoint, self.scaler_path, self.feature_cols = load_model_contract(self.model_dir)
         self.fitting, self.calibration = resolve_probability_fitting(self.model_dir, fitting)
 
     @classmethod
@@ -122,37 +123,15 @@ def resolve_probability_fitting(model_dir: Path, fitting: str | None) -> tuple[s
     """Return the P(AMP) method and its calibration payload.
 
     ``fitting`` is ``"softmax"``, ``"platt"``, ``"temperature"``, or ``None``.
-    ``None`` uses Platt when ``gnn_platt_scaling`` is present and softmax otherwise.
+    ``None`` prefers temperature scaling, falls back to Platt, then to softmax.
     """
-    if fitting not in {None, "softmax", "platt", "temperature"}:
-        raise ValueError("fitting must be 'softmax', 'platt', 'temperature', or omitted.")
-    if fitting == "softmax":
-        return "softmax", None
     _ensure_gnn_import_path()
-    from core.artifacts import platt_scaling_path, temperature_scaling_path
-    from core.platt import load_platt_json
-    from core.temperature import load_temperature_json
+    from core.calibration import resolve_calibration
 
-    if fitting == "temperature":
-        temperature_path = temperature_scaling_path(model_dir)
-        payload = load_temperature_json(temperature_path)
-        if payload is None:
-            raise FileNotFoundError(
-                f"Temperature scaling file not found: {temperature_path}. "
-                "Fit it with gnn_minimal/fit_temperature.py."
-            )
-        return "temperature", payload
-
-    platt_path = platt_scaling_path(model_dir)
-    payload = load_platt_json(platt_path)
-    if payload is not None:
-        return "platt", payload
-    if fitting == "platt":
-        raise FileNotFoundError(f"Platt scaling file not found: {platt_path}")
-    return "softmax", None
+    return resolve_calibration(model_dir, fitting)
 
 
-def load_model_contract(model_dir: Path) -> tuple[dict, Path | None, list[str]]:
+def load_model_contract(model_dir: Path) -> tuple[dict, Path, Path | None, list[str]]:
     _ensure_gnn_import_path()
     from core.artifacts import model_checkpoint_path, model_summary_path
     from core.checkpoint_meta import load_peptide_gnn_meta
@@ -166,7 +145,7 @@ def load_model_contract(model_dir: Path) -> tuple[dict, Path | None, list[str]]:
         )
     meta = load_peptide_gnn_meta(model_dir) or {}
     scaler_path, feature_cols = resolve_tabular_contract(model_dir, meta)
-    return meta, scaler_path, list(feature_cols)
+    return meta, checkpoint, scaler_path, list(feature_cols)
 
 
 def processed_feature_frame(source_csv: Path, model_dir: Path, device: str | None, force: bool):
@@ -188,7 +167,7 @@ def processed_feature_frame(source_csv: Path, model_dir: Path, device: str | Non
         device=process_device,
         force=force,
     )
-    _, _, feature_cols = load_model_contract(model_dir)
+    _, _, _, feature_cols = load_model_contract(model_dir)
     frame = load_processed_features(
         generated / "geometric_features.csv",
         generated / "qsar12_descriptors.csv",
@@ -216,8 +195,10 @@ def score_feature_frame(
     from core.artifacts import model_checkpoint_path
     from core.checkpoint_meta import resolve_node_layout_for_checkpoint
     from core.data_utils import PeptideGraphDataset
+    from core.determinism import enable_deterministic_inference
     from core.models import esm2_raw_dim_from_state_dict
 
+    enable_deterministic_inference()
     generated = Path(frame.attrs["generated_dir"])
     checkpoint = model_checkpoint_path(model_dir)
     state = torch.load(checkpoint, map_location="cpu", weights_only=True)
@@ -297,17 +278,11 @@ def align_predictions(
 
 def _probability(logits, margin, calibration):
     import torch
-    from core.platt import platt_prob_amp
-    from core.temperature import temperature_prob_amp
+    from core.calibration import prob_amp
 
     if calibration is None:
         return torch.softmax(logits, dim=1)[:, 1].detach().cpu().numpy()
-    method = calibration.get("method")
-    if method == "platt":
-        return platt_prob_amp(margin, calibration["coef"], calibration["intercept"])
-    if method == "temperature":
-        return temperature_prob_amp(margin, calibration["temperature"])
-    raise ValueError(f"Unknown probability fitting: {method}")
+    return prob_amp(margin, calibration["method"], calibration)
 
 
 def _collect_scores(model, loader, device, calibration) -> tuple[np.ndarray, np.ndarray]:

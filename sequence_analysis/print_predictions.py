@@ -53,7 +53,9 @@ def parse_args() -> argparse.Namespace:
         "-f",
         choices=["softmax", "platt", "temperature"],
         default=None,
-        help="P(AMP) mapping. Default: platt when gnn_platt_scaling exists, otherwise softmax.",
+        help=(
+            "P(AMP) mapping. Default: temperature when gnn_temperature_scaling exists, else platt, else softmax."
+        ),
     )
     parser.add_argument(
         "--checkpoint-dir",
@@ -134,12 +136,9 @@ def print_score_summary(
 
 
 def _probability_label(scorer: GnnSequenceScorer) -> str:
-    if scorer.fitting == "platt":
-        return "Platt-calibrated P(AMP)"
-    if scorer.fitting == "temperature":
-        temperature = float(scorer.calibration["temperature"])
-        return f"temperature-scaled P(AMP) (T={temperature:.3f})"
-    return "softmax P(AMP)"
+    from core.calibration import describe_calibration
+
+    return describe_calibration(scorer.fitting, scorer.calibration)
 
 
 def print_svm_summary(

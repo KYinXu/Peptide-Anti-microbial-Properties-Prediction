@@ -424,6 +424,7 @@ def _build_peptide_graph_data(
     geometric_features: Optional[np.ndarray],
     node_feature_keep_indices: Optional[List[int]],
     node_feature_groups: Optional[NodeFeatureGroups],
+    edges: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
 ) -> Data:
     n_residues = len(aa_sequence)
     if n_residues < 2:
@@ -432,7 +433,7 @@ def _build_peptide_graph_data(
     if node_feature_keep_indices is not None:
         x = x[:, node_feature_keep_indices]
 
-    edge_index, edge_attr = compute_edges(ca_coords, distance_threshold)
+    edge_index, edge_attr = compute_edges(ca_coords, distance_threshold) if edges is None else edges
     pos = torch.tensor(ca_coords, dtype=torch.float32)
 
     data = Data(
@@ -457,6 +458,41 @@ def _build_peptide_graph_data(
     data.sequence = seq_joined
 
     return data
+
+
+def graph_from_backbone(
+    sequence: str,
+    ca_coords: np.ndarray,
+    plddt_values: np.ndarray,
+    *,
+    label: int = 0,
+    peptide_id: str | None = None,
+    distance_threshold: float = 8.0,
+    geometric_features: Optional[np.ndarray] = None,
+    node_feature_keep_indices: Optional[List[int]] = None,
+    node_feature_groups: Optional[NodeFeatureGroups] = None,
+    edges: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+) -> Data:
+    """Graph for ``sequence`` threaded onto a given backbone, without a PDB round-trip.
+
+    Equivalent to writing the sequence onto the backbone's Ca records and calling
+    ``pdb_to_graph`` on the result, for checkpoints that read only residue identity
+    and Ca coordinates from a PDB. ``edges`` reuses a ``compute_edges`` result: the
+    contact graph depends only on ``ca_coords``, so every sequence sharing a fixed
+    backbone shares its edges.
+    """
+    return _build_peptide_graph_data(
+        list(sequence),
+        ca_coords,
+        plddt_values,
+        label,
+        peptide_id,
+        distance_threshold,
+        geometric_features,
+        node_feature_keep_indices,
+        node_feature_groups,
+        edges,
+    )
 
 
 def pdb_to_graph(

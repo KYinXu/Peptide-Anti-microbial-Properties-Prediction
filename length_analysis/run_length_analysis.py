@@ -63,6 +63,16 @@ def parse_args() -> argparse.Namespace:
         help="Explicit GNN .pt path. Defaults to gnn_model.pt in --checkpoint-dir when present.",
     )
     parser.add_argument(
+        "--fitting",
+        "-f",
+        choices=["temperature", "platt", "softmax"],
+        default=None,
+        help=(
+            "P(AMP) mapping. Default: temperature when gnn_temperature_scaling exists, "
+            "else platt, else softmax."
+        ),
+    )
+    parser.add_argument(
         "--output",
         "-o",
         type=Path,
@@ -113,6 +123,7 @@ def main() -> int:
             device=args.device,
             skip_if_exists=not args.force_process,
             force_process=args.force_process,
+            fitting=args.fitting,
         )()
         output_target = output_path_from_args(args)
         progress = NullProgressReporter()
@@ -133,6 +144,7 @@ def main() -> int:
                         "max_flank_fraction": config.max_flank_fraction,
                         "stride": config.stride,
                     },
+                    "fitting": args.fitting,
                     "batch_size": args.batch_size,
                     "device": args.device,
                 },
