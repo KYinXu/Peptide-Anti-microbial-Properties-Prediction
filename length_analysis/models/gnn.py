@@ -1,4 +1,7 @@
-"""GNN model adapter for length analysis (flat checkpoint layout)."""
+"""GNN model adapter for length analysis, backed by gnn_minimal (not the legacy tree).
+
+Each variant has its own sequence, so each is folded and scored against its own PDB.
+"""
 
 from __future__ import annotations
 
@@ -10,15 +13,18 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-from ..variants.common import VariantRecord
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SVM_MINIMAL_ROOT = REPO_ROOT / "sequence_to_svm_minimal"
 GNN_MINIMAL_ROOT = REPO_ROOT / "gnn_minimal"
 DEFAULT_CHECKPOINT_DIR = REPO_ROOT / "checkpoints" / "gnn" / "gnn_vae_qsar"
 DEFAULT_CHECKPOINT_NAME = "gnn_model.pt"
 PT_SUFFIXES = {".pt"}
+
+
+def ensure_gnn_minimal_on_path() -> None:
+    path = str(GNN_MINIMAL_ROOT)
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
 
 @dataclass(frozen=True)
@@ -62,6 +68,8 @@ class GnnScorerFactory:
 
 
 class GnnScorer:
+    """Loads the checkpoint once; folds variants and scores them against their PDBs."""
+
     def __init__(
         self,
         checkpoint: Path,
@@ -72,84 +80,139 @@ class GnnScorer:
         force_process: bool = False,
         fitting: str | None = None,
     ) -> None:
-        if not checkpoint.is_file():
-            raise FileNotFoundError(f"GNN checkpoint not found: {checkpoint}")
-        self.checkpoint = checkpoint.resolve()
+        ensure_gnn_minimal_on_path()
+        import torch
+        from core.calibration import describe_calibration, resolve_calibration
+        from core.checkpoint_meta import load_peptide_gnn_meta, resolve_node_layout_for_checkpoint
+        from core.determinism import enable_deterministic_inference
+        from core.models import (
+            PeptideGNN,
+            esm2_hidden_dim_from_state_dict,
+            esm2_raw_dim_from_state_dict,
+        )
+        from inference import resolve_tabular_contract
+
+        enable_deterministic_inference()
+        self.checkpoint = checkpoint
+        model_dir = str(checkpoint.parent)
+        state = torch.load(checkpoint, map_location="cpu", weights_only=True)
+
+        esm2_raw = esm2_raw_dim_from_state_dict(state)
+        if esm2_raw > 0:
+            raise ValueError(
+                "Length analysis supports checkpoints without per-residue ESM2 features; "
+                f"{checkpoint} expects {esm2_raw}-dim ESM2."
+            )
+
+        meta = load_peptide_gnn_meta(model_dir) or {}
+        self.meta = meta
+        self.scaler_path, self.feature_cols = resolve_tabular_contract(model_dir, meta)
+        self.node_groups, self.in_channels, _notes = resolve_node_layout_for_checkpoint(
+            model_dir, state, meta.get("architecture", "gat"), user_node_groups=None
+        )
+        self.geo_dim = int(meta.get("geo_feature_dim", len(self.feature_cols)))
+
+        self.model = PeptideGNN(
+            architecture=meta.get("architecture", "gat"),
+            in_channels=self.in_channels,
+            hidden_channels=meta.get("hidden_channels", 64),
+            num_layers=meta.get("num_layers", 3),
+            num_classes=2,
+            pooling=meta.get("pooling", "mean_max"),
+            geo_feature_dim=self.geo_dim,
+            esm2_raw_dim=0,
+            esm2_hidden_dim=esm2_hidden_dim_from_state_dict(state),
+        )
+        self.model.load_state_dict(state)
+        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+        self.model = self.model.to(self.device).eval()
+        self.scaler = None
+        if self.scaler_path:
+            from core.extra_feature_scaler import load_extra_feature_scaler
+
+            self.scaler = load_extra_feature_scaler(str(self.scaler_path))
+        self.fitting, self.calibration = resolve_calibration(model_dir, fitting)
+        self.calibration_description = describe_calibration(self.fitting, self.calibration)
         self.batch_size = batch_size
-        self.device = device
+        self.process_device = device
         self.skip_if_exists = skip_if_exists
         self.force_process = force_process
-        self.fitting = fitting
 
     def score_variants(
-        self,
-        variants: Iterable[VariantRecord],
-        workspace: Path,
+        self, variants: Iterable, workspace: Path, progress=None
     ) -> dict[str, GnnPrediction]:
         variant_list = list(variants)
         if not variant_list:
             return {}
 
-        _ensure_import_paths()
-        from gnn.models import esm2_raw_dim_from_state_dict
+        ensure_gnn_minimal_on_path()
         import torch
+        from torch_geometric.loader import DataLoader
+        from core.data_utils import PeptideGraphDataset
+        from pipeline.qsar import compute_qsar12
+        from process_data import ensure_processed_data
+
+        ids = [variant.variant_id for variant in variant_list]
+        sequences = [variant.sequence for variant in variant_list]
 
         input_csv = workspace / "variants_input.csv"
         gen_dir = workspace / "generated"
-        _write_variants_csv(variant_list, input_csv)
+        input_csv.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame({"id": ids, "sequence": sequences}).to_csv(input_csv, index=False)
 
-        state = torch.load(self.checkpoint, map_location="cpu", weights_only=True)
-        need_esm2 = esm2_raw_dim_from_state_dict(state) > 0
-        feature_cols = _resolve_feature_columns(self.checkpoint)
-        scaler_path = _tabular_scaler_path(self.checkpoint)
-
-        from process_data import ensure_processed_data
-
-        process_device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
-        force = self.force_process or not self.skip_if_exists
+        process_device = self.process_device or ("cuda" if torch.cuda.is_available() else "cpu")
+        if progress is not None:
+            progress("folding", 0, len(ids))
         ensure_processed_data(
             input_csv,
             gen_dir,
-            need_esm2=need_esm2,
+            need_esm2=False,
             require_labels=False,
             device=process_device,
-            force=force,
+            force=self.force_process or not self.skip_if_exists,
         )
 
-        master_csv = _build_master_csv(gen_dir, feature_cols)
-        pdb_dir = gen_dir / "structures"
-        esm2_dir = gen_dir / "esm2_per_residue" if need_esm2 else None
+        if progress is not None:
+            progress("descriptors", 0, len(ids))
+        frame = compute_qsar12(sequences, ids)
+        frame["pdb_file"] = [f"{identifier}.pdb" for identifier in ids]
+        missing = [column for column in self.feature_cols if column not in frame.columns]
+        if missing:
+            raise ValueError(f"QSAR output is missing checkpoint features: {missing}")
 
-        meta = _load_checkpoint_meta(self.checkpoint)
-        architecture = str(meta.get("architecture", "gat"))
-        hidden = int(meta.get("hidden_channels", 64))
-        num_layers = int(meta.get("num_layers", 3))
-        pooling = str(meta.get("pooling", "mean_max"))
-
-        sys.path.insert(0, str(SVM_MINIMAL_ROOT / "scripts" / "data_evaluation"))
-        import compare_model_predictions as inference  # noqa: WPS433
-
-        ids, pred, probability, logit_amp, logit_nonamp, margin = inference._run_gnn_predictions(
-            str(master_csv),
-            str(pdb_dir),
-            str(self.checkpoint),
-            architecture,
-            hidden,
-            num_layers,
-            pooling,
-            self.batch_size,
-            geometric_feature_cols=feature_cols,
-            tabular_scaler_path=str(scaler_path) if scaler_path else None,
-            esm2_residue_dir=str(esm2_dir) if esm2_dir else None,
-            use_gnn_platt=True,
-            progress_csv=None,
-            resume_progress=False,
-            checkpoint_every=10_000,
-            num_workers=0,
+        dataset = PeptideGraphDataset(
+            csv_path="",
+            pdb_dir=str(gen_dir / "structures"),
+            use_geometric_features=bool(self.feature_cols),
+            geometric_feature_cols=self.feature_cols,
+            tabular_scaler_path=str(self.scaler_path) if self.scaler_path else None,
+            node_feature_groups=self.node_groups,
+            dataframe=frame,
         )
-        probability, pred = _apply_calibration(self.checkpoint, margin, probability, pred, self.fitting)
+        loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
+        return self._predict(ids, loader, progress=progress)
 
-        margins = np.asarray(margin, dtype=float)
+    def _predict(self, ids: list[str], loader, progress=None) -> dict[str, GnnPrediction]:
+        import torch
+        from core.calibration import prob_amp
+
+        scored = 0
+        logits = []
+        with torch.no_grad():
+            for batch in loader:
+                logits.append(self.model(batch.to(self.device)).cpu().numpy())
+                if progress is not None:
+                    scored += int(batch.num_graphs)
+                    progress("scoring", scored, len(ids))
+        logits = np.concatenate(logits, axis=0)
+        if len(logits) != len(ids):
+            raise RuntimeError(
+                f"GNN inference returned {len(logits)} prediction(s) for {len(ids)} variant(s)."
+            )
+
+        margins = logits[:, 1] - logits[:, 0]
+        probabilities = prob_amp(margins, self.fitting, self.calibration)
+
         finite = margins[np.isfinite(margins)]
         if finite.size == 0:
             z_scores = np.full(len(margins), np.nan)
@@ -163,22 +226,16 @@ class GnnScorer:
             )
 
         results: dict[str, GnnPrediction] = {}
-        for index, peptide_id in enumerate(ids):
-            prob = float(probability[index])
-            results[str(peptide_id).strip()] = GnnPrediction(
-                pred=int(pred[index]),
-                prob_AMP=prob,
-                confidence=float(max(prob, 1.0 - prob)),
-                logit_AMP=float(logit_amp[index]),
-                logit_nonAMP=float(logit_nonamp[index]),
-                logit_margin=float(margin[index]),
+        for index, identifier in enumerate(ids):
+            probability = float(probabilities[index])
+            results[str(identifier).strip()] = GnnPrediction(
+                pred=int(probability >= 0.5),
+                prob_AMP=probability,
+                confidence=float(max(probability, 1.0 - probability)),
+                logit_AMP=float(logits[index][1]),
+                logit_nonAMP=float(logits[index][0]),
+                logit_margin=float(margins[index]),
                 score_z=float(z_scores[index]) if np.isfinite(z_scores[index]) else float("nan"),
-            )
-        missing = [variant.variant_id for variant in variant_list if variant.variant_id not in results]
-        if missing:
-            raise RuntimeError(
-                f"GNN inference missing predictions for {len(missing)} variant(s); "
-                f"first missing: {missing[0]}"
             )
         return results
 
@@ -214,153 +271,3 @@ def resolve_gnn_checkpoint(
             f"Pass --gnn-checkpoint (default preference: {DEFAULT_CHECKPOINT_NAME})."
         )
     return candidates[0].resolve()
-
-
-def _ensure_import_paths() -> None:
-    for root in (GNN_MINIMAL_ROOT, SVM_MINIMAL_ROOT):
-        text = str(root)
-        if text not in sys.path:
-            sys.path.insert(0, text)
-
-
-def _write_variants_csv(variants: list[VariantRecord], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    frame = pd.DataFrame(
-        {
-            "id": [variant.variant_id for variant in variants],
-            "sequence": [variant.sequence for variant in variants],
-        }
-    )
-    frame.to_csv(path, index=False)
-
-
-def _first_existing(paths: list[Path]) -> Path | None:
-    for path in paths:
-        if path.is_file():
-            return path
-    return None
-
-
-def _tabular_scaler_path(checkpoint: Path) -> Path | None:
-    return _first_existing(
-        [
-            checkpoint.with_name(checkpoint.stem + "_tabular_scaler.joblib"),
-            checkpoint.parent / "tabular_scaler.joblib",
-        ]
-    )
-
-
-def _meta_path(checkpoint: Path) -> Path | None:
-    return _first_existing(
-        [
-            checkpoint.with_name(checkpoint.stem + "_gnn_meta.json"),
-            checkpoint.parent / "model_summary.json",
-        ]
-    )
-
-
-def _read_summary_meta(path: Path) -> dict:
-    import json
-
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if isinstance(data, dict) and "node_feature_groups" in data:
-        return data
-    return {}
-
-
-def _load_checkpoint_meta(checkpoint: Path) -> dict:
-    path = _meta_path(checkpoint)
-    if path is None:
-        return {}
-    if path.name != checkpoint.stem + "_gnn_meta.json":
-        return _read_summary_meta(path)
-    _ensure_import_paths()
-    from gnn.checkpoint_meta import load_peptide_gnn_meta
-
-    return load_peptide_gnn_meta(checkpoint) or {}
-
-
-def _stem_platt(checkpoint: Path) -> dict | None:
-    """Load the legacy ``<stem>_platt.json`` that ``core.artifacts`` does not name."""
-    from core.platt import load_platt_json
-
-    path = checkpoint.with_name(checkpoint.stem + "_platt.json")
-    return load_platt_json(path) if path.is_file() else None
-
-
-def _apply_calibration(checkpoint: Path, margin, probability, pred, fitting: str | None):
-    """Recompute P(AMP) from the logit margin under the resolved calibration.
-
-    Beyond the shared cascade this honours the legacy ``<stem>_platt.json`` naming,
-    which only this module's checkpoints use. Recomputing from the margin matches
-    what ``_run_gnn_predictions`` already did for that file, and makes the method
-    explicit instead of implicit. Output is left untouched only when no calibration
-    is fitted anywhere.
-    """
-    _ensure_import_paths()
-    from core.calibration import describe_calibration, prob_amp, resolve_calibration
-
-    try:
-        method, payload = resolve_calibration(checkpoint.parent, fitting)
-    except FileNotFoundError:
-        payload = _stem_platt(checkpoint) if fitting == "platt" else None
-        if payload is None:
-            raise
-        method = "platt"
-
-    if method == "softmax" and fitting is None:
-        payload = _stem_platt(checkpoint)
-        if payload is None:
-            return probability, pred
-        method = "platt"
-
-    print(f"Calibration: {describe_calibration(method, payload)}", flush=True)
-    calibrated = prob_amp(np.asarray(margin, dtype=float), method, payload)
-    return calibrated, (calibrated >= 0.5).astype(int)
-
-
-def _resolve_feature_columns(checkpoint: Path) -> list[str]:
-    _ensure_import_paths()
-    from gnn.extra_feature_scaler import load_extra_feature_scaler
-
-    scaler_path = _tabular_scaler_path(checkpoint)
-    if scaler_path is not None:
-        return list(load_extra_feature_scaler(str(scaler_path)).feature_cols)
-
-    meta = _load_checkpoint_meta(checkpoint)
-    columns = list(meta.get("tabular_feature_cols") or [])
-    if columns:
-        return columns
-    if int(meta.get("geo_feature_dim", 0)) == 0:
-        return []
-    return []
-
-
-def _build_master_csv(gen_dir: Path, feature_cols: list[str]) -> Path:
-    geo_csv = gen_dir / "geometric_features.csv"
-    if not geo_csv.is_file():
-        raise FileNotFoundError(f"Missing geometric features: {geo_csv}")
-    frame = pd.read_csv(geo_csv)
-    if "peptide_id" not in frame.columns:
-        raise ValueError(f"{geo_csv} missing peptide_id column")
-
-    missing = [column for column in feature_cols if column not in frame.columns]
-    if missing:
-        qsar_csv = gen_dir / "qsar12_descriptors.csv"
-        if not qsar_csv.is_file():
-            raise FileNotFoundError(
-                f"Checkpoint needs tabular columns {missing} but QSAR file is missing: {qsar_csv}"
-            )
-        qsar = pd.read_csv(qsar_csv)
-        keep = ["peptide_id"] + [column for column in missing if column in qsar.columns]
-        frame = frame.merge(qsar[keep], on="peptide_id", how="left")
-    remaining = [column for column in feature_cols if column not in frame.columns]
-    if remaining:
-        raise ValueError(f"Processed features missing tabular columns: {remaining}")
-
-    master_csv = gen_dir / "compare_geo_qsar_merged.csv"
-    frame.to_csv(master_csv, index=False)
-    return master_csv

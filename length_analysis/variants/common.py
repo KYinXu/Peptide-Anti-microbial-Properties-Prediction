@@ -29,6 +29,26 @@ class ParentRecord:
 
 
 @dataclass(frozen=True)
+class DeletionRecord:
+    variant_id: str
+    parent_id: str
+    parent_sequence: str
+    sequence: str
+    terminus: str
+    p: float
+    k: int
+    extras: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def variant_length(self) -> int:
+        return len(self.sequence)
+
+    @property
+    def parent_length(self) -> int:
+        return len(self.parent_sequence)
+
+
+@dataclass(frozen=True)
 class VariantRecord:
     variant_id: str
     parent_id: str

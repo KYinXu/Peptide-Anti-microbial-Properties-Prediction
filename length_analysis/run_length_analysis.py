@@ -17,17 +17,26 @@ from .data_loader import SubsetSequenceDataset
 from .models.gnn import DEFAULT_CHECKPOINT_DIR, GnnScorerFactory, resolve_gnn_checkpoint
 from .provenance import recover_parents, load_candidate_index
 from .run_options import (
+    DEFAULT_MODE,
     SUPPORTED_MODELS,
+    SUPPORTED_MODES,
+    add_deletion_arguments,
     add_length_arguments,
     add_provenance_arguments,
+    deletion_config_from_args,
     length_config_from_args,
+    validate_deletion_config,
     validate_length_config,
 )
-from .scoring.runner import NullProgressReporter, run_length_scoring
+from .scoring.deletion_runner import run_deletion_scoring
+from .scoring.progress import build_length_progress
+from .scoring.runner import run_length_scoring
 
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_FILENAME = "length_predictions.csv"
+DELETION_OUTPUT_FILENAME = "length_deletion_robustness.csv"
+DELETION_CURVES_FILENAME = "length_deletion_curves.csv"
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,7 +53,17 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Normalized subset CSV with required id and sequence columns.",
     )
+    parser.add_argument(
+        "--mode",
+        choices=SUPPORTED_MODES,
+        default=DEFAULT_MODE,
+        help=(
+            "extension: add source-protein flanks (needs --candidates-table). "
+            f"deletion: truncate k = round(p * L) residues per terminus (default: {DEFAULT_MODE})."
+        ),
+    )
     add_provenance_arguments(parser)
+    add_deletion_arguments(parser)
     parser.add_argument(
         "--model",
         choices=SUPPORTED_MODELS,
@@ -100,7 +119,78 @@ def parse_args() -> argparse.Namespace:
 
 
 def output_path_from_args(args: argparse.Namespace) -> Path:
-    return args.output or args.input.parent / "results" / OUTPUT_FILENAME
+    filename = DELETION_OUTPUT_FILENAME if args.mode == "deletion" else OUTPUT_FILENAME
+    return args.output or args.input.parent / "results" / filename
+
+
+def run_deletion_mode(args: argparse.Namespace) -> int:
+    config = deletion_config_from_args(args)
+    validate_deletion_config(config)
+    checkpoint = resolve_gnn_checkpoint(
+        checkpoint=args.gnn_checkpoint,
+        checkpoint_dir=args.checkpoint_dir,
+    )
+    dataset = SubsetSequenceDataset.from_csv(args.input)
+    parents = list(dataset.records())
+    scorer = GnnScorerFactory(
+        checkpoint,
+        batch_size=args.batch_size,
+        device=args.device,
+        skip_if_exists=not args.force_process,
+        force_process=args.force_process,
+        fitting=args.fitting,
+    )()
+    output_target = output_path_from_args(args)
+    progress = build_length_progress(quiet=args.quiet)
+    if not args.quiet:
+        print(f"Loaded {len(parents)} parent peptide(s).", flush=True)
+        print(f"Using GNN checkpoint: {checkpoint}", flush=True)
+
+    spec = RunSpec(
+        output_root=output_target.parent,
+        output_filename=output_target.name,
+        runner="length_analysis",
+        model=args.model,
+        config=RunConfiguration(
+            output_mode="length_deletion",
+            arguments=vars(args),
+            effective={
+                "deletion": {
+                    "p_levels": list(config.p_levels),
+                    "termini": list(config.termini),
+                },
+                "fitting": args.fitting,
+                "batch_size": args.batch_size,
+                "device": args.device,
+            },
+        ),
+        inputs={"sequences": args.input},
+        model_files={"gnn_checkpoint": checkpoint},
+        repository_root=ROOT,
+    )
+
+    def write_csv(run: RunOutput) -> int:
+        workspace = run.directory / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        return run_deletion_scoring(
+            parents,
+            scorer,
+            p_levels=config.p_levels,
+            termini=config.termini,
+            output=run.csv_path,
+            curves_output=run.directory / DELETION_CURVES_FILENAME,
+            workspace=workspace,
+            extra_columns=dataset.label_columns,
+            progress=progress,
+            run_id=run.run_id,
+        )
+
+    run = execute_csv_run(spec, write_csv)
+    row_count = run.manifest["output"]["row_count"]
+    print(f"Saved {row_count} deletion robustness row(s) to {run.csv_path}")
+    print(f"Curves: {run.directory / DELETION_CURVES_FILENAME}")
+    print(f"Run manifest: {run.manifest_path}")
+    return 0
 
 
 def main() -> int:
@@ -108,8 +198,12 @@ def main() -> int:
     try:
         if args.model != "gnn":
             raise ValueError(f"Unsupported model: {args.model}")
+        if args.mode == "deletion":
+            return run_deletion_mode(args)
         config = length_config_from_args(args)
         validate_length_config(config)
+        if args.candidates_table is None:
+            raise ValueError("--candidates-table is required for --mode extension.")
         checkpoint = resolve_gnn_checkpoint(
             checkpoint=args.gnn_checkpoint,
             checkpoint_dir=args.checkpoint_dir,
@@ -126,7 +220,7 @@ def main() -> int:
             fitting=args.fitting,
         )()
         output_target = output_path_from_args(args)
-        progress = NullProgressReporter()
+        progress = build_length_progress(quiet=args.quiet)
         if not args.quiet:
             print(f"Recovered {len(parents)} parent peptide(s).", flush=True)
             print(f"Using GNN checkpoint: {checkpoint}", flush=True)

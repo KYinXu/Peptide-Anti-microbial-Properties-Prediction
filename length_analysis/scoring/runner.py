@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Iterable, Protocol
 
@@ -12,12 +13,27 @@ from ..models.gnn import GnnPrediction, GnnScorer
 
 
 class ProgressReporter(Protocol):
+    def stage(self, phase: str, done: int, total: int) -> None: ...
+
+    def set_labels(self, labels: list[str]) -> None: ...
+
+    def quieted(self): ...
+
     def update(self, count: int, label: str = "") -> None: ...
 
     def close(self) -> None: ...
 
 
 class NullProgressReporter:
+    def stage(self, phase: str, done: int, total: int) -> None:
+        return None
+
+    def set_labels(self, labels: list[str]) -> None:
+        return None
+
+    def quieted(self):
+        return nullcontext()
+
     def update(self, count: int, label: str = "") -> None:
         return None
 
@@ -46,7 +62,9 @@ def run_length_scoring(
             stride=stride,
         )
     )
-    predictions = scorer.score_variants(variants, workspace)
+    reporter.set_labels([variant.parent_id for variant in variants])
+    with reporter.quieted():
+        predictions = scorer.score_variants(variants, workspace, progress=reporter.stage)
     count = 0
     try:
         with LengthPredictionCsvWriter(

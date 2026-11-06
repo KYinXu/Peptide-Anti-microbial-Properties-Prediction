@@ -6,8 +6,12 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
+from .variants.deletion import DEFAULT_P_LEVELS, TERMINI
+
 
 SUPPORTED_MODELS = ("gnn",)
+SUPPORTED_MODES = ("extension", "deletion")
+DEFAULT_MODE = "extension"
 DEFAULT_MAX_FLANK_FRACTION = 0.5
 DEFAULT_STRIDE = 1
 DEFAULT_BATCH_SIZE = 32
@@ -21,6 +25,46 @@ DEFAULT_PROTEOME_FASTA = (
 class LengthConfig:
     max_flank_fraction: float = DEFAULT_MAX_FLANK_FRACTION
     stride: int = DEFAULT_STRIDE
+
+
+@dataclass(frozen=True)
+class DeletionConfig:
+    p_levels: tuple[float, ...] = DEFAULT_P_LEVELS
+    termini: tuple[str, ...] = TERMINI
+
+
+def add_deletion_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--p-levels",
+        type=float,
+        nargs="+",
+        default=list(DEFAULT_P_LEVELS),
+        help="Deletion fractions; k = round(p * L) per terminus (default: 0.05 0.1 0.2).",
+    )
+    parser.add_argument(
+        "--termini",
+        nargs="+",
+        choices=TERMINI,
+        default=list(TERMINI),
+        help="Termini to truncate (default: both N and C).",
+    )
+
+
+def deletion_config_from_args(args: argparse.Namespace) -> DeletionConfig:
+    return DeletionConfig(
+        p_levels=tuple(args.p_levels),
+        termini=tuple(args.termini),
+    )
+
+
+def validate_deletion_config(config: DeletionConfig) -> None:
+    if not config.p_levels:
+        raise ValueError("--p-levels must list at least one value.")
+    for p in config.p_levels:
+        if not 0.0 < p < 1.0:
+            raise ValueError(f"--p-levels must be strictly between 0 and 1, got {p}.")
+    if not config.termini:
+        raise ValueError("--termini must list at least one terminus.")
 
 
 def add_length_arguments(parser: argparse.ArgumentParser) -> None:
@@ -56,8 +100,10 @@ def add_provenance_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--candidates-table",
         type=Path,
-        required=True,
-        help="final_candidates.csv/parquet with peptide_id, sequence, source_protein_id, start, end.",
+        help=(
+            "final_candidates.csv/parquet with peptide_id, sequence, source_protein_id, start, end. "
+            "Required for --mode extension; unused by --mode deletion."
+        ),
     )
     parser.add_argument(
         "--proteome-fasta",

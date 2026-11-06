@@ -56,40 +56,33 @@ imports exist:
 Nothing outside `gnn_minimal/` imports `gnn_minimal`, and nothing imports
 `descriptors/` as a package.
 
-No root module has a static `import sequence_to_svm_minimal`, but one reaches
-the legacy tree at runtime — see below.
+No root module imports `sequence_to_svm_minimal`, statically or at runtime.
 
-### The live dependency on legacy code
+### The former live dependency on legacy code (resolved)
 
-`length_analysis/models/gnn.py` injects both `gnn_minimal/` and
-`sequence_to_svm_minimal/` onto `sys.path` — with **the legacy folder first**
-(`gnn.py:213`). It then takes most of its GNN stack from the legacy tree
-(`gnn.models`, `gnn.checkpoint_meta`, `gnn.extra_feature_scaler`; calibration
-now comes from `gnn_minimal/core/calibration.py` instead of `gnn.platt`), borrows only `process_data.ensure_processed_data`
-from `gnn_minimal`, and finally does:
+`length_analysis/models/gnn.py` used to inject both `gnn_minimal/` and
+`sequence_to_svm_minimal/` onto `sys.path` with the legacy folder first, take
+most of its GNN stack from the legacy tree, and score through
+`compare_model_predictions._run_gnn_predictions` — a private function in a
+deprecated CLI script. It now loads the checkpoint and scores through
+`gnn_minimal` only, the same path `mutation_analysis` and `sequence_analysis`
+use, and puts only `gnn_minimal/` on `sys.path`.
 
-```python
-sys.path.insert(0, str(SVM_MINIMAL_ROOT / "scripts" / "data_evaluation"))
-import compare_model_predictions as inference
-... inference._run_gnn_predictions(...)
-```
+What forced the change: the legacy loader
+(`sequence_to_svm_minimal/gnn/extra_feature_scaler.py:173`) rejects the
+`tabular_scaler.joblib` shipped with `checkpoints/gnn/gnn_vae_qsar`, because
+that file is pickled as `core.extra_feature_scaler.ExtraFeatureRobustScaler`
+from `gnn_minimal`. The legacy tree reloads the scaler a second time inside
+`gnn/data_utils.py:730`, so no import-level patch in `length_analysis` could
+have worked — and editing legacy is out of bounds. Scoring was broken for
+**both** length modes until the port.
 
-(`gnn.py:124-128`.) So `length_analysis` GNN scoring depends on a **private
-function in a deprecated CLI script**, plus four legacy modules. This is the
-most fragile edge in the repository: it violates module independence, depends
-on legacy code the rules say not to maintain, reaches past a `_`-private boundary,
-and the `sys.path` ordering means any module name present in both trees
-resolves to the legacy copy.
+Parent probabilities from the ported scorer match the `mutation_analysis` run
+on the same checkpoint to 7 significant figures (differences ~1e-7, from
+re-folding structures), which is the check to repeat if this path is touched
+again.
 
-`sequence_analysis` does this properly for comparison — it uses
-`gnn_minimal/core` directly. So if the legacy folder were deleted,
-`length_analysis` GNN scoring would break and `sequence_analysis` would not.
-
-Treat it as the known debt it is. If GNN scoring in `length_analysis` breaks,
-this is why. The fix is to route it through `gnn_minimal`, the supported
-self-contained path — not to patch the legacy script.
-
-One more import-time side effect worth knowing:
+One import-time side effect still worth knowing:
 `sequence_analysis/models/svm.py:17` adds the repo root and the legacy folder to
 `sys.path` on import, for no current consumer. Importing that adapter changes
 global import resolution.

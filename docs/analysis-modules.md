@@ -143,6 +143,50 @@ time.
 `score_z` is z-scored over **the current run's variant batch only**, so it is
 not comparable across runs.
 
+### `--mode deletion` — N/C truncation sweep
+
+```bash
+python -m length_analysis -i sequences.csv --mode deletion
+```
+
+`--mode` selects `extension` (the default, above) or `deletion`. Deletion needs
+**no provenance**: it truncates the peptide itself, so `--candidates-table` and
+`--proteome-fasta` are unused and may be omitted. Extension still requires
+`--candidates-table`.
+
+| Flag | Default |
+|---|---|
+| `--p-levels` | `0.05 0.1 0.2` |
+| `--termini` | `N C` |
+| `--output`/`-o` | `<input dir>/results/length_deletion_robustness.csv` |
+
+`k = round(p * L)` residues are removed, **half-up**, matching
+`mutation_analysis`. A cell is skipped when `k == 0` (the variant would equal
+the parent) or `k >= L`; at `p = 0.05` this drops the 9 shortest peptides of the
+1,074-candidate set. Deletion is deterministic, so a (terminus, p) cell holds
+exactly **one** variant — there is no replicate axis and no `sd_` column.
+Defaults score `2 × 3 + 1 = 7` variants per parent.
+
+Every truncation is folded on its own, unlike the mutation sweep's fixed-backbone
+threading: a shorter peptide cannot be threaded onto the parent's Cα frame.
+Folding, not scoring, dominates runtime.
+
+**Outputs** (two files, like `mutation_analysis`):
+
+- `length_deletion_curves.csv` — one row per (parent, terminus, p):
+  `run_id, parent_id, terminus, p, k, parent_length, variant_length, sequence,
+  pred, prob_AMP, logit_margin, delta_prob_AMP, delta_logit_margin`, then extras.
+  Deltas are **variant − parent**.
+- `length_deletion_robustness.csv` — one row per (parent, terminus):
+  `run_id, parent_id, terminus, sequence, length, parent_pred, parent_prob_AMP,
+  parent_logit_margin, n_variants, n_p_levels, mean_k, retention,
+  retention_first_p, retention_last_p, mean_prob_AMP, mean_delta_prob_AMP,
+  margin_auc, margin_slope`, then extras.
+
+`retention` is the fraction of tested p levels still called AMP — with three
+levels it takes only the values 0, ⅓, ⅔, 1, so prefer `margin_auc` or
+`margin_slope` for ranking.
+
 ## `mutation_analysis/` — substitution robustness sweep (GNN only)
 
 ```bash
