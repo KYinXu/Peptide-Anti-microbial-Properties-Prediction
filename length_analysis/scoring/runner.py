@@ -47,6 +47,8 @@ def run_length_scoring(
     *,
     max_flank_fraction: float,
     stride: int,
+    termini: Iterable[str],
+    separate_termini: bool,
     output: Path,
     workspace: Path,
     extra_columns: Iterable[str] = (),
@@ -60,6 +62,8 @@ def run_length_scoring(
             parent_list,
             max_flank_fraction=max_flank_fraction,
             stride=stride,
+            termini=termini,
+            separate_termini=separate_termini,
         )
     )
     reporter.set_labels([variant.parent_id for variant in variants])

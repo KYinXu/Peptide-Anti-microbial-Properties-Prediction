@@ -72,6 +72,7 @@ def ensure_processed_data(
     require_labels: bool = False,
     device: str | None = None,
     force: bool = False,
+    fold_batch_size: int = 1,
 ) -> Path:
     """
     Ensure ``gen_dir`` has the artifacts needed for train/inference.
@@ -101,6 +102,7 @@ def ensure_processed_data(
         force=force,
         output_dir=gen_dir,
         require_labels=require_labels,
+        fold_batch_size=fold_batch_size,
     )
 
 
@@ -322,6 +324,7 @@ def process_dataset(
     force: bool = False,
     output_dir: Path | str | None = None,
     require_labels: bool = False,
+    fold_batch_size: int = 1,
 ) -> Path:
     input_path = Path(input_path).resolve()
     if not input_path.exists():
@@ -384,6 +387,7 @@ def process_dataset(
         output_dir=pdb_dir,
         device=device,
         skip_existing=not force,
+        batch_size=fold_batch_size,
     )
 
     ready_df = select_folded_records(df, fold_summary)

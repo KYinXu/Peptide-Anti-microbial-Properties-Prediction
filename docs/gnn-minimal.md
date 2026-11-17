@@ -6,6 +6,7 @@ model → predictions. No Python import crosses out of this folder.
 ```
 gnn_minimal/
 ├── train.py             CLI: labeled CSV -> model directory
+├── train_premade_split.py  CLI: train/val/test CSVs -> model directory
 ├── inference.py         CLI: model dir + CSV -> predictions.csv
 ├── fit_temperature.py   CLI: post-hoc temperature calibration
 ├── process_data.py      library (not a CLI) — CSV -> generated/ artifacts
@@ -44,6 +45,27 @@ python train.py path/to/generated/      # reuse processed artifacts
 
 There are no `--epochs`/`--lr`/`--arch` flags; those live in the config.
 
+### `train_premade_split.py`
+
+```bash
+python train_premade_split.py --train train.csv --val val.csv --test test.csv
+python train_premade_split.py --train train.csv --val val.csv --test test.csv --presets Combined
+```
+
+Same config, model layout and artifacts as `train.py`; the only difference is
+where the split comes from. `--train`/`--val`/`--test` are required and each
+takes a labeled CSV (or an already-processed `generated*/` dir). `--val_size`
+is absent — the val set is given, not drawn. Other flags match `train.py`:
+`--config`, `--output_dir`, `--weight_decay`, `--esm2_hidden_dim`,
+`--presets`, `--force-process`, `--device`.
+
+The scaler is fit on train only, early stopping and Platt use val, and test is
+scored once at the end; its numbers land in `model_summary.json` under
+`metrics` with a `test_` prefix beside the unprefixed val metrics. Overlapping
+`peptide_id` between any two splits is an error. Like `train.py` it writes
+Platt but never temperature; for temperature, pass the same val file to
+`fit_temperature.py --val`.
+
 ### `inference.py`
 
 ```bash
@@ -58,9 +80,23 @@ python inference.py --model_path results/gnn_models/run_.../gat_QSAR \
 
 ### `fit_temperature.py`
 
-`--model` and `--input` required; `--seed` 42, `--val-size` 0.2,
-`--batch-size` 32, `--device`, `--force-process`. Writes
-`gnn_temperature_scaling` into the model dir — **`train.py` never writes it.**
+```bash
+python fit_temperature.py --model results/.../gat_QSAR --input labeled.csv  # re-derive the split
+python fit_temperature.py --model results/.../gat_QSAR --val val.csv        # premade split
+```
+
+`--model` required, plus exactly one of `--input` or `--val`. `--input` is the
+whole labeled table and the val rows are re-derived from it by `--seed` (42) /
+`--val-size` (0.2), which must match the training run; `--val` is the val CSV
+(or `generated*/` dir) of a premade split and is used as given, ignoring
+`--seed`/`--val-size`. Also `--batch-size` 32, `--device`, `--force-process`.
+Writes `gnn_temperature_scaling` into the model dir — **neither training
+script ever writes it.** The JSON records `seed`/`val_size` in the first mode
+and `val_source` in the second.
+
+`--input` requires the CSV to cover the rows in its `generated/` dir; a CSV
+labeling only a subset of a shared `generated/` fails with "Training data is
+missing labels" (true of `train.py` too).
 
 ## Data flow
 
@@ -73,6 +109,11 @@ acids; anything else is dropped at folding time.
 
 ### `generated/` artifacts — always `<csv_parent>/generated/`
 
+(Exception: `train_premade_split.py` uses `<csv_parent>/generated/generated_<csv_stem>/`
+so split CSVs sitting in one directory cannot overwrite each other's tables.
+Cached structures and feature rows are still reused from any `generated/` dir
+above the CSV, so the per-split dirs are cheap.)
+
 | Path | Contents |
 |---|---|
 | `structures/<id>.pdb` | ESMFold structures; pLDDT in the B-factor column |
@@ -80,6 +121,13 @@ acids; anything else is dropped at folding time.
 | `esm2_embeddings.csv` | pooled `peptide_id, seqIndex, esm2_dim_0…1279`; only when ESM2 runs |
 | `qsar12_descriptors.csv` | `peptide_id, sequence,` + the 12 QSAR columns |
 | `geometric_features.csv` | `peptide_id, sequence, pdb_file[, label],` + ~28 structural columns |
+
+`process_dataset(..., fold_batch_size=N)` folds N sequences per ESMFold call,
+grouped by exact length, and `ensure_processed_data` forwards it. The default 1
+is one-at-a-time and bitwise reproducible; `length_analysis` passes 16. Mixed
+lengths in one batch raise `IndexError` from `compute_tm()` under fp16, which is
+why grouping is by exact length (`docs/analysis-modules.md` has the measured
+speed and the structural effect).
 
 `label` appears in `geometric_features.csv` only when the source CSV was
 labeled. The canonical id key in every generated table is `peptide_id`, mapped

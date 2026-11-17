@@ -1,0 +1,52 @@
+{
+  "input": {
+    "path": "data/processed/alpha_exclusive.csv",
+    "sha256": "74c4eb05f9499505ea62fad6f1eebf5e2d829a20aac53de742857ed07925d1a3",
+    "rows": 1974,
+    "positives": 987,
+    "negatives": 987,
+    "dropped_nonstandard": []
+  },
+  "config": {
+    "seed": 42,
+    "validation_fraction": 0.1,
+    "test_fraction": 0.1,
+    "identity_threshold": 0.8,
+    "near_duplicate_repair": true,
+    "cdhit_version": "4.8.1 (built on Apr 24 2025)"
+  },
+  "folds": {
+    "train": {
+      "rows": 1605,
+      "share": 0.81307,
+      "positives": 817,
+      "negatives": 788,
+      "positive_rate": 0.50903
+    },
+    "validation": {
+      "rows": 184,
+      "share": 0.09321,
+      "positives": 85,
+      "negatives": 99,
+      "positive_rate": 0.46196,
+      "shared_cdhit_clusters_with_train": 0,
+      "near_duplicates_of_train": 0,
+      "promoted_to_train": 13
+    },
+    "test": {
+      "rows": 185,
+      "share": 0.09372,
+      "positives": 85,
+      "negatives": 100,
+      "positive_rate": 0.45946,
+      "shared_cdhit_clusters_with_train": 0,
+      "near_duplicates_of_train": 0,
+      "promoted_to_train": 12
+    }
+  },
+  "outputs": {
+    "alpha_exclusive_train.csv": "523e06331190bd4f73d1f11ffd1a2a66d91c9a94111e7c514c2221093818ec1e",
+    "alpha_exclusive_validation.csv": "0e4aedac7e291d392fe74e81d8c0b70b5187e1ef032296de4cbea415bd52124a",
+    "alpha_exclusive_test.csv": "031f2051010cb821babac9134bc433f82f4626977322d01d32dad9c610de94f4"
+  }
+}

@@ -294,12 +294,26 @@ def _pending_folds(sequences, output_dir: Path, max_length: int, skip_existing: 
     return results, pending
 
 
+def _length_batches(pending, batch_size: int):
+    """Group pending folds by exact length; padded batches make compute_tm() NaN in fp16."""
+    from collections import defaultdict
+
+    by_length = defaultdict(list)
+    for item in pending:
+        by_length[len(item[2])].append(item)
+    for length in sorted(by_length):
+        members = by_length[length]
+        for start in range(0, len(members), batch_size):
+            yield members[start : start + batch_size]
+
+
 def predict_structures_esmfold(
     sequences,
     output_dir,
     device="cuda",
     max_length=400,
     skip_existing=True,
+    batch_size=1,
 ):
     """
     Predict 3D structures using ESMFold
@@ -324,31 +338,44 @@ def predict_structures_esmfold(
         print(f"   Reusing {cached} existing structures")
 
     model = _load_esmfold_model(device) if pending else None
-    for order, idx, seq in tqdm(pending, desc="Folding sequences"):
-        try:
-            if device == "cuda":
-                torch.cuda.empty_cache()
+    batches = (
+        [[item] for item in pending]
+        if batch_size <= 1
+        else list(_length_batches(pending, batch_size))
+    )
+    with tqdm(total=len(pending), desc="Folding sequences") as progress:
+        for batch in batches:
+            try:
+                if device == "cuda":
+                    torch.cuda.empty_cache()
 
-            start_time = time.time()
-            with torch.no_grad(), torch.cuda.amp.autocast(enabled=(device == "cuda")):
-                output = model.infer_pdb(seq)
-            elapsed = time.time() - start_time
+                start_time = time.time()
+                with torch.no_grad(), torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                    if len(batch) == 1:
+                        outputs = [model.infer_pdb(batch[0][2])]
+                    else:
+                        outputs = model.infer_pdbs([seq for _, _, seq in batch])
+                elapsed = (time.time() - start_time) / len(batch)
 
-            pdb_file = esmfold_pdb_path(output_dir, idx)
-            with pdb_file.open("w") as f:
-                f.write(output)
-            results.append({
-                "_order": order, "seqIndex": idx, "length": len(seq),
-                "status": "success", "pdb_file": str(pdb_file),
-                "time_seconds": elapsed, "cached": False,
-            })
-        except Exception as e:
-            print(f"❌ Error processing sequence {idx}: {str(e)}")
-            results.append({
-                "_order": order, "seqIndex": idx, "length": len(seq),
-                "status": f"error: {str(e)}", "pdb_file": None,
-                "cached": False,
-            })
+                for (order, idx, seq), output in zip(batch, outputs):
+                    pdb_file = esmfold_pdb_path(output_dir, idx)
+                    with pdb_file.open("w") as f:
+                        f.write(output)
+                    results.append({
+                        "_order": order, "seqIndex": idx, "length": len(seq),
+                        "status": "success", "pdb_file": str(pdb_file),
+                        "time_seconds": elapsed, "cached": False,
+                    })
+            except Exception as e:
+                print(f"❌ Error folding {len(batch)} sequence(s) at length "
+                      f"{len(batch[0][2])}: {str(e)}")
+                for order, idx, seq in batch:
+                    results.append({
+                        "_order": order, "seqIndex": idx, "length": len(seq),
+                        "status": f"error: {str(e)}", "pdb_file": None,
+                        "cached": False,
+                    })
+            progress.update(len(batch))
 
     df_summary = pd.DataFrame(sorted(results, key=lambda row: row["_order"]))
     df_summary = df_summary.drop(columns=["_order"])

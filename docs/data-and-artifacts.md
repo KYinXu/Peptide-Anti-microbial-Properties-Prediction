@@ -25,6 +25,7 @@ data/<dataset>/[<experiment>/]
 | `Sabrina_sanity_test/` | `b3ppsexp_sequences.csv` | yes |
 | `Tiff_sequences/` | Eight dated experiment subdirs (H2A variants, Buforin/LL37, Siryaporn, a2-a3, canonical H2A) | no |
 | `proteomes/candidate_list/` | `sequences.csv`/`.txt`, `final_candidates.csv` | yes |
+| `proteomes/1k_confirmed_candidates/` | `Candidates Table 6 - Database of PDDPs.csv`, `sequences.csv`/`.txt`, plus `candidates_table.csv` + `sequences_located.csv` from `normalize_candidates_table.py` | yes, incl. `generated/length_cache/` |
 | `sanity_test/` | `sequences.csv`, `test_seqs.txt`, plus two stale loose `predictions*.csv` | yes |
 | `skin_samples/` | UniProt `idmapping_*.fasta`, `ms_tissue.tsv`, `sequences.csv`, and `top_fragments/` with its own run dirs | no |
 | `training/` | `Michael_training_sets/` (positive FASTA + negative CSV) and `expanded_amps/` | yes, both |

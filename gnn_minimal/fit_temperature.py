@@ -2,12 +2,14 @@
 """Fit temperature scaling for a saved GNN checkpoint.
 
 The GNN weights stay frozen. Temperature is fit on the validation split used
-by training: a stratified shuffle of the labeled table, seed 42 and 20% held
-out unless overridden. The result is written to ``gnn_temperature_scaling``
-in the model directory.
+by training: with ``--input`` that split is re-derived as a stratified shuffle
+of the labeled table, seed 42 and 20% held out unless overridden; with
+``--val`` the validation CSV of a premade split is used as given. The result is
+written to ``gnn_temperature_scaling`` in the model directory.
 
 Usage:
   python gnn_minimal/fit_temperature.py --model checkpoints/gnn/gnn_vae_qsar --input labeled.csv
+  python gnn_minimal/fit_temperature.py --model results/gnn_models/run_.../gat_QSAR --val val.csv
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from core.temperature import fit_temperature, save_temperature_json
 from inference import resolve_tabular_contract
 from process_data import ensure_processed_data, resolve_input_and_generated
 from train import binary_labels, load_data_with_features, require_both_classes
+from train_premade_split import resolve_split_input
 
 
 def validation_indices(labels: np.ndarray, val_size: float, seed: int) -> np.ndarray:
@@ -50,6 +53,17 @@ def labeled_validation_frame(gen_dir: Path, source_csv: Path | None, val_size: f
     require_both_classes(labels, context="Temperature scaling")
     val_idx = validation_indices(labels, val_size, seed)
     return frame.iloc[val_idx].reset_index(drop=True)
+
+
+def premade_validation_frame(gen_dir: Path, source_csv: Path | None):
+    frame, _qsar_cols = load_data_with_features(
+        str(gen_dir / "geometric_features.csv"),
+        str(gen_dir / "qsar12_descriptors.csv"),
+        source_csv,
+    )
+    labels = binary_labels(frame["label"].values)
+    require_both_classes(labels, context="Temperature scaling")
+    return frame.reset_index(drop=True)
 
 
 def load_frozen_model(model_dir: Path, dataset, state, meta: dict, in_channels: int, esm2_raw: int, device):
@@ -74,9 +88,11 @@ def load_frozen_model(model_dir: Path, dataset, state, meta: dict, in_channels: 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fit temperature scaling for a saved GNN checkpoint.")
     parser.add_argument("--model", type=Path, required=True, help="Model directory or path to gnn_model.pt.")
-    parser.add_argument("--input", type=Path, required=True, help="Labeled CSV (id,label,sequence) or its generated/ directory.")
-    parser.add_argument("--seed", type=int, default=42, help="Split seed. Match the training run (default: 42).")
-    parser.add_argument("--val-size", type=float, default=0.2, help="Validation fraction (default: 0.2).")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--input", type=Path, help="Labeled CSV (id,label,sequence) or its generated/ directory; the validation split is re-derived from it.")
+    source.add_argument("--val", type=Path, help="Validation CSV of a premade split (as passed to train_premade_split.py), used as given.")
+    parser.add_argument("--seed", type=int, default=42, help="Split seed for --input. Match the training run (default: 42).")
+    parser.add_argument("--val-size", type=float, default=0.2, help="Validation fraction for --input (default: 0.2).")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--force-process", action="store_true", help="Regenerate structures and features before fitting.")
@@ -96,7 +112,10 @@ def main() -> int:
         raise ValueError("Temperature scaling supports binary checkpoints only.")
 
     device_name = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    source_csv, gen_dir = resolve_input_and_generated(args.input)
+    premade = args.val is not None
+    source_csv, gen_dir = (
+        resolve_split_input(args.val) if premade else resolve_input_and_generated(args.input)
+    )
     gen_dir = ensure_processed_data(
         source_csv,
         gen_dir,
@@ -108,7 +127,11 @@ def main() -> int:
     architecture = str(meta.get("architecture", "gat"))
     _groups, in_channels, _notes = resolve_node_layout_for_checkpoint(model_dir, state, architecture, user_node_groups=None)
     scaler_path, feature_cols = resolve_tabular_contract(model_dir, meta)
-    val_frame = labeled_validation_frame(gen_dir, source_csv, args.val_size, args.seed)
+    val_frame = (
+        premade_validation_frame(gen_dir, source_csv)
+        if premade
+        else labeled_validation_frame(gen_dir, source_csv, args.val_size, args.seed)
+    )
     dataset = PeptideGraphDataset(
         csv_path=str(gen_dir / "geometric_features.csv"),
         pdb_dir=str(gen_dir / "structures"),
@@ -126,8 +149,11 @@ def main() -> int:
     payload = fit_temperature(margins, labels)
     if payload is None:
         raise ValueError("Temperature fit needs both classes on the validation split.")
-    payload["seed"] = args.seed
-    payload["val_size"] = args.val_size
+    if premade:
+        payload["val_source"] = str(Path(args.val).resolve())
+    else:
+        payload["seed"] = args.seed
+        payload["val_size"] = args.val_size
     output = temperature_scaling_path(model_dir)
     save_temperature_json(output, payload)
     print(

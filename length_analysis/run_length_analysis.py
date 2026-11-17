@@ -20,6 +20,7 @@ from .run_options import (
     DEFAULT_MODE,
     SUPPORTED_MODELS,
     SUPPORTED_MODES,
+    DEFAULT_FOLD_BATCH_SIZE,
     add_deletion_arguments,
     add_length_arguments,
     add_provenance_arguments,
@@ -106,6 +107,26 @@ def parse_args() -> argparse.Namespace:
         help="Device for feature processing / inference (default: auto).",
     )
     parser.add_argument(
+        "--structure-cache",
+        type=Path,
+        default=None,
+        help=(
+            "Directory of folded variant structures, keyed by sequence digest and shared "
+            "across runs and modes (default: <input dir>/generated/length_cache). "
+            "Folding is the dominant cost, so a re-run only folds sequences new to it."
+        ),
+    )
+    parser.add_argument(
+        "--fold-batch-size",
+        type=int,
+        default=DEFAULT_FOLD_BATCH_SIZE,
+        help=(
+            "Sequences per ESMFold call, batched within one length (default: 16). "
+            "1 folds one at a time, which is bitwise reproducible but ~18x slower; "
+            "batching redraws near-degenerate folds without shifting predictions."
+        ),
+    )
+    parser.add_argument(
         "--force-process",
         action="store_true",
         help="Rebuild feature artifacts even when they already exist.",
@@ -116,6 +137,10 @@ def parse_args() -> argparse.Namespace:
         help="Suppress progress messages.",
     )
     return parser.parse_args()
+
+
+def structure_cache_from_args(args: argparse.Namespace) -> Path:
+    return args.structure_cache or args.input.parent / "generated" / "length_cache"
 
 
 def output_path_from_args(args: argparse.Namespace) -> Path:
@@ -139,6 +164,7 @@ def run_deletion_mode(args: argparse.Namespace) -> int:
         skip_if_exists=not args.force_process,
         force_process=args.force_process,
         fitting=args.fitting,
+        fold_batch_size=args.fold_batch_size,
     )()
     output_target = output_path_from_args(args)
     progress = build_length_progress(quiet=args.quiet)
@@ -170,8 +196,9 @@ def run_deletion_mode(args: argparse.Namespace) -> int:
     )
 
     def write_csv(run: RunOutput) -> int:
-        workspace = run.directory / "workspace"
+        workspace = structure_cache_from_args(args)
         workspace.mkdir(parents=True, exist_ok=True)
+        run.manifest["config"]["effective"]["structure_cache"] = str(workspace)
         return run_deletion_scoring(
             parents,
             scorer,
@@ -218,6 +245,7 @@ def main() -> int:
             skip_if_exists=not args.force_process,
             force_process=args.force_process,
             fitting=args.fitting,
+            fold_batch_size=args.fold_batch_size,
         )()
         output_target = output_path_from_args(args)
         progress = build_length_progress(quiet=args.quiet)
@@ -237,6 +265,9 @@ def main() -> int:
                     "length": {
                         "max_flank_fraction": config.max_flank_fraction,
                         "stride": config.stride,
+                        "termini": list(config.termini),
+                        "separate_termini": config.separate_termini,
+                        "fold_batch_size": args.fold_batch_size,
                     },
                     "fitting": args.fitting,
                     "batch_size": args.batch_size,
@@ -253,13 +284,16 @@ def main() -> int:
         )
 
         def write_csv(run: RunOutput) -> int:
-            workspace = run.directory / "workspace"
+            workspace = structure_cache_from_args(args)
             workspace.mkdir(parents=True, exist_ok=True)
+            run.manifest["config"]["effective"]["structure_cache"] = str(workspace)
             return run_length_scoring(
                 parents,
                 scorer,
                 max_flank_fraction=config.max_flank_fraction,
                 stride=config.stride,
+                termini=config.termini,
+                separate_termini=config.separate_termini,
                 output=run.csv_path,
                 workspace=workspace,
                 extra_columns=dataset.label_columns,

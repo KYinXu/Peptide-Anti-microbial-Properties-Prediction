@@ -5,6 +5,7 @@ Each variant has its own sequence, so each is folded and scored against its own 
 
 from __future__ import annotations
 
+import hashlib
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,11 @@ def ensure_gnn_minimal_on_path() -> None:
     path = str(GNN_MINIMAL_ROOT)
     if path not in sys.path:
         sys.path.insert(0, path)
+
+
+def sequence_digest(sequence: str) -> str:
+    """Stable id for a sequence, so identical variants share one fold across runs."""
+    return "SEQ" + hashlib.sha1(sequence.encode()).hexdigest()[:16]
 
 
 @dataclass(frozen=True)
@@ -48,6 +54,7 @@ class GnnScorerFactory:
         skip_if_exists: bool = True,
         force_process: bool = False,
         fitting: str | None = None,
+        fold_batch_size: int = 1,
     ) -> None:
         self.checkpoint = checkpoint
         self.batch_size = batch_size
@@ -55,6 +62,7 @@ class GnnScorerFactory:
         self.skip_if_exists = skip_if_exists
         self.force_process = force_process
         self.fitting = fitting
+        self.fold_batch_size = fold_batch_size
 
     def __call__(self) -> "GnnScorer":
         return GnnScorer(
@@ -64,6 +72,7 @@ class GnnScorerFactory:
             skip_if_exists=self.skip_if_exists,
             force_process=self.force_process,
             fitting=self.fitting,
+            fold_batch_size=self.fold_batch_size,
         )
 
 
@@ -79,6 +88,7 @@ class GnnScorer:
         skip_if_exists: bool = True,
         force_process: bool = False,
         fitting: str | None = None,
+        fold_batch_size: int = 1,
     ) -> None:
         ensure_gnn_minimal_on_path()
         import torch
@@ -137,6 +147,7 @@ class GnnScorer:
         self.process_device = device
         self.skip_if_exists = skip_if_exists
         self.force_process = force_process
+        self.fold_batch_size = fold_batch_size
 
     def score_variants(
         self, variants: Iterable, workspace: Path, progress=None
@@ -155,27 +166,54 @@ class GnnScorer:
         ids = [variant.variant_id for variant in variant_list]
         sequences = [variant.sequence for variant in variant_list]
 
+        # Fold and score each distinct sequence once. Extensions of peptides that
+        # overlap in the same protein collide often (41% of the 1,074-candidate
+        # cartesian sweep), and the digest doubles as a cross-run structure cache key.
+        folded_ids, folded_sequences, position = [], [], {}
+        for sequence in sequences:
+            digest = sequence_digest(sequence)
+            if digest not in position:
+                position[digest] = len(folded_ids)
+                folded_ids.append(digest)
+                folded_sequences.append(sequence)
+        expand = [position[sequence_digest(sequence)] for sequence in sequences]
+
         input_csv = workspace / "variants_input.csv"
         gen_dir = workspace / "generated"
+        structure_dir = gen_dir / "structures"
         input_csv.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame({"id": ids, "sequence": sequences}).to_csv(input_csv, index=False)
 
-        process_device = self.process_device or ("cuda" if torch.cuda.is_available() else "cpu")
-        if progress is not None:
-            progress("folding", 0, len(ids))
-        ensure_processed_data(
-            input_csv,
-            gen_dir,
-            need_esm2=False,
-            require_labels=False,
-            device=process_device,
-            force=self.force_process or not self.skip_if_exists,
-        )
+        pending = [
+            (digest, sequence)
+            for digest, sequence in zip(folded_ids, folded_sequences)
+            if self.force_process
+            or not self.skip_if_exists
+            or not (structure_dir / f"{digest}.pdb").is_file()
+        ]
+        if pending:
+            pd.DataFrame(
+                {"id": [digest for digest, _ in pending], "sequence": [seq for _, seq in pending]}
+            ).to_csv(input_csv, index=False)
+            process_device = self.process_device or ("cuda" if torch.cuda.is_available() else "cpu")
+            if progress is not None:
+                progress("folding", 0, len(pending))
+            # ensure_processed_data() returns early whenever the cache holds any feature
+            # tables at all, so force is what makes it fold the sequences new to it. Only
+            # the pending ids are passed, so nothing already folded is recomputed.
+            ensure_processed_data(
+                input_csv,
+                gen_dir,
+                need_esm2=False,
+                require_labels=False,
+                device=process_device,
+                force=True,
+                fold_batch_size=self.fold_batch_size,
+            )
 
         if progress is not None:
-            progress("descriptors", 0, len(ids))
-        frame = compute_qsar12(sequences, ids)
-        frame["pdb_file"] = [f"{identifier}.pdb" for identifier in ids]
+            progress("descriptors", 0, len(folded_ids))
+        frame = compute_qsar12(folded_sequences, folded_ids)
+        frame["pdb_file"] = [f"{identifier}.pdb" for identifier in folded_ids]
         missing = [column for column in self.feature_cols if column not in frame.columns]
         if missing:
             raise ValueError(f"QSAR output is missing checkpoint features: {missing}")
@@ -190,11 +228,11 @@ class GnnScorer:
             dataframe=frame,
         )
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
-        return self._predict(ids, loader, progress=progress)
+        logits = self._predict(folded_ids, loader, progress=progress)
+        return self._predictions(ids, logits[expand])
 
-    def _predict(self, ids: list[str], loader, progress=None) -> dict[str, GnnPrediction]:
+    def _predict(self, ids: list[str], loader, progress=None) -> "np.ndarray":
         import torch
-        from core.calibration import prob_amp
 
         scored = 0
         logits = []
@@ -209,6 +247,11 @@ class GnnScorer:
             raise RuntimeError(
                 f"GNN inference returned {len(logits)} prediction(s) for {len(ids)} variant(s)."
             )
+        return logits
+
+    def _predictions(self, ids: list[str], logits) -> dict[str, GnnPrediction]:
+        """z-scores are taken over the expanded variant batch, as before dedup."""
+        from core.calibration import prob_amp
 
         margins = logits[:, 1] - logits[:, 0]
         probabilities = prob_amp(margins, self.fitting, self.calibration)

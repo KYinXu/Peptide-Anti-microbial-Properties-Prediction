@@ -1,0 +1,52 @@
+{
+  "kind": "peptide_gnn",
+  "schema": 2,
+  "architecture": "gat",
+  "feature_set": "Graph-only",
+  "node_feature_groups": {
+    "onehot": true,
+    "pdb_continuous": false,
+    "vae_table": true,
+    "esm2_residue": false
+  },
+  "node_input_dim": 33,
+  "first_message_in_dim": 33,
+  "hidden_channels": 64,
+  "num_layers": 3,
+  "dropout": 0.2,
+  "pooling": "mean_max",
+  "geo_feature_dim": 0,
+  "tabular_feature_cols": [],
+  "esm2_raw_dim": 0,
+  "esm2_hidden_dim": 64,
+  "num_classes": 2,
+  "label_map": {
+    "0": 0,
+    "1": 1
+  },
+  "artifacts": {
+    "model": "gnn_model.pt",
+    "summary": "model_summary.json",
+    "platt": "gnn_platt_scaling",
+    "tabular_scaler": "tabular_scaler.joblib"
+  },
+  "timestamp": "2026-11-11T18:34:43.727692",
+  "metrics": {
+    "loss": 0.5306690871715546,
+    "accuracy": 0.7792642140468228,
+    "precision": 0.5238095238095238,
+    "recall": 0.9166666666666666,
+    "f1": 0.6666666666666666,
+    "mcc": 0.5648734689987911,
+    "auc_roc": 0.9409569260890847,
+    "auc_pr": 0.889720946664066,
+    "test_loss": 0.505495848506689,
+    "test_accuracy": 0.7751677852348994,
+    "test_precision": 0.5153846153846153,
+    "test_recall": 0.9436619718309859,
+    "test_f1": 0.6666666666666666,
+    "test_mcc": 0.5722345592839331,
+    "test_auc_roc": 0.963082459514798,
+    "test_auc_pr": 0.9186537829172284
+  }
+}

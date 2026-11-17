@@ -119,9 +119,17 @@ python -m length_analysis -i subset.csv --candidates-table candidates.csv
 | `--fitting`/`-f` | auto: temperature → platt → softmax |
 | `--max-flank-fraction` | 0.5 |
 | `--stride` | 1 |
+| `--termini` | `N C` (both ends; one value restricts the sweep) |
+| `--separate-termini` | off (enumerate the product) |
 | `--batch-size` | 32 |
 | `--device` | auto (`cuda`\|`cpu`, choices-restricted) |
+| `--structure-cache` | `<input dir>/generated/length_cache` |
+| `--fold-batch-size` | 16 |
 | `--output`/`-o` | `<input dir>/results/length_predictions.csv` |
+
+Build the candidates table from a peptide table with
+`data_normalizer/normalize_candidates_table.py` (`docs/contracts.md`); it also
+writes the matching subset CSV for `-i`.
 
 Three inputs must agree. The candidates table needs
 `peptide_id, sequence, source_protein_id, start, end`; the subset sequence must
@@ -131,14 +139,56 @@ drift aborts the whole run rather than skipping the record
 
 Variants are the cartesian product of left and right flank extensions, capped
 at `floor(max_flank_fraction * core_length)`, ids `<parent>_L<n>_R<m>`. Both
-loops include 0, so the unextended parent is always emitted as `_L0_R0`.
+loops include 0, so the unextended parent is always emitted as `_L0_R0`. A
+flank is also capped by the protein itself, so a peptide at a terminus gets
+fewer variants than the fraction allows.
+
+`--termini` restricts which end grows: `N` keeps only left extensions
+(`_L<n>_R0`), `C` only right (`_L0_R<m>`), and the default `N C` keeps the full
+product. A single-terminus sweep is therefore the row or column of that product
+through the parent — for the 1,065-peptide PDDP set at 50%, 10,445 and 10,626
+variants against 110,275 for the product. The run manifest records which
+termini were swept under `config.effective.length.termini`.
+
+`--separate-termini` enumerates the **union** of the two single-terminus
+sweeps rather than their product: every variant grows exactly one end, and the
+unextended parent is emitted once, so no `variant_id` repeats. For the
+1,065-peptide PDDP set at 50% that is 20,006 variants over 15,132 distinct
+sequences, against 110,275 / 65,191 for the product. Use it to ask whether N-
+or C-terminal extension alone changes the call; the product additionally covers
+interactions between the two ends.
 
 **Output** `length_predictions.csv`: `run_id, variant_id, parent_id,
 source_protein_id, start, end, left_added, right_added, core_length,
 variant_length, sequence, pred, prob_AMP, confidence, logit_AMP, logit_nonAMP,
-logit_margin, score_z`, then subset extras. Intermediate artifacts go under
-`runs/<ts>/workspace/`, clean per run — but structures are recomputed every
-time.
+logit_margin, score_z`, then subset extras.
+
+Folded structures go to the shared cache (`--structure-cache`), keyed by a sha1
+digest of the variant sequence, so identical variants fold once and a re-run
+only folds what is new to the cache (`models/gnn.py:181`). Both modes share one
+cache, and an interrupted sweep resumes from it. The cache's `generated/`
+feature tables hold only the most recent fold batch; scoring recomputes
+descriptors from the sequences and reads nothing from the cache but
+`structures/`.
+
+Folding dominates runtime, so `--fold-batch-size` (default 16) sends that many
+sequences through one ESMFold call. Batches are grouped by **exact** length:
+ESMFold pads mixed-length batches, and in fp16 the padded rows make
+`compute_tm()` reduce over an all-NaN tensor and raise `IndexError`
+(`esm2_processor.py:_length_batches`). Measured on an RTX 5070, this takes a
+28-residue peptide from 0.65 s to 0.036 s and a 68-residue one from 1.20 s to
+0.19 s. Peak VRAM stays near 7.5 GiB.
+
+`--fold-batch-size 1` reproduces one-at-a-time folding, which is bitwise
+deterministic across runs. Batching is not: fp16 reduction order depends on the
+batch dimension, which redraws folds that are near-degenerate anyway. Measured
+over 285 variants (8-76 aa, mean pLDDT 0.6), single vs batched gives a median
+superposed CA RMSD of 0.11 A (p90 0.97, max 5.53) and a median 8 A contact-graph
+disagreement of 0.00% (p90 0.38%); `prob_AMP` moves by a median of 0.0000
+(p90 0.0137, p99 0.0526, max 0.1374), and the only two AMP-call flips sat within
+0.007 of the 0.5 threshold. Mixing both folding paths in one cache is the case
+to avoid, since the parents every delta is measured against would then come from
+a different path than their variants.
 
 `score_z` is z-scored over **the current run's variant batch only**, so it is
 not comparable across runs.
@@ -158,6 +208,8 @@ python -m length_analysis -i sequences.csv --mode deletion
 |---|---|
 | `--p-levels` | `0.05 0.1 0.2` |
 | `--termini` | `N C` |
+| `--structure-cache` | `<input dir>/generated/length_cache` |
+| `--fold-batch-size` | 16 |
 | `--output`/`-o` | `<input dir>/results/length_deletion_robustness.csv` |
 
 `k = round(p * L)` residues are removed, **half-up**, matching

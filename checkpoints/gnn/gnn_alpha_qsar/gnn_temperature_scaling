@@ -1,0 +1,7 @@
+{
+  "method": "temperature",
+  "score": "logit_margin",
+  "temperature": 0.8206770768960739,
+  "n_calib": 299,
+  "val_source": "/mnt/c/Users/bioin/Documents/Peptide-Anti-microbial-Properties-Prediction/data/training/expanded_alpha_only/AMPs_alpha_validation.csv"
+}

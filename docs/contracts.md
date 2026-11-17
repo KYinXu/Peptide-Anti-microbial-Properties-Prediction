@@ -68,6 +68,43 @@ Also importable: the `iter_normalized_*` generators and
 `write_normalized_csv(path, records) -> int`. Note `write_normalized_csv`
 materializes all records to a list before writing — it is not streaming.
 
+### Provenance recovery — `normalize_candidates_table.py`
+
+A fourth entry point, not a format normalizer: it maps a peptide table onto a
+proteome FASTA and writes the **candidates table** that
+`length_analysis --mode extension` requires, plus the canonical CSV of the
+peptides it could locate.
+
+```bash
+python data_normalizer/normalize_candidates_table.py -i "<peptide table>.csv"
+```
+
+| Flag | Default |
+|---|---|
+| `--input`/`-i` | required |
+| `--proteome-fasta` | `length_analysis/uniprotkb_UP000005640_AND_model_organis_2026_06_27.fasta` |
+| `--output`/`-o` | `<input dir>/candidates_table.csv` |
+| `--sequences-output` | `<output dir>/sequences_located.csv` |
+
+Input columns are read under canonical or MaxQuant names: sequence
+(`sequence`/`Sequence`), protein (`source_protein_id`/`leading_razor_protein`/
+`Leading razor protein`), and start/end (`start`/`end` or
+`Start position`/`End position`). `peptide_id` comes from an `id` column when
+present, else `SEQ_<row>` in file order. `Gene names` and
+`Leading razor protein` carry into the sequence CSV as extras.
+
+Coordinates are resolved per row, first hit wins: `protein[start:end]`, then
+`protein[start-1:end]` for 1-based inclusive tables, then a substring search of
+the named protein, which repairs isoform offsets. `source_protein_id` is
+written as the full FASTA header token (`sp|O60443|GSDME_HUMAN`) because that
+is what `length_analysis/provenance.py:70` keys on, and `start`/`end` as
+0-based half-open.
+
+A row whose protein is missing from the FASTA, or whose peptide is absent from
+that protein, is dropped and listed on stdout. The two outputs therefore always
+agree — `recover_parents` aborts the whole run on any subset id missing from
+the candidates table.
+
 ## `analysis_outputs/` — run directories and provenance
 
 Every analysis that produces a CSV goes through this. Do not invent a second

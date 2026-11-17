@@ -15,6 +15,7 @@ DEFAULT_MODE = "extension"
 DEFAULT_MAX_FLANK_FRACTION = 0.5
 DEFAULT_STRIDE = 1
 DEFAULT_BATCH_SIZE = 32
+DEFAULT_FOLD_BATCH_SIZE = 16
 DEFAULT_PROTEOME_FASTA = (
     Path(__file__).resolve().parent
     / "uniprotkb_UP000005640_AND_model_organis_2026_06_27.fasta"
@@ -25,6 +26,8 @@ DEFAULT_PROTEOME_FASTA = (
 class LengthConfig:
     max_flank_fraction: float = DEFAULT_MAX_FLANK_FRACTION
     stride: int = DEFAULT_STRIDE
+    termini: tuple[str, ...] = TERMINI
+    separate_termini: bool = False
 
 
 @dataclass(frozen=True)
@@ -46,7 +49,11 @@ def add_deletion_arguments(parser: argparse.ArgumentParser) -> None:
         nargs="+",
         choices=TERMINI,
         default=list(TERMINI),
-        help="Termini to truncate (default: both N and C).",
+        help=(
+            "Termini to truncate, or to extend under --mode extension (default: both N "
+            "and C). One terminus restricts the sweep to that end; both keeps the "
+            "extension mode's left x right product."
+        ),
     )
 
 
@@ -80,12 +87,22 @@ def add_length_arguments(parser: argparse.ArgumentParser) -> None:
         default=DEFAULT_STRIDE,
         help="Step size when enumerating left/right extensions (default: 1).",
     )
+    parser.add_argument(
+        "--separate-termini",
+        action="store_true",
+        help=(
+            "Extend one terminus per variant: the union of the N-only and C-only "
+            "sweeps instead of their product. The unextended parent is emitted once."
+        ),
+    )
 
 
 def length_config_from_args(args: argparse.Namespace) -> LengthConfig:
     return LengthConfig(
         max_flank_fraction=args.max_flank_fraction,
         stride=args.stride,
+        termini=tuple(args.termini),
+        separate_termini=args.separate_termini,
     )
 
 
@@ -94,6 +111,8 @@ def validate_length_config(config: LengthConfig) -> None:
         raise ValueError("--max-flank-fraction must be >= 0.")
     if config.stride < 1:
         raise ValueError("--stride must be at least 1.")
+    if not config.termini:
+        raise ValueError("--termini must list at least one terminus.")
 
 
 def add_provenance_arguments(parser: argparse.ArgumentParser) -> None:

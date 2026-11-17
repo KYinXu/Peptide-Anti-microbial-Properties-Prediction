@@ -25,6 +25,7 @@ No notebook imports `sequence_analysis`, `length_analysis`, `gnn_minimal`,
 |---|---|
 | `H2A_analysis.ipynb` | Per-window P(AMP) and sigma along H2A variant parents |
 | `candidate_list_comparison.ipynb` | Generated candidates vs the paper's PDDP Table 6; exact/near/substring matching. **Imports legacy `PaneScorer`** |
+| `checkpoint_comparison.ipynb` | `gnn_alpha_qsar` vs `gnn_vae_qsar` vs `svm_no_class_weight` over `sanity_test`, `proteome_sanity_test` and the unlabelled `gld` wheat peptides; prediction tables, accuracy bars, score distributions by true class, confusion matrices, pairwise agreement and the disagreement list |
 | `comparison_exploration.ipynb` | Ad-hoc score-distribution exploration over comparison CSVs |
 | `gnn_graph_connectivity_train_val.ipynb` | Cα-proximity graph statistics for train vs val splits. **Legacy imports** |
 | `gnn_variation_test.ipynb` | Runs GNN training 5× at identical seed to measure nondeterminism. **Legacy imports** |
@@ -44,7 +45,9 @@ No notebook imports `sequence_analysis`, `length_analysis`, `gnn_minimal`,
 |---|---|
 | `proteome_prediction_analysis.ipynb` | Proteome prediction vs labeled sequences; KDE score distributions |
 | `final_figures_proteome_prediction.ipynb` | Publication figures over the 465k proteome, 50k MAPP and 1k confirmed sets, GNN+QSAR, with the 10 paper candidates marked |
-| `robustness_analysis.ipynb` | Reads the latest `mutation_analysis` run; Δσ / ΔP(AMP) versus mutation level per scheme and AMP call retention curves |
+| `mutation_analysis.ipynb` | Reads the latest `mutation_analysis` run; Δσ / ΔP(AMP) versus mutation level per scheme and AMP call retention curves |
+| `length_cutoff_analysis.ipynb` | Reads the latest `length_analysis --mode deletion` run; AMP counts over (Δ, p) as a heatmap per terminus, Δσ / ΔP(AMP) versus deletion level, and AMP call retention |
+| `t10_candidates_analysis.ipynb` | The ten paper candidates only, scored with `gnn_alpha_qsar`; mutation robustness (Δσ / ΔP(AMP), retention curves and heatmap, sustained-σ dumbbell), deletion Δσ versus residues removed per terminus, extension (N, C) landscapes and best reachable σ, both length runs on one axis, an overall σ/P(AMP) and retention ranking across the three, and the top ten length variants |
 
 ## `skin_clusters/`
 
