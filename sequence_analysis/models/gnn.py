@@ -232,6 +232,7 @@ def score_feature_frame(
 
 
 def _load_model(meta, state, architecture: str, in_channels: int, esm2_raw: int, feature_cols: list[str]):
+    from core.checkpoint_meta import peptide_gnn_arch_kwargs
     from core.models import PeptideGNN, esm2_hidden_dim_from_state_dict
 
     return PeptideGNN(
@@ -244,6 +245,7 @@ def _load_model(meta, state, architecture: str, in_channels: int, esm2_raw: int,
         geo_feature_dim=int(meta.get("geo_feature_dim", len(feature_cols))),
         esm2_raw_dim=esm2_raw,
         esm2_hidden_dim=esm2_hidden_dim_from_state_dict(state),
+        **peptide_gnn_arch_kwargs(meta),
     )
 
 

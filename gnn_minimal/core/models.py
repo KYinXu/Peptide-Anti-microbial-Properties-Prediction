@@ -75,6 +75,7 @@ class GCN(nn.Module):
         geo_feature_dim: int = 0,
         esm2_raw_dim: int = 0,
         esm2_hidden_dim: int = 64,
+        normalize_geo: bool = True,
     ):
         super().__init__()
         
@@ -104,6 +105,16 @@ class GCN(nn.Module):
         
         # Pooling output dimension
         pool_dim = hidden_channels * 2 if pooling == 'mean_max' else hidden_channels
+        
+        # geo_features join the graph branch downstream of every BatchNorm, so
+        # without this they are the only unnormalised input to the classifier: a
+        # tabular column the scaler leaves in raw units reaches classifier[0] at
+        # ~10x the pooled features and outweighs all of them.
+        self.geo_bn = (
+            nn.BatchNorm1d(geo_feature_dim)
+            if normalize_geo and geo_feature_dim > 0
+            else None
+        )
         
         # Classifier
         classifier_input = pool_dim + geo_feature_dim
@@ -140,7 +151,8 @@ class GCN(nn.Module):
         
         # Concatenate geometric features if available
         if self.geo_feature_dim > 0 and hasattr(data, 'geo_features'):
-            x = torch.cat([x, data.geo_features], dim=1)
+            geo = data.geo_features
+            x = torch.cat([x, geo if self.geo_bn is None else self.geo_bn(geo)], dim=1)
         
         # Classification
         return self.classifier(x)
@@ -169,6 +181,8 @@ class GAT(nn.Module):
         geo_feature_dim: int = 0,
         esm2_raw_dim: int = 0,
         esm2_hidden_dim: int = 64,
+        edge_dim: int = 3,
+        normalize_geo: bool = True,
     ):
         super().__init__()
         
@@ -177,6 +191,7 @@ class GAT(nn.Module):
         self.pooling = pooling
         self.geo_feature_dim = geo_feature_dim
         self.esm2_raw_dim = esm2_raw_dim
+        self.edge_dim = edge_dim
         self.esm2_encoder: Optional[nn.Linear] = None
         first_in = in_channels
         if esm2_raw_dim > 0:
@@ -188,20 +203,30 @@ class GAT(nn.Module):
         self.bns = nn.ModuleList()
         
         # First layer
-        self.convs.append(GATConv(first_in, hidden_channels, heads=heads, dropout=dropout))
+        self.convs.append(GATConv(first_in, hidden_channels, heads=heads, dropout=dropout, edge_dim=edge_dim or None))
         self.bns.append(BatchNorm(hidden_channels * heads))
         
         # Hidden layers
         for _ in range(num_layers - 2):
-            self.convs.append(GATConv(hidden_channels * heads, hidden_channels, heads=heads, dropout=dropout))
+            self.convs.append(GATConv(hidden_channels * heads, hidden_channels, heads=heads, dropout=dropout, edge_dim=edge_dim or None))
             self.bns.append(BatchNorm(hidden_channels * heads))
         
         # Final layer (single head)
-        self.convs.append(GATConv(hidden_channels * heads, hidden_channels, heads=1, concat=False, dropout=dropout))
+        self.convs.append(GATConv(hidden_channels * heads, hidden_channels, heads=1, concat=False, dropout=dropout, edge_dim=edge_dim or None))
         self.bns.append(BatchNorm(hidden_channels))
         
         # Pooling output dimension
         pool_dim = hidden_channels * 2 if pooling == 'mean_max' else hidden_channels
+        
+        # geo_features join the graph branch downstream of every BatchNorm, so
+        # without this they are the only unnormalised input to the classifier: a
+        # tabular column the scaler leaves in raw units reaches classifier[0] at
+        # ~10x the pooled features and outweighs all of them.
+        self.geo_bn = (
+            nn.BatchNorm1d(geo_feature_dim)
+            if normalize_geo and geo_feature_dim > 0
+            else None
+        )
         
         # Classifier
         classifier_input = pool_dim + geo_feature_dim
@@ -216,9 +241,11 @@ class GAT(nn.Module):
         x, edge_index, batch = data.x, data.edge_index, data.batch
         x = _esm_augmented_x(x, data, self.esm2_encoder)
         
+        edge_attr = getattr(data, 'edge_attr', None) if self.edge_dim else None
+        
         # GAT layers
         for i in range(self.num_layers):
-            x = self.convs[i](x, edge_index)
+            x = self.convs[i](x, edge_index, edge_attr=edge_attr)
             x = self.bns[i](x)
             x = F.elu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
@@ -238,7 +265,8 @@ class GAT(nn.Module):
         
         # Concatenate geometric features if available
         if self.geo_feature_dim > 0 and hasattr(data, 'geo_features'):
-            x = torch.cat([x, data.geo_features], dim=1)
+            geo = data.geo_features
+            x = torch.cat([x, geo if self.geo_bn is None else self.geo_bn(geo)], dim=1)
         
         # Classification
         return self.classifier(x)
@@ -355,6 +383,7 @@ class EGNN(nn.Module):
         geo_feature_dim: int = 0,
         esm2_raw_dim: int = 0,
         esm2_hidden_dim: int = 64,
+        normalize_geo: bool = True,
     ):
         super().__init__()
         
@@ -386,6 +415,16 @@ class EGNN(nn.Module):
         
         # Pooling output dimension
         pool_dim = hidden_channels * 2 if pooling == 'mean_max' else hidden_channels
+        
+        # geo_features join the graph branch downstream of every BatchNorm, so
+        # without this they are the only unnormalised input to the classifier: a
+        # tabular column the scaler leaves in raw units reaches classifier[0] at
+        # ~10x the pooled features and outweighs all of them.
+        self.geo_bn = (
+            nn.BatchNorm1d(geo_feature_dim)
+            if normalize_geo and geo_feature_dim > 0
+            else None
+        )
         
         # Classifier
         classifier_input = pool_dim + geo_feature_dim
@@ -425,7 +464,8 @@ class EGNN(nn.Module):
         
         # Concatenate geometric features if available
         if self.geo_feature_dim > 0 and hasattr(data, 'geo_features'):
-            x = torch.cat([x, data.geo_features], dim=1)
+            geo = data.geo_features
+            x = torch.cat([x, geo if self.geo_bn is None else self.geo_bn(geo)], dim=1)
         
         # Classification
         return self.classifier(x)
@@ -461,6 +501,8 @@ class PeptideGNN(nn.Module):
         geo_feature_dim: int = 0,
         esm2_raw_dim: int = 0,
         esm2_hidden_dim: int = 64,
+        edge_dim: int = 3,
+        normalize_geo: bool = True,
         **kwargs
     ):
         super().__init__()
@@ -470,6 +512,10 @@ class PeptideGNN(nn.Module):
                            f"Choose from {list(self.ARCHITECTURES.keys())}")
         
         model_cls = self.ARCHITECTURES[architecture]
+        
+        # GCNConv carries a scalar edge_weight only, so edge_dim applies to gat / egnn.
+        if architecture in ('gat', 'egnn'):
+            kwargs['edge_dim'] = edge_dim
         
         # Build model
         self.model = model_cls(
@@ -482,6 +528,7 @@ class PeptideGNN(nn.Module):
             geo_feature_dim=geo_feature_dim,
             esm2_raw_dim=esm2_raw_dim,
             esm2_hidden_dim=esm2_hidden_dim,
+            normalize_geo=normalize_geo,
             **kwargs
         )
         

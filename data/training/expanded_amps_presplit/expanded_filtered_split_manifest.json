@@ -1,0 +1,52 @@
+{
+  "input": {
+    "path": "data/processed/expanded_filtered.csv",
+    "sha256": "60c4c31f7ecf7fd2d615e9cdc2083e689dacabc313a6217bc0dfd934eb3d5f97",
+    "rows": 3332,
+    "positives": 1064,
+    "negatives": 2268,
+    "dropped_nonstandard": []
+  },
+  "config": {
+    "seed": 42,
+    "validation_fraction": 0.1,
+    "test_fraction": 0.1,
+    "identity_threshold": 0.8,
+    "near_duplicate_repair": true,
+    "cdhit_version": "4.8.1 (built on Apr 24 2025)"
+  },
+  "folds": {
+    "train": {
+      "rows": 2700,
+      "share": 0.81032,
+      "positives": 885,
+      "negatives": 1815,
+      "positive_rate": 0.32778
+    },
+    "validation": {
+      "rows": 322,
+      "share": 0.09664,
+      "positives": 96,
+      "negatives": 226,
+      "positive_rate": 0.29814,
+      "shared_cdhit_clusters_with_train": 0,
+      "near_duplicates_of_train": 0,
+      "promoted_to_train": 11
+    },
+    "test": {
+      "rows": 310,
+      "share": 0.09304,
+      "positives": 83,
+      "negatives": 227,
+      "positive_rate": 0.26774,
+      "shared_cdhit_clusters_with_train": 0,
+      "near_duplicates_of_train": 0,
+      "promoted_to_train": 22
+    }
+  },
+  "outputs": {
+    "expanded_filtered_train.csv": "7775ab1a7f075f57daa7fd0737d34545dbae8f3c8f9cabf689fb8858313dfe5b",
+    "expanded_filtered_validation.csv": "63f5a1b69ae8e59aa085c4f98fc989083d598c3e087ac0cd123699595decf9dd",
+    "expanded_filtered_test.csv": "c4aeb4945a1c0dd7c36fc6bfe96c1f0a04d928f13baa7dbc5cabfd3c7597e231"
+  }
+}

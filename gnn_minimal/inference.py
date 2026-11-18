@@ -26,6 +26,7 @@ from core.artifacts import (
 )
 from core.checkpoint_meta import (
     load_peptide_gnn_meta,
+    peptide_gnn_arch_kwargs,
     resolve_node_layout_for_checkpoint,
 )
 from core.data_utils import PeptideGraphDataset
@@ -241,6 +242,7 @@ def main():
         geo_feature_dim=geo_dim,
         esm2_raw_dim=esm2_raw,
         esm2_hidden_dim=esm2_h,
+        **peptide_gnn_arch_kwargs(meta),
     )
 
     model.load_state_dict(sd0)

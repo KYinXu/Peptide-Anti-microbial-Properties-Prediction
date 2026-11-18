@@ -22,6 +22,7 @@ from sklearn.model_selection import StratifiedShuffleSplit
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core.data_utils import (
+    EDGE_ATTR_DIM,
     NodeFeatureGroups,
     load_esm2_per_residue_tensor,
     node_input_dim,
@@ -272,6 +273,8 @@ def train_single_model(
     geo_dim = len(feature_cols)
     esm2_raw = esm2_raw_dim if want_esm2_nodes else 0
     in_ch = node_input_dim(node_feature_groups)
+    edge_feature_dim = EDGE_ATTR_DIM
+    normalize_geo = True
 
     model = PeptideGNN(
         architecture=arch,
@@ -284,6 +287,8 @@ def train_single_model(
         geo_feature_dim=geo_dim,
         esm2_raw_dim=esm2_raw,
         esm2_hidden_dim=args.esm2_hidden_dim,
+        edge_dim=edge_feature_dim,
+        normalize_geo=normalize_geo,
     )
 
     print(f"\n=== Training {arch.upper()} on {feature_name} ===")
@@ -336,6 +341,8 @@ def train_single_model(
         feature_set=feature_name,
         metrics=best_metrics,
         timestamp=datetime.now().isoformat(),
+        edge_feature_dim=edge_feature_dim,
+        normalize_geo=normalize_geo,
     )
     print(f"Saved model directory: {model_dir}")
 

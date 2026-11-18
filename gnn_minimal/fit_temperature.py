@@ -26,7 +26,11 @@ from torch_geometric.loader import DataLoader
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core.artifacts import model_checkpoint_path, resolve_model_dir, temperature_scaling_path
-from core.checkpoint_meta import load_peptide_gnn_meta, resolve_node_layout_for_checkpoint
+from core.checkpoint_meta import (
+    load_peptide_gnn_meta,
+    peptide_gnn_arch_kwargs,
+    resolve_node_layout_for_checkpoint,
+)
 from core.data_utils import PeptideGraphDataset
 from core.models import PeptideGNN, esm2_hidden_dim_from_state_dict, esm2_raw_dim_from_state_dict
 from core.platt import collect_margins_and_labels
@@ -80,6 +84,7 @@ def load_frozen_model(model_dir: Path, dataset, state, meta: dict, in_channels: 
         geo_feature_dim=geo_dim,
         esm2_raw_dim=esm2_raw,
         esm2_hidden_dim=esm2_hidden_dim_from_state_dict(state),
+        **peptide_gnn_arch_kwargs(meta),
     )
     model.load_state_dict(state)
     return model.to(device)

@@ -66,6 +66,33 @@ def partition_feature_blocks(
     return geo, qsar, esm
 
 
+def _repair_degenerate_scales(
+    scaler: RobustScaler,
+    X: np.ndarray,
+    col_names: Sequence[str],
+    quantile_range: Tuple[float, float],
+) -> List[str]:
+    """Rescale columns whose training IQR is 0.
+
+    sklearn forces ``scale_`` to 1.0 when the IQR is 0, which leaves that column in
+    its raw units while every other column in the block is normalised. The sparse
+    dipeptide percentages (FC/LW/DP/NK/AE) and QSO50 all land there, so they reach
+    the network at up to ~21 (LW) or ~0.03 (QSO50) against the ~1 of a scaled
+    column. Fall back to the max absolute deviation from the centre, which puts the
+    column in [-1, 1]; a genuinely constant column keeps scale 1.0 and contributes
+    only a bias.
+    """
+    lo, hi = quantile_range
+    iqr = np.percentile(X, hi, axis=0) - np.percentile(X, lo, axis=0)
+    fallback = np.max(np.abs(X - scaler.center_), axis=0)
+    repaired: List[str] = []
+    for k in np.flatnonzero(np.isclose(iqr, 0.0)):
+        if fallback[k] > 0.0:
+            scaler.scale_[k] = float(fallback[k])
+            repaired.append(col_names[k])
+    return repaired
+
+
 @dataclass
 class _Block:
     col_names: List[str]
@@ -124,7 +151,13 @@ class ExtraFeatureRobustScaler:
                 quantile_range=quantile_range,
                 unit_variance=False,
             )
-            Xt = scaler.fit_transform(X)
+            scaler.fit(X)
+            repaired = _repair_degenerate_scales(scaler, X, cols, quantile_range)
+            if repaired:
+                print(
+                    f"   zero-IQR columns rescaled by max-abs-deviation: {', '.join(repaired)}"
+                )
+            Xt = scaler.transform(X)
             if balance_blocks:
                 med = float(np.median(np.abs(Xt)))
                 if med < 1e-12:

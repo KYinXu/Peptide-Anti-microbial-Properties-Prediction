@@ -1,0 +1,100 @@
+[
+  {
+    "seqIndex": "O60443",
+    "length": 496,
+    "status": "success",
+    "pdb_file": "data/proteome_sanity_test_wholeprot/parents/generated/structures/O60443.pdb",
+    "cached": true
+  },
+  {
+    "seqIndex": "Q9UJW0",
+    "length": 460,
+    "status": "success",
+    "pdb_file": "data/proteome_sanity_test_wholeprot/parents/generated/structures/Q9UJW0.pdb",
+    "cached": true
+  },
+  {
+    "seqIndex": "P62945",
+    "length": 25,
+    "status": "success",
+    "pdb_file": "data/proteome_sanity_test_wholeprot/parents/generated/structures/P62945.pdb",
+    "cached": true
+  },
+  {
+    "seqIndex": "Q969U7",
+    "length": 264,
+    "status": "success",
+    "pdb_file": "data/proteome_sanity_test_wholeprot/parents/generated/structures/Q969U7.pdb",
+    "cached": true
+  },
+  {
+    "seqIndex": "P16278",
+    "length": 677,
+    "status": "success",
+    "pdb_file": "data/proteome_sanity_test_wholeprot/parents/generated/structures/P16278.pdb",
+    "cached": true
+  },
+  {
+    "seqIndex": "P62701",
+    "length": 263,
+    "status": "success",
+    "pdb_file": "data/proteome_sanity_test_wholeprot/parents/generated/structures/P62701.pdb",
+    "cached": true
+  },
+  {
+    "seqIndex": "P62140",
+    "length": 327,
+    "status": "success",
+    "pdb_file": "data/proteome_sanity_test_wholeprot/parents/generated/structures/P62140.pdb",
+    "cached": true
+  },
+  {
+    "seqIndex": "O43633",
+    "length": 222,
+    "status": "success",
+    "pdb_file": "data/proteome_sanity_test_wholeprot/parents/generated/structures/O43633.pdb",
+    "cached": true
+  },
+  {
+    "seqIndex": "P14921",
+    "length": 441,
+    "status": "success",
+    "pdb_file": "data/proteome_sanity_test_wholeprot/parents/generated/structures/P14921.pdb",
+    "cached": true
+  },
+  {
+    "seqIndex": "P62273",
+    "length": 56,
+    "status": "success",
+    "pdb_file": "data/proteome_sanity_test_wholeprot/parents/generated/structures/P62273.pdb",
+    "cached": true
+  },
+  {
+    "seqIndex": "P78347",
+    "length": 998,
+    "status": "success",
+    "pdb_file": "data/proteome_sanity_test_wholeprot/parents/generated/structures/P78347.pdb",
+    "cached": true
+  },
+  {
+    "seqIndex": "P67775",
+    "length": 309,
+    "status": "success",
+    "pdb_file": "data/proteome_sanity_test_wholeprot/parents/generated/structures/P67775.pdb",
+    "cached": true
+  },
+  {
+    "seqIndex": "P25787",
+    "length": 234,
+    "status": "success",
+    "pdb_file": "data/proteome_sanity_test_wholeprot/parents/generated/structures/P25787.pdb",
+    "cached": true
+  },
+  {
+    "seqIndex": "P25788",
+    "length": 255,
+    "status": "success",
+    "pdb_file": "data/proteome_sanity_test_wholeprot/parents/generated/structures/P25788.pdb",
+    "cached": true
+  }
+]

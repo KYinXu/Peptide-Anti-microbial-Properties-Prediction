@@ -68,6 +68,15 @@ VOL_MIN, VOL_MAX = 60.1, 227.8
 ONEHOT_DIM = 20
 PDB_CONTINUOUS_DIM = 6
 
+# Divisor for edge_attr[:, 1]. Normalising |i-j| by n_residues made the same local
+# relationship a different number at every length (i,i+2 was 0.22 in a 9-mer and 0.034
+# in a 59-mer), which injected peptide length into every edge. A constant keeps the
+# feature comparable across peptides; observed |i-j| for an 8 A graph tops out near 16.
+SEQ_SEPARATION_SCALE = 10.0
+
+# Width of edge_attr from compute_edges: [distance, sequence separation, edge type].
+EDGE_ATTR_DIM = 3
+
 
 def _load_vae_descriptor_matrix() -> np.ndarray:
     candidates = [
@@ -87,19 +96,39 @@ def _load_vae_descriptor_matrix() -> np.ndarray:
     return np.stack([df[aa].to_numpy(dtype=np.float64) for aa in AA_ORDER], axis=1).astype(np.float32)
 
 
-_VAE_DESCRIPTOR_MATRIX = _load_vae_descriptor_matrix()
-VAE_DESCRIPTOR_DIM = int(_VAE_DESCRIPTOR_MATRIX.shape[0])
+_VAE_DESCRIPTOR_MATRIX_RAW = _load_vae_descriptor_matrix()
+
+# Rows of the raw table span incompatible units -- MW 75-204, pol 4.9-13, vol 3.4-21.7,
+# F1-F6 roughly +-1 -- and _vae_table_block writes them into data.x verbatim, so MW alone
+# reached the first GATConv at ~100x every other node channel (condition number 631 over
+# the 20 amino acids, vs 10.3 once z-scored). The block is a fixed linear map of the
+# one-hot either way, so centring and scaling each descriptor changes conditioning only,
+# never information.
+_vae_std = _VAE_DESCRIPTOR_MATRIX_RAW.std(axis=1, keepdims=True)
+_VAE_DESCRIPTOR_MATRIX_Z = (
+    (_VAE_DESCRIPTOR_MATRIX_RAW - _VAE_DESCRIPTOR_MATRIX_RAW.mean(axis=1, keepdims=True))
+    / np.where(_vae_std > 0, _vae_std, 1.0)
+).astype(np.float32)
+
+VAE_DESCRIPTOR_DIM = int(_VAE_DESCRIPTOR_MATRIX_RAW.shape[0])
 NODE_INPUT_DIM = ONEHOT_DIM + PDB_CONTINUOUS_DIM + VAE_DESCRIPTOR_DIM
 
 
 @dataclass
 class NodeFeatureGroups:
-    """Coarse toggles for node feature blocks. All True = full vector (default). Prefer this *or* node_feature_keep_indices per run, not conflicting combinations."""
+    """Coarse toggles for node feature blocks. All True = full vector (default). Prefer this *or* node_feature_keep_indices per run, not conflicting combinations.
+
+    ``vae_zscore`` selects the z-scored VAE table and does not change ``data.x`` width,
+    so it is invisible to :func:`node_feature_groups_for_base_dim`. New runs want the
+    default; checkpoints trained before ``schema`` 3 need ``False``, which
+    ``resolve_node_layout_for_checkpoint`` sets from ``model_summary.json``.
+    """
 
     onehot: bool = True
     pdb_continuous: bool = True
     vae_table: bool = True
     esm2_residue: bool = True
+    vae_zscore: bool = True
 
 
 def _effective_node_feature_groups(groups: Optional[NodeFeatureGroups]) -> NodeFeatureGroups:
@@ -178,6 +207,8 @@ def node_feature_groups_from_cli(spec: str) -> Optional[NodeFeatureGroups]:
         g.pdb_continuous = False
     if "no_esm2" in tok or "no_esm2_residue" in tok:
         g.esm2_residue = False
+    if "raw_vae" in tok or "no_vae_zscore" in tok:
+        g.vae_zscore = False
     return g
 
 
@@ -187,7 +218,7 @@ def node_feature_groups_from_config_value(obj: object) -> Optional[NodeFeatureGr
 
     - ``None`` / omitted: all groups on (same as ``NodeFeatureGroups()`` defaults).
     - ``str``: same as :func:`node_feature_groups_from_cli`.
-    - ``dict``: optional keys ``onehot``, ``pdb_continuous``, ``vae_table``, ``esm2_residue`` (booleans); absent keys stay at default True.
+    - ``dict``: optional keys ``onehot``, ``pdb_continuous``, ``vae_table``, ``esm2_residue``, ``vae_zscore`` (booleans); absent keys stay at default True.
     """
     if obj is None:
         return None
@@ -203,6 +234,8 @@ def node_feature_groups_from_config_value(obj: object) -> Optional[NodeFeatureGr
             g.vae_table = bool(obj["vae_table"])
         if "esm2_residue" in obj:
             g.esm2_residue = bool(obj["esm2_residue"])
+        if "vae_zscore" in obj:
+            g.vae_zscore = bool(obj["vae_zscore"])
         return g
     raise TypeError(f"node_feature_groups must be null, str, or dict; got {type(obj).__name__}")
 
@@ -311,12 +344,13 @@ def _pdb_continuous_block(
     return out
 
 
-def _vae_table_block(aa_sequence: List[str], n_residues: int) -> np.ndarray:
+def _vae_table_block(aa_sequence: List[str], n_residues: int, zscore: bool = True) -> np.ndarray:
+    table = _VAE_DESCRIPTOR_MATRIX_Z if zscore else _VAE_DESCRIPTOR_MATRIX_RAW
     out = np.zeros((n_residues, VAE_DESCRIPTOR_DIM), dtype=np.float32)
     for i, aa in enumerate(aa_sequence):
         j = AA_TO_IDX.get(aa)
         if j is not None:
-            out[i] = _VAE_DESCRIPTOR_MATRIX[:, j]
+            out[i] = table[:, j]
     return out
 
 
@@ -340,7 +374,7 @@ def compute_node_features(
     if g.pdb_continuous:
         parts.append(_pdb_continuous_block(aa_sequence, plddt_values, length, n_residues))
     if g.vae_table:
-        parts.append(_vae_table_block(aa_sequence, n_residues))
+        parts.append(_vae_table_block(aa_sequence, n_residues, g.vae_zscore))
     if not parts:
         raise ValueError("At least one NodeFeatureGroups field must be True")
     features = np.concatenate(parts, axis=1)
@@ -389,14 +423,14 @@ def compute_edges(
                 # [distance (normalized), seq_distance (normalized), edge_type (0=seq, 1=spatial)]
                 edge_features.append([
                     dist / 20.0,  # Normalize distance (typical max ~20Å)
-                    seq_dist / n_residues,  # Normalize by length
+                    seq_dist / SEQ_SEPARATION_SCALE,
                     0.0  # Sequential edge type
                 ])
             elif is_spatial and not is_sequential:
                 edges.append([i, j])
                 edge_features.append([
                     dist / 20.0,
-                    seq_dist / n_residues,
+                    seq_dist / SEQ_SEPARATION_SCALE,
                     1.0  # Spatial edge type
                 ])
     
@@ -405,8 +439,8 @@ def compute_edges(
         for i in range(n_residues - 1):
             edges.append([i, i + 1])
             edges.append([i + 1, i])
-            edge_features.append([0.19, 1.0 / n_residues, 0.0])
-            edge_features.append([0.19, 1.0 / n_residues, 0.0])
+            edge_features.append([0.19, 1.0 / SEQ_SEPARATION_SCALE, 0.0])
+            edge_features.append([0.19, 1.0 / SEQ_SEPARATION_SCALE, 0.0])
     
     edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
     edge_attr = torch.tensor(edge_features, dtype=torch.float32)

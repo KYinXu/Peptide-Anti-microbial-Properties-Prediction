@@ -93,7 +93,11 @@ class GnnScorer:
         ensure_gnn_minimal_on_path()
         import torch
         from core.calibration import describe_calibration, resolve_calibration
-        from core.checkpoint_meta import load_peptide_gnn_meta, resolve_node_layout_for_checkpoint
+        from core.checkpoint_meta import (
+            load_peptide_gnn_meta,
+            peptide_gnn_arch_kwargs,
+            resolve_node_layout_for_checkpoint,
+        )
         from core.determinism import enable_deterministic_inference
         from core.models import (
             PeptideGNN,
@@ -132,6 +136,7 @@ class GnnScorer:
             geo_feature_dim=self.geo_dim,
             esm2_raw_dim=0,
             esm2_hidden_dim=esm2_hidden_dim_from_state_dict(state),
+            **peptide_gnn_arch_kwargs(meta),
         )
         self.model.load_state_dict(state)
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))

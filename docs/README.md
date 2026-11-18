@@ -74,6 +74,13 @@ Collected from the module pages; each is documented in detail there.
   (`val_size`, `weight_decay`, `esm2_hidden_dim`) because argparse shadows them.
 - **`--profile-aggregation max` makes `p_amp_mean` report the max**, and
   `--workers > 1` makes profile row order non-deterministic.
+- **GNN checkpoints come in two schemas.** Schema 3 z-scores the VAE node
+  table, feeds `edge_attr` to `GATConv`, and BatchNorms `geo_features` before the
+  classifier concat; schema 2 and earlier do none of those. Load sites pass
+  `peptide_gnn_arch_kwargs(meta)` to rebuild either faithfully.
+- **Six of the twelve QSAR columns had no training IQR**, so `RobustScaler` left
+  them in raw units until `_repair_degenerate_scales`. `LW` alone was worth ~1
+  logit on a 12-mer.
 - **Two timestamp conventions coexist:** `runs/%Y-%m-%d_%H-%M` (UTC, from
   `analysis_outputs`) and `run_%Y%m%d_%H%M%S` (local, GNN training).
 - **`descriptors/descripGen_12_py3.py` cannot run as checked out** — `propy`

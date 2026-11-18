@@ -47,13 +47,18 @@ def build_model_summary(
     feature_set: str | None = None,
     metrics: Mapping[str, float] | None = None,
     timestamp: str | None = None,
+    edge_feature_dim: int = 3,
+    normalize_geo: bool = True,
 ) -> dict[str, Any]:
     ng = node_feature_groups
     base = node_input_dim(ng)
     first_msg = base + (esm2_hidden_dim if esm2_raw_dim > 0 else 0)
     payload: dict[str, Any] = {
         "kind": "peptide_gnn",
-        "schema": 2,
+        # schema 3 added vae_zscore, edge_feature_dim and normalize_geo. A summary
+        # lacking them -- or no summary at all -- describes a checkpoint trained before
+        # the fix, so peptide_gnn_arch_kwargs defaults them to the old behaviour.
+        "schema": 3,
         "architecture": architecture.lower(),
         "feature_set": feature_set,
         "node_feature_groups": {
@@ -61,6 +66,7 @@ def build_model_summary(
             "pdb_continuous": ng.pdb_continuous,
             "vae_table": ng.vae_table,
             "esm2_residue": ng.esm2_residue,
+            "vae_zscore": ng.vae_zscore,
         },
         "node_input_dim": base,
         "first_message_in_dim": first_msg,
@@ -69,6 +75,8 @@ def build_model_summary(
         "dropout": float(dropout),
         "pooling": pooling,
         "geo_feature_dim": int(geo_feature_dim),
+        "edge_feature_dim": int(edge_feature_dim),
+        "normalize_geo": bool(normalize_geo),
         "tabular_feature_cols": list(tabular_feature_cols or []),
         "esm2_raw_dim": int(esm2_raw_dim),
         "esm2_hidden_dim": int(esm2_hidden_dim),
@@ -115,6 +123,8 @@ def save_peptide_gnn_meta(
     feature_set: str | None = None,
     metrics: Mapping[str, float] | None = None,
     timestamp: str | None = None,
+    edge_feature_dim: int = 3,
+    normalize_geo: bool = True,
 ) -> Path:
     model_dir = Path(model_dir)
     if model_dir.suffix == ".pt":
@@ -135,8 +145,27 @@ def save_peptide_gnn_meta(
         feature_set=feature_set,
         metrics=metrics,
         timestamp=timestamp,
+        edge_feature_dim=edge_feature_dim,
+        normalize_geo=normalize_geo,
     )
     return save_model_summary(model_dir, payload)
+
+
+def peptide_gnn_arch_kwargs(meta: Mapping[str, Any] | None) -> dict[str, Any]:
+    """``PeptideGNN`` flags needed to rebuild a saved checkpoint.
+
+    Both default to the pre-schema-3 behaviour, so a checkpoint whose summary predates
+    these keys -- or that has no summary at all -- is rebuilt exactly as it was trained:
+    ``edge_attr`` unused by GAT, and ``geo_features`` concatenated without
+    normalisation. Forgetting this at a call site cannot silently mis-score a model; it
+    raises in ``load_state_dict`` because the ``geo_bn`` / ``lin_edge`` keys will not
+    match.
+    """
+    m = meta or {}
+    return {
+        "edge_dim": int(m.get("edge_feature_dim", 0)),
+        "normalize_geo": bool(m.get("normalize_geo", False)),
+    }
 
 
 def infer_first_message_in_dim(state_dict: Mapping[str, Any], architecture: str) -> int:
@@ -184,6 +213,9 @@ def resolve_node_layout_for_checkpoint(
     """
     notes: list[str] = []
     arch = architecture.lower().strip()
+    # data.x has the same width either way, so which VAE table was used cannot be
+    # recovered from the weights -- only the summary says. Absent key => raw table.
+    legacy_vae = True
     esm2_raw = esm2_raw_dim_from_state_dict(state_dict)
     esm2_h = esm2_hidden_dim_from_state_dict(state_dict)
     first_in = infer_first_message_in_dim(state_dict, arch)
@@ -197,7 +229,9 @@ def resolve_node_layout_for_checkpoint(
     model_dir = resolve_model_dir(checkpoint_or_dir)
     meta = load_peptide_gnn_meta(model_dir)
     if meta is not None:
-        ng_meta = node_feature_groups_from_config_value(meta.get("node_feature_groups"))
+        raw_groups = meta.get("node_feature_groups")
+        legacy_vae = not (isinstance(raw_groups, dict) and "vae_zscore" in raw_groups)
+        ng_meta = node_feature_groups_from_config_value(raw_groups)
         ng_eff = ng_meta if ng_meta is not None else NodeFeatureGroups()
         base_meta = node_input_dim(ng_eff)
         meta_first = int(meta.get("first_message_in_dim", base_meta + (esm2_h if esm2_raw > 0 else 0)))
@@ -207,6 +241,7 @@ def resolve_node_layout_for_checkpoint(
                 pdb_continuous=ng_eff.pdb_continuous,
                 vae_table=ng_eff.vae_table,
                 esm2_residue=esm2_raw > 0,
+                vae_zscore=ng_eff.vae_zscore,
             )
             notes.append(f"Using {MODEL_SUMMARY_JSON}")
         else:
@@ -224,6 +259,10 @@ def resolve_node_layout_for_checkpoint(
             f"No {MODEL_SUMMARY_JSON} in model directory; inferred node blocks from weight shapes "
             f"(data.x width {base_ckpt})."
         )
+
+    if legacy_vae and ng_use.vae_table:
+        ng_use.vae_zscore = False
+        notes.append("Checkpoint predates schema 3; using the raw VAE descriptor table.")
 
     if user_node_groups is not None:
         u = user_node_groups

@@ -6,13 +6,16 @@ which is why module output schemas are the thing to keep stable.
 
 ## How notebooks depend on modules
 
-Only one root module is imported by any notebook:
+Two root modules are imported by any notebook:
 `window_sequence_analysis.models.svm.load_svm`, in three files
 (`windowed_DNGC_analysis`, `single_cluster_analysis`,
-`final_presentation_single_cluster_display`).
+`final_presentation_single_cluster_display`), and `gnn_minimal`
+(`core.data_utils.compute_edges` / `parse_pdb`, `pipeline.features.compute_dihedral`)
+in `structure_comparison`, which compares structures and so needs the model's own
+graph-construction rule rather than a notebook-local copy of it.
 
-No notebook imports `sequence_analysis`, `length_analysis`, `gnn_minimal`,
-`analysis_outputs`, `data_normalizer` or `descriptors`.
+No notebook imports `sequence_analysis`, `length_analysis`, `analysis_outputs`,
+`data_normalizer` or `descriptors`.
 
 **Five notebooks still import legacy Python** (`gnn.*`, `peptide_pipeline.*`,
 `configs.*`, `proteome_candidate_generator.*`) and are the migration backlog:
@@ -32,6 +35,7 @@ No notebook imports `sequence_analysis`, `length_analysis`, `gnn_minimal`,
 | `graph_connectivity.ipynb` | **Empty (0 bytes)** — delete candidate |
 | `overlapping_score_distributions.ipynb` | Overlays normalized SVM hyperplane-distance and GNN logit-margin histograms |
 | `skin_amp_discovery.ipynb` | Skin sequences + SVM output; high-confidence subset, breakdown by expression cluster |
+| `structure_comparison.ipynb` | One checkpoint over `proteome_sanity_test` folded three ways — ESMFold on the peptide alone, ESMFold on the whole parent, AlphaFold DB native. PPP1CB's three variants (Ramachandran, 8 Å contact maps, Kabsch–Sander H-bonds), per-peptide graph geometry, σ distributions and absolute σ against the calibrated threshold. Shows that swapping temperature scaling for Platt reverses which protocol scores better without changing a single margin. **Imports `gnn_minimal`** |
 | `svm_descriptor_analysis.ipynb` | Standardized descriptor distributions; sigma vs the four GRAR740104 sequence-order descriptors |
 | `svm_pipeline_sanity.ipynb` | Legacy `.pkl` vs `StandardScaler+SVC` equivalence check. **Legacy imports** |
 | `svm_window_heatmaps.ipynb` | Per-window distances → per-residue scores → colored sigma activation bars |
@@ -45,9 +49,9 @@ No notebook imports `sequence_analysis`, `length_analysis`, `gnn_minimal`,
 |---|---|
 | `proteome_prediction_analysis.ipynb` | Proteome prediction vs labeled sequences; KDE score distributions |
 | `final_figures_proteome_prediction.ipynb` | Publication figures over the 465k proteome, 50k MAPP and 1k confirmed sets, GNN+QSAR, with the 10 paper candidates marked |
-| `mutation_analysis.ipynb` | Reads the latest `mutation_analysis` run; Δσ / ΔP(AMP) versus mutation level per scheme and AMP call retention curves |
-| `length_cutoff_analysis.ipynb` | Reads the latest `length_analysis --mode deletion` run; AMP counts over (Δ, p) as a heatmap per terminus, Δσ / ΔP(AMP) versus deletion level, and AMP call retention |
-| `t10_candidates_analysis.ipynb` | The ten paper candidates only, scored with `gnn_alpha_qsar`; mutation robustness (Δσ / ΔP(AMP), retention curves and heatmap, sustained-σ dumbbell), deletion Δσ versus residues removed per terminus, extension (N, C) landscapes and best reachable σ, both length runs on one axis, an overall σ/P(AMP) and retention ranking across the three, and the top ten length variants |
+| `mutation_analysis.ipynb` | Reads a `RUN_ID`-pinned `mutation_analysis` run; absolute σ / P(AMP) versus mutation level per scheme, each curve anchored at p = 0 on its unmutated parent score, and AMP call retention curves |
+| `length_cutoff_analysis.ipynb` | Reads a `RUN_ID`-pinned `length_analysis --mode deletion` run; AMP counts over (absolute score, p) as a heatmap per terminus with p = 0 as the untruncated row, absolute σ / P(AMP) versus deletion level, and AMP call retention |
+| `t10_candidates_analysis.ipynb` | The ten paper candidates only, scored with `gnn_scaled_combined_dataset` from three `RUN_ID`-pinned runs; mutation robustness (absolute σ / P(AMP) anchored at p = 0, retention curves and heatmap, sustained-σ dumbbell), deletion σ versus fraction removed per terminus, extension (N, C) landscapes in absolute σ on a threshold-centred scale and best reachable σ, both length runs on one absolute-σ axis, an overall σ/P(AMP) and retention ranking across the three, and the top ten length variants |
 
 ## `skin_clusters/`
 

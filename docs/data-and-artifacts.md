@@ -47,6 +47,7 @@ and an optional `summary/` of training-time CSVs.
 | `original_dataset/broken_svm/` | name flags it as unusable; do not load |
 | `gnn/gnn_vae_qsar/` | `gnn_model.pt`, `gnn_platt_scaling`, `gnn_temperature_scaling`, `model_summary.json`, `tabular_scaler.joblib` |
 | `gnn/Michael_gnn_1/` | as above, without temperature scaling |
+| `gnn/gnn_scaled_combined_dataset/` | as above; schema 3 (`vae_zscore` node features), trained from `data/training/expanded_amps_presplit/` with `train_premade_split.py`. Temperature was fitted after the fact on that split's `expanded_filtered_validation.csv` (T = 0.55893), so the auto cascade resolves to temperature and the AMP call stays at σ > 0 |
 | `gnn/gnn_vae_qsar_original/` | older naming: `gat_ready_QSAR.pt`, `…_gnn_meta.json`, `…_platt.json` |
 
 **Constraint:** `sequence_analysis` resolves SVM checkpoints by suffix search

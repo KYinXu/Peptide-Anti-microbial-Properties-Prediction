@@ -141,10 +141,30 @@ from the input `id`.
 | File | Notes |
 |---|---|
 | `gnn_model.pt` | bare `state_dict`, keys prefixed `model.` |
-| `model_summary.json` | architecture, `node_feature_groups`, dims, `tabular_feature_cols`, metrics |
+| `model_summary.json` | `schema`, architecture, `node_feature_groups`, dims, `edge_feature_dim`, `normalize_geo`, `tabular_feature_cols`, metrics |
 | `gnn_platt_scaling` | JSON **without an extension**; only if the fit succeeded |
 | `tabular_scaler.joblib` | Geo / QSAR / Combined presets only |
 | `gnn_temperature_scaling` | written only by `fit_temperature.py` |
+
+### `model_summary.json` schema 3
+
+Schema 3 fixed three input-scaling defects. Because none of them changes
+`data.x` width, a checkpoint cannot be identified from its weights alone, so the
+summary carries the answer and `peptide_gnn_arch_kwargs` (`core/checkpoint_meta.py`)
+turns it back into `PeptideGNN` arguments:
+
+| Key | Schema 3 | Pre-schema-3 default |
+|---|---|---|
+| `node_feature_groups.vae_zscore` | `true` — VAE table z-scored per descriptor | `false`, raw table |
+| `edge_feature_dim` | `3` — `GATConv(edge_dim=3)`, `edge_attr` consumed | `0`, `edge_attr` discarded |
+| `normalize_geo` | `true` — `BatchNorm1d` on `geo_features` before the concat | `false`, raw concat |
+
+Every load site passes `**peptide_gnn_arch_kwargs(meta)`, so the five
+`checkpoints/gnn/` models keep scoring exactly as before (verified: max drift
+1.2e-6 over the 15 `proteome_sanity_test` peptides). The defaults are the *old*
+behavior precisely because that is what a summary-less checkpoint is; forgetting
+the call cannot mis-score a model, it raises in `load_state_dict` on the missing
+`geo_bn` / `lin_edge` keys.
 
 ### Output
 
@@ -156,7 +176,10 @@ input was labeled. `predicted_class = prob_AMP >= 0.5`.
 `gcn`, `gat`, `egnn` (`core/models.py:446`), selected by `config.architectures`
 — every listed architecture is trained for every selected preset. Shared trunk:
 node features → optional ESM2 projection → message passing → `mean_max`
-pooling (hardcoded) → concat tabular features → 2-layer MLP → 2 logits.
+pooling (hardcoded) → concat tabular features (`BatchNorm1d` first, schema 3)
+→ 2-layer MLP → 2 logits. `gat` passes `edge_attr` into every `GATConv` from
+schema 3 on; `gcn` cannot (`GCNConv` carries a scalar `edge_weight` only) and
+`egnn` always did.
 
 **Axis 1 — node features, pre-message-passing** (`node_feature_groups`):
 
@@ -164,11 +187,20 @@ pooling (hardcoded) → concat tabular features → 2-layer MLP → 2 logits.
 |---|---|
 | `onehot` | 20 |
 | `pdb_continuous` | 6 (pLDDT, hydrophobicity, charge, MW, volume, rel. position) |
-| `vae_table` | 13 (from `descriptors/descriptor_table_vae.csv`) |
+| `vae_table` | 13 (from `descriptors/descriptor_table_vae.csv`, z-scored per row from schema 3) |
 | `esm2_residue` | 1280 → `esm2_hidden_dim` via a learned linear layer |
 
 All-on base width is `NODE_INPUT_DIM = 39`. The shipped config uses
 `onehot + vae_table` = 33.
+
+With `onehot` on, `vae_table` adds **no information** — both blocks are
+functions of residue identity, so the 33-column node matrix has rank 20 over the
+20 amino acids, same as the one-hot alone. It only changes conditioning, and the
+raw table was bad at it: `MW` spans 75–204 and `vol` 3.4–21.7 against ±1 for
+`F1`–`F6`, giving a condition number of 631 (10.3 z-scored) and making `MW` the
+feature the first `GATConv`'s attention keyed on hardest. Hence `vae_zscore`.
+Note that the *disabled* `pdb_continuous` block min-max normalizes its own MW and
+volume columns; the VAE block never did.
 
 **Axis 2 — graph-level tabular, post-pooling** (`feature_sets` presets):
 `Graph-only` (none), `Geo` (20 cols), `QSAR` (12 cols), `Combined` (32 cols).
@@ -180,6 +212,10 @@ behavior: `seed`, `epochs`, `batch_size`, `lr`, `patience`,
 `hidden_channels`, `num_layers`, `dropout`, `distance_threshold`,
 `label_smoothing`, `logit_penalty`, `node_feature_groups`, `architectures`,
 `feature_sets_default`, `feature_sets`.
+
+`node_feature_groups` accepts `vae_zscore` alongside the four block toggles
+(`false` reproduces pre-schema-3 node features). Unlike the others it does not
+change `data.x` width, so `node_feature_groups_for_base_dim` cannot recover it.
 
 **Config keys that are silently inert:** `val_size`, `weight_decay`,
 `esm2_hidden_dim`. The merge is `if not hasattr(args, k)` (`train.py:373`), so
@@ -272,7 +308,26 @@ live in `train.py:72`/`:109`, `core/extra_feature_scaler.py:18`/`:41`, and
 scaler's block partitioning.
 
 **Histidine charge is inconsistent:** `0.1` in `core/data_utils.py:46` and
-`pipeline/features.py:45`, but `1` in `pipeline/qsar.py:34`.
+`pipeline/features.py:45`, but `1` in `pipeline/qsar.py:34` — and `0` / `1`
+(pH 7.4 / pH 5) in the two charge rows of `descriptor_table_vae.csv`. Of those,
+the QSAR `netCharge` and the VAE rows are live model inputs under the shipped
+config, and they disagree by a full charge unit.
+
+**Six of the twelve QSAR columns have a zero training IQR.** `FC`, `LW`, `DP`,
+`NK` and `AE` are single-dipeptide percentages from `GetDPComp` and are 0 in
+94–98% of rows; `QSO50` is 0 in ~81%. sklearn's `RobustScaler` forces
+`scale_ = 1.0` when the IQR is 0, which left those columns in raw units — `LW`
+reached `classifier[0]` at 9.09 for a 12-mer while every scaled column sat near
+1, and `QSO50` arrived at ~0.005 with a compensating weight norm of 3.5.
+`_repair_degenerate_scales` (`core/extra_feature_scaler.py`) now rescales them by
+max absolute deviation from the centre, printing the list at fit time. The
+percentages are length-coupled (one `LW` is 9.09 in a 12-mer, 2.56 in a 40-mer)
+and `length` is not a QSAR column, so the model cannot calibrate for it.
+
+**Pre-schema-3 checkpoints are rebuilt with the old wiring** and print
+`Checkpoint predates schema 3; using the raw VAE descriptor table.` That is
+correct — they were trained that way — but it means scores from a schema-2 and a
+schema-3 checkpoint are not comparable channel by channel, only end to end.
 
 Smaller ones:
 
@@ -283,7 +338,13 @@ Smaller ones:
 - A degenerate run whose val AUC never exceeds `1e-4` leaves `best_state=None`,
   so last-epoch weights are saved and metrics print as `nan`.
 - `compute_edges` is an O(N²) pure-Python loop — the dominant cost on long
-  peptides.
+  peptides. Its output is otherwise sound: symmetric, duplicate-free, self-loop
+  free, and `edge_attr` consistent with the coordinates, verified against an
+  independent implementation over 321 structures.
+- `edge_attr[:, 1]` is `|i-j| / SEQ_SEPARATION_SCALE` (10.0). It used to divide
+  by `n_residues`, which made the same local relationship a different number at
+  every length (i,i+2 was 0.22 in a 9-mer and 0.034 in a 59-mer) — harmless
+  while only `egnn` read it, a length leak once `gat` does.
 - `train.py` materializes every graph into memory before training.
 - Filename sanitization maps `/` and `:` to `_`, so ids `a/b` and `a_b` collide.
 - `esmfold_v1_local/` is absent; the first run downloads from HuggingFace.
